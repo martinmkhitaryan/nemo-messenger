@@ -1,9 +1,8 @@
-# Secure Messenger — Product & Architecture Specification 
+# Nemo Messenger
 
-**Product Name** Nemo
-**Status:** Draft, revision 3 (2026-09-19)
-**Document type:** Product requirements and architectural specification
-**Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure
+**Status:** Draft, revision 3 (2026-09-19)<br>
+**Document type:** Product requirements and architectural specification<br>
+**Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)
 
 ---
@@ -2472,7 +2471,7 @@ sequenceDiagram
 
     A->>A: Verify signature against pinned identity key
     A->>A: PQXDH, then encrypt with Double Ratchet
-    A->>A: Pad, wrap: Inner{capability, envelope}, HPKE to Server B
+    A->>A: Pad and wrap Inner envelope, then HPKE to Server B
 
     A->>SA: OuterEnvelope{dest=B, hpke}
     SA->>SB: hpke (server-authenticated)
@@ -2523,10 +2522,10 @@ sequenceDiagram
     participant SB as Server B
     participant B as Bob
 
-    A->>SA: OuterEnvelope{dest=Server B, HPKE(pk_B, Inner{T, envelope})}
-    Note over SA: knows: Alice -> Server B. Not T, not content.
+    A->>SA: OuterEnvelope dest Server B, HPKE to pk_B
+    Note over SA: Alice talks to Server B. Not the capability, not content.
     SA->>SB: HPKE ciphertext over server-authenticated channel
-    Note over SB: knows: Server A -> capability T. Not Alice.
+    Note over SB: Server A talks to capability T. Not Alice.
     SB->>SB: Open HPKE, append envelope to mailbox(T)
     SB->>B: Envelope
     B->>B: Verify and decrypt
@@ -2543,7 +2542,7 @@ sequenceDiagram
     participant U as User (any machine, revocation phrase)
     participant S as Home Server
     participant G as Group stream members
-    participant C as 1:1 contact
+    participant C as One-to-one contact
 
     Note over U: Device lost or compromised
 
@@ -2554,13 +2553,13 @@ sequenceDiagram
     S->>G: Append RevocationStatement to hosted group streams
     Note over G: Foreign-hosted groups learn via discovery poll
     G->>G: Verify, mark Revoked, MLS Remove the leaf
-    Note over G: RemoveBundle revokes credential; host does not parse MLS
+    Note over G: RemoveBundle revokes credential. Host does not parse MLS
 
-    C->>S: Later: fetch discovery for the identity
+    C->>S: Later fetch discovery for the identity
     S-->>C: RevocationStatement
     C->>C: Verify, mark Revoked, stop sending
 
-    Note over U: Creates a new identity on a clean installation and re-shares a contact card
+    Note over U: New identity on a clean install, then re-share a contact card
 ```
 
 ---
