@@ -762,6 +762,16 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -785,6 +795,12 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_admit_join(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_create_group(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_delete_message(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_disappear_secs(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_expire_now(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now(
@@ -803,6 +819,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_react(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_register(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member(
@@ -816,6 +834,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_send_text(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic(
 ): Short
@@ -892,6 +912,12 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_admit_join(`ptr`: Pointer,`joinRequestU
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_create_group(`ptr`: Pointer,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_delete_message(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`target`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_disappear_secs(`ptr`: Pointer,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+fun uniffi_nemo_ffi_fn_method_nemoclient_expire_now(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`tokenHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -910,6 +936,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Pointer,`group
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_react(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`target`: Long,`emoji`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_register(`ptr`: Pointer,`homeHttpsBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`credentialIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -923,6 +951,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(`ptr`: Pointer,`groupId
 fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`seconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1064,6 +1094,15 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_create_group() != 37877.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_delete_message() != 33187.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_disappear_secs() != 24410.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_expire_now() != 51495.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file() != 52061.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1091,6 +1130,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri() != 36588.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_react() != 16594.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_register() != 63416.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1110,6 +1152,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_text() != 55458.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear() != 33112.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic() != 40697.toShort()) {
@@ -1287,6 +1332,29 @@ public object FfiConverterULong: FfiConverter<ULong, Long> {
 
     override fun write(value: ULong, buf: ByteBuffer) {
         buf.putLong(value.toLong())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterBoolean: FfiConverter<Boolean, Byte> {
+    override fun lift(value: Byte): Boolean {
+        return value.toInt() != 0
+    }
+
+    override fun read(buf: ByteBuffer): Boolean {
+        return lift(buf.get())
+    }
+
+    override fun lower(value: Boolean): Byte {
+        return if (value) 1.toByte() else 0.toByte()
+    }
+
+    override fun allocationSize(value: Boolean) = 1UL
+
+    override fun write(value: Boolean, buf: ByteBuffer) {
+        buf.put(lower(value))
     }
 }
 
@@ -1478,6 +1546,12 @@ public interface NemoClientInterface {
     
     fun `createGroup`(`nickname`: kotlin.String): kotlin.String
     
+    fun `deleteMessage`(`convId`: kotlin.String, `target`: kotlin.ULong): DisplayRow
+    
+    fun `disappearSecs`(`convId`: kotlin.String): kotlin.ULong
+    
+    fun `expireNow`(): List<DisplayRow>
+    
     fun `fetchGroupFile`(`groupIdHex`: kotlin.String, `tokenHex`: kotlin.String): kotlin.ByteArray
     
     fun `fetchNow`(): List<DisplayRow>
@@ -1496,6 +1570,8 @@ public interface NemoClientInterface {
     
     fun `mintShareUri`(): kotlin.String
     
+    fun `react`(`convId`: kotlin.String, `target`: kotlin.ULong, `emoji`: kotlin.String): DisplayRow
+    
     fun `register`(`homeHttpsBase`: kotlin.String)
     
     fun `removeGroupMember`(`groupIdHex`: kotlin.String, `credentialIdHex`: kotlin.String)
@@ -1509,6 +1585,8 @@ public interface NemoClientInterface {
     fun `sendGroupText`(`groupIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
     
     fun `sendText`(`peerIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
+    
+    fun `setDisappear`(`convId`: kotlin.String, `seconds`: kotlin.ULong): DisplayRow
     
     /**
      * Shown once at identity creation. Never stored in the vault.
@@ -1656,6 +1734,45 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `deleteMessage`(`convId`: kotlin.String, `target`: kotlin.ULong): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_delete_message(
+        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`target`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `disappearSecs`(`convId`: kotlin.String): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_disappear_secs(
+        it, FfiConverterString.lower(`convId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `expireNow`(): List<DisplayRow> {
+            return FfiConverterSequenceTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_expire_now(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `fetchGroupFile`(`groupIdHex`: kotlin.String, `tokenHex`: kotlin.String): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
     callWithPointer {
@@ -1773,6 +1890,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `react`(`convId`: kotlin.String, `target`: kotlin.ULong, `emoji`: kotlin.String): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_react(
+        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`target`),FfiConverterString.lower(`emoji`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `register`(`homeHttpsBase`: kotlin.String)
         = 
     callWithPointer {
@@ -1854,6 +1984,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_text(
         it, FfiConverterString.lower(`peerIdHex`),FfiConverterString.lower(`text`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `setDisappear`(`convId`: kotlin.String, `seconds`: kotlin.ULong): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(
+        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`seconds`),_status)
 }
     }
     )
@@ -1962,7 +2105,12 @@ data class DisplayRow (
     var `fileName`: kotlin.String, 
     var `fileMime`: kotlin.String, 
     var `fileBytes`: kotlin.ByteArray, 
-    var `fetchToken`: kotlin.String
+    var `fetchToken`: kotlin.String, 
+    var `kind`: kotlin.String, 
+    var `emoji`: kotlin.String, 
+    var `target`: kotlin.ULong, 
+    var `hidden`: kotlin.Boolean, 
+    var `displayedAt`: kotlin.ULong
 ) {
     
     companion object
@@ -1982,6 +2130,11 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterString.read(buf),
             FfiConverterByteArray.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterULong.read(buf),
         )
     }
 
@@ -1993,7 +2146,12 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterString.allocationSize(value.`fileName`) +
             FfiConverterString.allocationSize(value.`fileMime`) +
             FfiConverterByteArray.allocationSize(value.`fileBytes`) +
-            FfiConverterString.allocationSize(value.`fetchToken`)
+            FfiConverterString.allocationSize(value.`fetchToken`) +
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterString.allocationSize(value.`emoji`) +
+            FfiConverterULong.allocationSize(value.`target`) +
+            FfiConverterBoolean.allocationSize(value.`hidden`) +
+            FfiConverterULong.allocationSize(value.`displayedAt`)
     )
 
     override fun write(value: DisplayRow, buf: ByteBuffer) {
@@ -2005,6 +2163,11 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterString.write(value.`fileMime`, buf)
             FfiConverterByteArray.write(value.`fileBytes`, buf)
             FfiConverterString.write(value.`fetchToken`, buf)
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterString.write(value.`emoji`, buf)
+            FfiConverterULong.write(value.`target`, buf)
+            FfiConverterBoolean.write(value.`hidden`, buf)
+            FfiConverterULong.write(value.`displayedAt`, buf)
     }
 }
 

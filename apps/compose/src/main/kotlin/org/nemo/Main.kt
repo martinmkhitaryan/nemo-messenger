@@ -115,6 +115,8 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
     var groupDraft by remember { mutableStateOf("") }
     var memberCred by remember { mutableStateOf("") }
     var filePath by remember { mutableStateOf("") }
+    var emoji by remember { mutableStateOf("👍") }
+    var disappearSecs by remember { mutableStateOf("0") }
     var status by remember { mutableStateOf<String?>(null) }
     val messages = remember { mutableStateListOf<DisplayRow>() }
     var busy by remember { mutableStateOf(false) }
@@ -141,9 +143,9 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
             delay(2_000)
             try {
                 val rows = withContext(Dispatchers.IO) { c.fetchNow() }
-                if (rows.isNotEmpty()) {
-                    messages.addAll(rows)
-                }
+                applyIncoming(messages, rows)
+                val expired = withContext(Dispatchers.IO) { c.expireNow() }
+                applyIncoming(messages, expired)
                 if (groupId.isEmpty()) {
                     val groups = withContext(Dispatchers.IO) { c.listGroups() }
                     if (groups.isNotEmpty()) {
@@ -411,17 +413,15 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                     groupId.isNotEmpty() && row.convId == groupId -> "Group"
                                     else -> "Them"
                                 }
-                                if (row.fileName.isNotEmpty()) {
-                                    Text(
-                                        "$who file: ${row.fileName} (${row.fileBytes.size} bytes)",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                } else {
-                                    Text(
-                                        "$who: ${row.text}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
+                                val line = when {
+                                    row.hidden && row.kind == "expired" -> "$who: (expired)"
+                                    row.hidden || row.kind == "deleted" -> "$who: (deleted)"
+                                    row.kind == "reaction" -> "$who reacted ${row.emoji} to #${row.target}"
+                                    row.kind == "disappear" -> "$who set disappear ${row.text}s"
+                                    row.fileName.isNotEmpty() -> "$who file: ${row.fileName} (${row.fileBytes.size} bytes)"
+                                    else -> "$who: ${row.text}"
                                 }
+                                Text(line, style = MaterialTheme.typography.bodyMedium)
                             }
                             OutlinedTextField(
                                 value = draft,
@@ -451,11 +451,71 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                             val rows = withContext(Dispatchers.IO) {
                                                 client?.fetchNow().orEmpty()
                                             }
-                                            messages.addAll(rows)
+                                            applyIncoming(messages, rows)
                                         }
                                     },
                                 ) { Text("Fetch") }
                             }
+                            OutlinedTextField(
+                                value = emoji,
+                                onValueChange = { emoji = it },
+                                label = { Text("Reaction emoji") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                            Row {
+                                Button(
+                                    enabled = !busy && (peerId.isNotEmpty() || groupId.isNotEmpty()) && emoji.isNotBlank(),
+                                    onClick = {
+                                        runIo {
+                                            val conv = peerId.ifEmpty { groupId }
+                                            val target = messages.lastOrNull {
+                                                it.convId == conv && it.kind.isEmpty() && !it.hidden
+                                            }?.convSeq ?: return@runIo
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.react(conv, target, emoji)
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                        }
+                                    },
+                                ) { Text("React") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = !busy && (peerId.isNotEmpty() || groupId.isNotEmpty()),
+                                    onClick = {
+                                        runIo {
+                                            val conv = peerId.ifEmpty { groupId }
+                                            val target = messages.lastOrNull {
+                                                it.convId == conv && it.kind.isEmpty() && !it.hidden
+                                            }?.convSeq ?: return@runIo
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.deleteMessage(conv, target)
+                                            } ?: return@runIo
+                                            applyIncoming(messages, listOf(row))
+                                        }
+                                    },
+                                ) { Text("Delete") }
+                            }
+                            OutlinedTextField(
+                                value = disappearSecs,
+                                onValueChange = { disappearSecs = it },
+                                label = { Text("Disappear seconds (0 = off)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                            Button(
+                                enabled = !busy && (peerId.isNotEmpty() || groupId.isNotEmpty()),
+                                onClick = {
+                                    runIo {
+                                        val conv = peerId.ifEmpty { groupId }
+                                        val secs = disappearSecs.toULongOrNull()?.toLong()?.coerceAtLeast(0) ?: 0
+                                        val row = withContext(Dispatchers.IO) {
+                                            client?.setDisappear(conv, secs.toULong())
+                                        } ?: return@runIo
+                                        messages.add(row)
+                                    }
+                                },
+                            ) { Text("Set disappear") }
                             OutlinedTextField(
                                 value = filePath,
                                 onValueChange = { filePath = it },
@@ -539,4 +599,21 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit) 
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
     )
+}
+
+private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {
+    for (row in rows) {
+        if (row.kind == "deleted" || row.kind == "expired") {
+            val idx = messages.indexOfFirst {
+                it.convId == row.convId && it.convSeq == row.target && it.kind != "reaction"
+            }
+            if (idx >= 0) {
+                val old = messages[idx]
+                messages[idx] = old.copy(hidden = true, kind = row.kind, text = "", fileBytes = byteArrayOf())
+            }
+        }
+        if (messages.none { it.convId == row.convId && it.convSeq == row.convSeq && it.kind == row.kind }) {
+            messages.add(row)
+        }
+    }
 }

@@ -2,6 +2,7 @@
 //!
 //! The revocation mnemonic is never written here.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,7 @@ const SNAPSHOT_KEY: &str = "installation";
 const MLS_KEY: &str = "mls_storage";
 const GROUPS_KEY: &str = "groups";
 const HOME_KEY: &str = "home";
+const DISPLAY_KEY: &str = "display";
 
 pub struct Vault {
     dir: PathBuf,
@@ -136,6 +138,89 @@ impl Vault {
             return Ok(None);
         };
         Ok(Some(HomeState::decode(&bytes)?))
+    }
+
+    /// Nicknames and disappear timers only. Never ratchet or MLS keys.
+    pub fn save_display(
+        &self,
+        nicknames: &HashMap<String, String>,
+        disappear: &HashMap<String, u64>,
+    ) -> Result<()> {
+        let mut nicks = Vec::new();
+        let mut keys: Vec<_> = nicknames.keys().cloned().collect();
+        keys.sort();
+        for k in keys {
+            nicks.push(Value::Array(vec![
+                Value::Text(k.clone()),
+                Value::Text(nicknames[&k].clone()),
+            ]));
+        }
+        let mut timers = Vec::new();
+        let mut tkeys: Vec<_> = disappear.keys().cloned().collect();
+        tkeys.sort();
+        for k in tkeys {
+            timers.push(Value::Array(vec![
+                Value::Text(k.clone()),
+                Value::Uint(disappear[&k]),
+            ]));
+        }
+        self.put(
+            DISPLAY_KEY,
+            &cbor::encode(&Value::Map(vec![
+                (0, Value::Uint(1)),
+                (1, Value::Array(nicks)),
+                (2, Value::Array(timers)),
+            ])),
+        )
+    }
+
+    pub fn load_display(&self) -> Result<(HashMap<String, String>, HashMap<String, u64>)> {
+        let Some(bytes) = self.get_opt(DISPLAY_KEY)? else {
+            return Ok((HashMap::new(), HashMap::new()));
+        };
+        let Value::Map(m) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if version != 1 {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let mut nicknames = HashMap::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 2 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            let k = cbor::expect_text(&row[0])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_owned();
+            let v = cbor::expect_text(&row[1])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_owned();
+            nicknames.insert(k, v);
+        }
+        let mut disappear = HashMap::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 2 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            let k = cbor::expect_text(&row[0])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_owned();
+            let secs = cbor::expect_uint(&row[1]).map_err(|_| CoreError::VaultCorrupt)?;
+            disappear.insert(k, secs);
+        }
+        Ok((nicknames, disappear))
     }
 
     fn put(&self, k: &str, v: &[u8]) -> Result<()> {

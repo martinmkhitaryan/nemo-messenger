@@ -29,6 +29,7 @@ How to use it:
 | Android APK | **Postponed** — must return (I5); desktop continues |
 | Hosted MLS groups | **Done** (I6) — invite → admit → text → RemoveBundle |
 | Attachments | **Done** (I7) — 1:1 A* DR; group reserve + live-cred fetch |
+| Reactions / delete / disappear | **Done** (I8) — cooperating hide; timer in vault |
 | 1:1 WebRTC media | Signaling types exist; media engine not wired |
 | FCM | Not started (needs schema amendment) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
@@ -228,9 +229,9 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] Tests already in `app.rs` stay green; UI shows reaction and deleted placeholder
-- [ ] Disappear setting survives vault reopen (display + local hide, not a server flag)
-- [ ] Commit
+- [x] Tests already in `app.rs` stay green; UI shows reaction and deleted placeholder
+- [x] Disappear setting survives vault reopen (display + local hide, not a server flag)
+- [x] Commit
 
 ---
 
@@ -346,4 +347,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I7 is implemented (desktop).** Next: **I8** (reactions, delete-for-everyone, disappearing). Return to **I5 Android** before I12.
+**I8 is implemented (desktop).** Next: **I9** (1:1 voice calls). Return to **I5 Android** before I12.
