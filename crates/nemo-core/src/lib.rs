@@ -20,8 +20,8 @@ pub use group::{
     UPDATE_INTERVAL, UPDATE_ON_ONLINE,
 };
 pub use home::{
-    EnqueueResult, HomeSession, HomeTransport, HostAccept, HostCred, HostGroup, HttpRequest,
-    HttpResponse, MailboxRow, FETCH_LIMIT,
+    EnqueueResult, HomeSession, HomeTransport, HostAccept, HostCred, HostGroup, HttpHome,
+    HttpRequest, HttpResponse, MailboxRow, FETCH_LIMIT,
 };
 pub use identity::{
     revocation_from_mnemonic, Installation, RevocationExport, PREKEY_RESTOCK_BELOW,

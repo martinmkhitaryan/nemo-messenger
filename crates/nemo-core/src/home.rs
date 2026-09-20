@@ -527,3 +527,50 @@ fn expect_map(bytes: &[u8]) -> Result<Vec<(u64, Value)>> {
 fn read_key(m: &[(u64, Value)], k: u64) -> Result<[u8; KEY_LEN]> {
     Ok(ids::copy_fixed(cbor::expect_bytes(cbor::map_get(m, k)?)?)?)
 }
+
+/// Outbound HTTPS/HTTP to a home server. TLS identity is the bundle, not Web PKI.
+#[derive(Clone)]
+pub struct HttpHome {
+    client: reqwest::Client,
+    base: String,
+}
+
+impl HttpHome {
+    pub fn new(base: impl Into<String>) -> Result<Self> {
+        let base = base.into().trim_end_matches('/').to_string();
+        let client = reqwest::Client::builder()
+            .http1_only()
+            .build()
+            .map_err(|e| CoreError::Transport(e.to_string()))?;
+        Ok(Self { client, base })
+    }
+}
+
+impl HomeTransport for HttpHome {
+    async fn call(&self, req: HttpRequest) -> Result<HttpResponse> {
+        let method = req
+            .method
+            .parse::<reqwest::Method>()
+            .map_err(|e| CoreError::Transport(e.to_string()))?;
+        let url = format!("{}{}", self.base, req.path);
+        let mut builder = self.client.request(method, url);
+        for (k, v) in &req.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        if req.method == "POST" {
+            builder = builder.header("content-type", "application/cbor");
+        }
+        let res = builder
+            .body(req.body)
+            .send()
+            .await
+            .map_err(|e| CoreError::Transport(e.to_string()))?;
+        let status = res.status().as_u16();
+        let body = res
+            .bytes()
+            .await
+            .map_err(|e| CoreError::Transport(e.to_string()))?
+            .to_vec();
+        Ok(HttpResponse { status, body })
+    }
+}

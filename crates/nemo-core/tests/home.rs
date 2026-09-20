@@ -5,7 +5,9 @@ use axum::http::Request;
 use http_body_util::BodyExt;
 use nemo_core::app::{decode_text, encode_text};
 use nemo_core::discovery::resolve_contact;
-use nemo_core::home::{EnqueueResult, HomeSession, HomeTransport, HttpRequest, HttpResponse};
+use nemo_core::home::{
+    EnqueueResult, HomeSession, HomeTransport, HttpHome, HttpRequest, HttpResponse,
+};
 use nemo_core::identity::Installation;
 use nemo_core::CoreError;
 use nemo_server::{router, AppState};
@@ -173,4 +175,22 @@ async fn unknown_discovery_is_denied() {
         .unwrap();
     let err = alice.discovery([0x11u8; 32]).await.unwrap_err();
     assert!(matches!(err, CoreError::Denied));
+}
+
+#[tokio::test]
+async fn reqwest_talks_to_listening_server() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router(AppState::new()))
+            .await
+            .expect("serve");
+    });
+    let t = HttpHome::new(format!("http://{addr}")).unwrap();
+    let (inst, _) = Installation::create().unwrap();
+    let (alice, _) = HomeSession::register(t, inst, now_unix()).await.unwrap();
+    alice
+        .discovery(alice.identity_id())
+        .await
+        .expect("own discovery");
 }

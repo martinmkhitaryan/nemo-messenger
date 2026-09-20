@@ -52,6 +52,8 @@ pub enum CoreError {
     AlreadyRegistered,
     #[error("home HTTP status {0}")]
     HomeHttp(u16),
+    #[error("home transport: {0}")]
+    Transport(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
