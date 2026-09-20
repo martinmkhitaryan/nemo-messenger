@@ -14,7 +14,7 @@ These are product checks, not missing protocol.
 
 | Item | Why it is still open |
 | --- | --- |
-| Live audible 1:1 call | Capture, AEC, Opus, and relay ICE are in code. CI has no microphone. Confirm two clients through local coturn with a real mic; Direct ICE still refused. |
+| Live audible 1:1 call | Capture, AEC, Opus, and relay ICE are in code. Private mode uses Opus CBR with DTX off (ADR-0024). CI has no microphone. Confirm two clients through local coturn with a real mic; Direct ICE still refused. |
 | Android APK on a device | CI `assembleDebug` exists. Install on Android 16 and complete register / 1:1 / group / call. |
 | Delete `IMPLEMENTATION.md` | I12 last checkbox. Only after the two rows above. |
 

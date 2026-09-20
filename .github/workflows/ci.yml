@@ -13,7 +13,7 @@ jobs:
       - name: Native audio build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build cmake pkg-config clang libclang-dev
+          sudo apt-get install -y meson ninja-build cmake pkg-config clang libclang-dev protobuf-compiler
           echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib -name 'libclang.so*' | head -n1)")" >> "$GITHUB_ENV"
           echo "BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion)/include" >> "$GITHUB_ENV"
       - name: Test workspace
@@ -36,6 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build nemo_ffi.dll
         run: cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v4
@@ -61,6 +64,8 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: 'tools platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Native build deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake pkg-config
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Assemble debug APK

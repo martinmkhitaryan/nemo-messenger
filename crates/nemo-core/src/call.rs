@@ -150,19 +150,27 @@ pub struct Call {
 
 impl Call {
     pub async fn offer(turn: &TurnConfig) -> Result<Self> {
+        Self::offer_with(turn, false).await
+    }
+
+    pub async fn offer_with(turn: &TurnConfig, cbr: bool) -> Result<Self> {
         let call_id = random_call_id();
-        Self::create(turn, call_id, None).await
+        Self::create(turn, call_id, None, cbr).await
     }
 
     pub async fn answer(turn: &TurnConfig, remote: &LocalSignal) -> Result<Self> {
-        let session = Self::create(turn, remote.call_id, Some(remote)).await?;
-        Ok(session)
+        Self::answer_with(turn, remote, false).await
+    }
+
+    pub async fn answer_with(turn: &TurnConfig, remote: &LocalSignal, cbr: bool) -> Result<Self> {
+        Self::create(turn, remote.call_id, Some(remote), cbr).await
     }
 
     async fn create(
         turn: &TurnConfig,
         call_id: [u8; CALL_ID_LEN],
         remote: Option<&LocalSignal>,
+        cbr: bool,
     ) -> Result<Self> {
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs().map_err(call_err)?;
@@ -177,7 +185,7 @@ impl Call {
             }])
             .with_ice_transport_policy(RTCIceTransportPolicy::Relay)
             .build();
-        let audio = AudioEngine::new()?;
+        let audio = AudioEngine::new(cbr)?;
         let events = Arc::new(CallEvents {
             ice: std::sync::Mutex::new(Vec::new()),
             forbidden: AtomicBool::new(false),

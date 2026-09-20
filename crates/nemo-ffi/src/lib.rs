@@ -339,6 +339,13 @@ fn turn_config(inner: &Inner) -> Result<TurnConfig, FfiError> {
     }
 }
 
+fn call_cbr(inner: &Inner) -> bool {
+    matches!(
+        inner.state.as_ref(),
+        Some(ClientState::Registered(session)) if session.privacy == PrivacyMode::Private
+    )
+}
+
 fn join_request_uri(
     group_id: [u8; KEY_LEN],
     pending_id: [u8; KEY_LEN],
@@ -1619,14 +1626,14 @@ impl NemoClient {
     }
 
     pub fn start_call(&self, peer_id_hex: String) -> Result<DisplayRow, FfiError> {
-        let turn = {
+        let (turn, cbr) = {
             let inner = self.inner.lock().map_err(|_| lock_err())?;
             if inner.live_call.is_some() {
                 return Err(FfiError::Core("call already live".into()));
             }
-            turn_config(&inner)?
+            (turn_config(&inner)?, call_cbr(&inner))
         };
-        let call = block_on(Call::offer(&turn))?;
+        let call = block_on(Call::offer_with(&turn, cbr))?;
         let local = call.local().clone();
         let now = now_unix();
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
@@ -1670,16 +1677,17 @@ impl NemoClient {
     }
 
     pub fn answer_call(&self, call_id_hex: String) -> Result<DisplayRow, FfiError> {
-        let (pending, turn) = {
+        let (pending, turn, cbr) = {
             let mut inner = self.inner.lock().map_err(|_| lock_err())?;
             let pending = inner
                 .pending_invites
                 .remove(&call_id_hex)
                 .ok_or_else(|| FfiError::Core("unknown call".into()))?;
             let turn = turn_config(&inner)?;
-            (pending, turn)
+            let cbr = call_cbr(&inner);
+            (pending, turn, cbr)
         };
-        let call = block_on(Call::answer(&turn, &pending.signal))?;
+        let call = block_on(Call::answer_with(&turn, &pending.signal, cbr))?;
         let local = call.local().clone();
         let now = now_unix();
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;

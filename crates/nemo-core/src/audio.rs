@@ -23,7 +23,7 @@ struct OpusPair {
 unsafe impl Send for OpusPair {}
 
 impl OpusPair {
-    fn new() -> Result<Self> {
+    fn new(cbr: bool) -> Result<Self> {
         let mut err = 0;
         let enc = unsafe {
             libopus_sys::opus_encoder_create(
@@ -51,6 +51,10 @@ impl OpusPair {
                 32_000,
             );
             libopus_sys::opus_encoder_ctl(enc, libopus_sys::OPUS_SET_INBAND_FEC_REQUEST as i32, 1);
+            if cbr {
+                libopus_sys::opus_encoder_ctl(enc, libopus_sys::OPUS_SET_VBR_REQUEST as i32, 0);
+                libopus_sys::opus_encoder_ctl(enc, libopus_sys::OPUS_SET_DTX_REQUEST as i32, 0);
+            }
         }
         Ok(Self { enc, dec })
     }
@@ -110,8 +114,8 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    pub fn new() -> Result<Arc<Self>> {
-        let opus = OpusPair::new()?;
+    pub fn new(cbr: bool) -> Result<Arc<Self>> {
+        let opus = OpusPair::new(cbr)?;
         #[cfg(all(not(target_os = "android"), unix))]
         let apm = make_apm();
         Ok(Arc::new(Self {
@@ -356,7 +360,7 @@ mod tests {
 
     #[test]
     fn opus_roundtrip_keeps_tone() {
-        let eng = AudioEngine::new().expect("opus");
+        let eng = AudioEngine::new(false).expect("opus");
         let mut pcm = vec![0i16; FRAME_MONO];
         for (i, s) in pcm.iter_mut().enumerate() {
             *s = ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE as f32).sin()
@@ -374,10 +378,46 @@ mod tests {
     #[cfg(all(unix, not(target_os = "android")))]
     #[test]
     fn apm_initializes_on_desktop() {
-        let eng = AudioEngine::new().expect("opus");
+        let eng = AudioEngine::new(false).expect("opus");
         assert!(
             eng.has_apm(),
             "webrtc-audio-processing must init (ADR-0028)"
+        );
+    }
+
+    fn tone() -> Vec<i16> {
+        (0..FRAME_MONO)
+            .map(|i| {
+                ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE as f32).sin()
+                    * 12_000.0) as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn private_opus_cbr_hides_silence_length() {
+        let vbr = AudioEngine::new(false).expect("opus");
+        let cbr = AudioEngine::new(true).expect("opus");
+        let silence = vec![0i16; FRAME_MONO];
+        let tone = tone();
+        let mut vbr_silent = 0usize;
+        let mut vbr_tone = 0usize;
+        let mut cbr_silent = 0usize;
+        let mut cbr_tone = 0usize;
+        for _ in 0..8 {
+            vbr_silent = vbr.encode_frame(&silence).expect("vbr silence").len();
+            vbr_tone = vbr.encode_frame(&tone).expect("vbr tone").len();
+            cbr_silent = cbr.encode_frame(&silence).expect("cbr silence").len();
+            cbr_tone = cbr.encode_frame(&tone).expect("cbr tone").len();
+        }
+        assert!(
+            vbr_tone > vbr_silent + 8,
+            "VBR should shrink silence: silent={vbr_silent} tone={vbr_tone}"
+        );
+        let delta = (cbr_silent as i32 - cbr_tone as i32).unsigned_abs();
+        assert!(
+            delta <= 4,
+            "CBR packet sizes must not leak speech: silent={cbr_silent} tone={cbr_tone}"
         );
     }
 }
