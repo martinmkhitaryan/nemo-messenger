@@ -12,6 +12,7 @@ use rand::RngCore;
 use rusqlite::{params, Connection};
 
 use crate::error::{CoreError, Result};
+use crate::group::Group;
 use crate::identity::Installation;
 
 pub const KDF_VERSION: u64 = 1;
@@ -25,6 +26,8 @@ pub const MIN_PASSPHRASE_CHARS: usize = 8;
 const KDF_FILE: &str = "kdf.cbor";
 const STORE_FILE: &str = "store.db";
 const SNAPSHOT_KEY: &str = "installation";
+const MLS_KEY: &str = "mls_storage";
+const GROUPS_KEY: &str = "groups";
 
 pub struct Vault {
     dir: PathBuf,
@@ -77,6 +80,9 @@ impl Vault {
             conn,
         };
         let install = vault.load()?;
+        if let Some(mls) = vault.get_opt(MLS_KEY)? {
+            install.apply_mls_storage(&mls)?;
+        }
         Ok((vault, install))
     }
 
@@ -85,19 +91,61 @@ impl Vault {
     }
 
     pub fn save(&self, install: &Installation) -> Result<()> {
-        let bytes = install.encode_snapshot()?;
+        self.put(SNAPSHOT_KEY, &install.encode_snapshot()?)?;
+        self.put(MLS_KEY, &install.encode_mls_storage()?)?;
+        Ok(())
+    }
+
+    pub fn save_groups(&self, install: &Installation, groups: &[Group]) -> Result<()> {
+        self.save(install)?;
+        let mut items = Vec::with_capacity(groups.len());
+        for g in groups {
+            items.push(Value::Bytes(g.encode_sidecar()?));
+        }
+        self.put(GROUPS_KEY, &cbor::encode(&Value::Array(items)))?;
+        Ok(())
+    }
+
+    pub fn load_groups(&self, install: &Installation) -> Result<Vec<Group>> {
+        let Some(bytes) = self.get_opt(GROUPS_KEY)? else {
+            return Ok(Vec::new());
+        };
+        let Value::Array(items) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let mut groups = Vec::with_capacity(items.len());
+        for item in items {
+            let sidecar = cbor::expect_bytes(&item).map_err(|_| CoreError::VaultCorrupt)?;
+            groups.push(Group::load_sidecar(install.mls_provider(), sidecar)?);
+        }
+        Ok(groups)
+    }
+
+    fn put(&self, k: &str, v: &[u8]) -> Result<()> {
         let n = self
             .conn
             .execute(
                 "INSERT INTO kv(k, v) VALUES(?1, ?2)
                  ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-                params![SNAPSHOT_KEY, bytes],
+                params![k, v],
             )
             .map_err(map_sql)?;
         if n == 0 {
             return Err(CoreError::VaultIo("snapshot not written".into()));
         }
         Ok(())
+    }
+
+    fn get_opt(&self, k: &str) -> Result<Option<Vec<u8>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT v FROM kv WHERE k = ?1")
+            .map_err(map_sql)?;
+        let mut rows = stmt.query(params![k]).map_err(map_sql)?;
+        match rows.next().map_err(map_sql)? {
+            Some(row) => Ok(Some(row.get(0).map_err(map_sql)?)),
+            None => Ok(None),
+        }
     }
 
     fn load(&self) -> Result<Installation> {

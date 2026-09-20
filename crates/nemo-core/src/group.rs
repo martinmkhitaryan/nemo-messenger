@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
+use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::hostframe::RemoveBundle;
 use nemo_wire::ids::{copy_fixed, KEY_LEN};
@@ -68,6 +69,105 @@ impl Group {
 
     pub fn member_count(&self) -> usize {
         self.mls.members().count()
+    }
+
+    pub fn mls_group_id(&self) -> Vec<u8> {
+        self.mls.group_id().as_slice().to_vec()
+    }
+
+    pub fn encode_sidecar(&self) -> Result<Vec<u8>> {
+        let mut creds = Vec::new();
+        let mut keys: Vec<_> = self.credential_ids.iter().collect();
+        keys.sort_by(|a, b| a.0.cmp(b.0));
+        for (leaf, id) in keys {
+            creds.push(Value::Array(vec![
+                Value::Bytes(leaf.clone()),
+                Value::Bytes(id.to_vec()),
+            ]));
+        }
+        let updated = self
+            .last_own_update
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        Ok(cbor::encode(&Value::Map(vec![
+            (0, Value::Uint(1)),
+            (1, Value::Bytes(self.mls_group_id())),
+            (2, Value::Bytes(self.group_signing.to_bytes().to_vec())),
+            (3, Value::Bytes(self.credential_id.to_vec())),
+            (4, Value::Array(creds)),
+            (5, Value::Uint(updated)),
+        ])))
+    }
+
+    pub fn load_sidecar(provider: &MlsProvider, bytes: &[u8]) -> Result<Self> {
+        let Value::Map(m) = cbor::decode(bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if version != 1 {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let gid = cbor::expect_bytes(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        let sk = cbor::expect_bytes(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if sk.len() != KEY_LEN {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let mut seed = [0u8; KEY_LEN];
+        seed.copy_from_slice(sk);
+        let group_signing = SigningKey::from_bytes(&seed);
+        let cid = cbor::expect_bytes(cbor::map_get(&m, 3).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if cid.len() != KEY_LEN {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let mut credential_id = [0u8; KEY_LEN];
+        credential_id.copy_from_slice(cid);
+        let mut credential_ids = HashMap::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 4).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 2 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            let leaf = cbor::expect_bytes(&row[0])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_vec();
+            let id = copy_fixed(cbor::expect_bytes(&row[1]).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+            credential_ids.insert(leaf, id);
+        }
+        let updated =
+            cbor::expect_uint(cbor::map_get(&m, 5).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+        let last_own_update =
+            std::time::UNIX_EPOCH + Duration::from_millis(updated);
+        let mls_signer = SignatureKeyPair::from_raw(
+            CIPHERSUITE.signature_algorithm(),
+            group_signing.to_bytes().to_vec(),
+            group_signing.verifying_key().to_bytes().to_vec(),
+        );
+        let group_id = GroupId::from_slice(gid);
+        let mls = MlsGroup::load(provider.storage(), &group_id)
+            .map_err(mls_err)?
+            .ok_or(CoreError::VaultCorrupt)?;
+        if mls.ciphersuite() != CIPHERSUITE {
+            return Err(CoreError::WrongCiphersuite);
+        }
+        Ok(Self {
+            mls,
+            mls_signer,
+            group_signing,
+            credential_id,
+            credential_ids,
+            last_own_update,
+        })
     }
 
     pub fn needs_scheduled_update(&self, now: SystemTime) -> bool {
@@ -428,6 +528,56 @@ impl Group {
 impl Installation {
     pub fn mls_provider(&self) -> &MlsProvider {
         &self.mls_provider
+    }
+
+    pub fn encode_mls_storage(&self) -> Result<Vec<u8>> {
+        let values = self
+            .mls_provider
+            .storage()
+            .values
+            .read()
+            .map_err(|_| CoreError::Mls("storage lock".into()))?;
+        let mut pairs: Vec<_> = values.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        let items = pairs
+            .into_iter()
+            .map(|(k, v)| {
+                Value::Array(vec![Value::Bytes(k.clone()), Value::Bytes(v.clone())])
+            })
+            .collect();
+        Ok(cbor::encode(&Value::Array(items)))
+    }
+
+    pub fn apply_mls_storage(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let Value::Array(items) = cbor::decode(bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let mut values = self
+            .mls_provider
+            .storage()
+            .values
+            .write()
+            .map_err(|_| CoreError::Mls("storage lock".into()))?;
+        values.clear();
+        for item in items {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 2 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            let k = cbor::expect_bytes(&row[0])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_vec();
+            let v = cbor::expect_bytes(&row[1])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_vec();
+            values.insert(k, v);
+        }
+        Ok(())
     }
 
     pub fn create_group(&self) -> Result<Group> {
