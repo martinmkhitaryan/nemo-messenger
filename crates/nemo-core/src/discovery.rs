@@ -1,7 +1,7 @@
 //! Client discovery checks. Servers are untrusted; verify every row.
 
 use nemo_wire::card::{ContactCard, HomeServerBinding};
-use nemo_wire::ids::{IdentityId, KEY_LEN};
+use nemo_wire::ids::{IdentityId, ServerId, KEY_LEN};
 use nemo_wire::{RevocationStatement, VerifyingKey};
 
 use crate::error::{CoreError, Result};
@@ -101,6 +101,29 @@ impl ContactPin {
     }
 }
 
+/// How a `binding_gossip` application message compares to a pinned contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingGossipCheck {
+    Match,
+    Ahead,
+    Conflict,
+}
+
+pub fn classify_binding_gossip(
+    pin_seq: u64,
+    pin_server: ServerId,
+    gossip_seq: u64,
+    gossip_server: ServerId,
+) -> BindingGossipCheck {
+    if gossip_seq == pin_seq && gossip_server == pin_server {
+        BindingGossipCheck::Match
+    } else if gossip_seq > pin_seq {
+        BindingGossipCheck::Ahead
+    } else {
+        BindingGossipCheck::Conflict
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +210,27 @@ mod tests {
         let mut pin = ContactPin::from_card(&card);
         pin.refresh(&newer, 1_700_000_000).unwrap();
         assert_eq!(pin.seq, 3);
+    }
+
+    #[test]
+    fn gossip_classifies_match_ahead_and_split() {
+        let server_a = [1u8; 32];
+        let server_b = [2u8; 32];
+        assert_eq!(
+            classify_binding_gossip(2, server_a, 2, server_a),
+            BindingGossipCheck::Match
+        );
+        assert_eq!(
+            classify_binding_gossip(2, server_a, 3, server_a),
+            BindingGossipCheck::Ahead
+        );
+        assert_eq!(
+            classify_binding_gossip(2, server_a, 2, server_b),
+            BindingGossipCheck::Conflict
+        );
+        assert_eq!(
+            classify_binding_gossip(2, server_a, 1, server_a),
+            BindingGossipCheck::Conflict
+        );
     }
 }

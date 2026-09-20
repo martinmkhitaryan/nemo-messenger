@@ -95,6 +95,10 @@ impl Installation {
         identity_id(&self.identity_public_key())
     }
 
+    pub fn binding_seq(&self) -> u64 {
+        self.binding_seq
+    }
+
     pub fn fingerprint(&self) -> String {
         fingerprint(&self.identity_id())
     }

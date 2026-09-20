@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_core::{
-    decode, encode, encode_text, invite_ttl_bucket, mailbox, messages_lost, open_group_file,
-    seal_group_file, AppBody, AppHeader, AppMessage, Call, CoreError, FileMeta, Group, HomeSession,
-    HostAccept, HostGroup, HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode,
-    TurnConfig, Vault,
+    classify_binding_gossip, decode, encode, encode_text, invite_ttl_bucket, mailbox,
+    messages_lost, open_group_file, seal_group_file, AppBody, AppHeader, AppMessage,
+    BindingGossipCheck, Call, CoreError, FileMeta, Group, HomeSession, HostAccept, HostGroup,
+    HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode, TurnConfig, Vault,
 };
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, TtlBucket};
@@ -273,6 +273,78 @@ fn send_call_body(
         None => return Err(FfiError::Core("busy".into())),
     };
     emit_call(session, inbox, next_seq, peer_hex, body, kind, now, true)
+}
+
+fn send_own_binding_gossip(
+    session: &mut HomeSession<HttpHome>,
+    peer: nemo_wire::ids::IdentityId,
+    now: u64,
+) -> Result<(), FfiError> {
+    let ptext = encode(&AppMessage {
+        header: AppHeader {
+            conv_seq: 0,
+            sent_at: now,
+            reply_to: None,
+        },
+        body: AppBody::BindingGossip {
+            identity_id: session.identity_id(),
+            seq: session.install.binding_seq(),
+            server_id: session.bundle.server_id,
+        },
+    })?;
+    block_on(session.send_to(&peer, TtlBucket::DEFAULT, &ptext, now))?;
+    Ok(())
+}
+
+fn apply_binding_gossip(
+    session: &mut HomeSession<HttpHome>,
+    inbox: &mut Vec<DisplayRow>,
+    next_seq: &mut HashMap<String, u64>,
+    from_peer: [u8; KEY_LEN],
+    identity_id: [u8; KEY_LEN],
+    seq: u64,
+    server_id: [u8; KEY_LEN],
+    conv_seq: u64,
+    sent_at: u64,
+) -> Option<DisplayRow> {
+    let (pin_seq, pin_server) = {
+        let contact = session.contacts.get(&identity_id)?;
+        (contact.pin.seq, ids::server_id(&contact.dest_hpke))
+    };
+    let check = classify_binding_gossip(pin_seq, pin_server, seq, server_id);
+    let conflict = match check {
+        BindingGossipCheck::Match => false,
+        BindingGossipCheck::Ahead => {
+            let _ = block_on(session.refresh_contact(&identity_id, now_unix()));
+            match session.contacts.get(&identity_id) {
+                Some(contact)
+                    if classify_binding_gossip(
+                        contact.pin.seq,
+                        ids::server_id(&contact.dest_hpke),
+                        seq,
+                        server_id,
+                    ) == BindingGossipCheck::Match =>
+                {
+                    false
+                }
+                _ => true,
+            }
+        }
+        BindingGossipCheck::Conflict => true,
+    };
+    if !conflict {
+        return None;
+    }
+    Some(push_control(
+        inbox,
+        next_seq,
+        ids::to_hex(&from_peer),
+        conv_seq,
+        sent_at,
+        "binding_conflict",
+        ids::to_hex(&identity_id),
+        0,
+    ))
 }
 
 fn persist(inner: &Inner) -> Result<(), FfiError> {
@@ -729,6 +801,7 @@ impl NemoClient {
         {
             let session = inner.registered()?;
             block_on(session.send_to(&peer, ttl, &ptext, now))?;
+            let _ = send_own_binding_gossip(session, peer, now);
         }
         let row = DisplayRow {
             conv_id: peer_id_hex,
@@ -1053,6 +1126,29 @@ impl NemoClient {
                                     0,
                                 ));
                             }
+                            Ok(AppMessage {
+                                header,
+                                body:
+                                    AppBody::BindingGossip {
+                                        identity_id,
+                                        seq,
+                                        server_id,
+                                    },
+                            }) => {
+                                if let Some(row) = apply_binding_gossip(
+                                    session,
+                                    inbox,
+                                    next_seq,
+                                    peer,
+                                    identity_id,
+                                    seq,
+                                    server_id,
+                                    header.conv_seq,
+                                    header.sent_at,
+                                ) {
+                                    new_rows.push(row);
+                                }
+                            }
                             _ => {}
                         },
                         Err(CoreError::WrongMailboxType) => {}
@@ -1209,6 +1305,29 @@ impl NemoClient {
                                             0,
                                         ));
                                     }
+                                    Ok(AppMessage {
+                                        header,
+                                        body:
+                                            AppBody::BindingGossip {
+                                                identity_id,
+                                                seq,
+                                                server_id,
+                                            },
+                                    }) => {
+                                        if let Some(row) = apply_binding_gossip(
+                                            session,
+                                            inbox,
+                                            next_seq,
+                                            host.group_id,
+                                            identity_id,
+                                            seq,
+                                            server_id,
+                                            header.conv_seq,
+                                            header.sent_at,
+                                        ) {
+                                            new_rows.push(row);
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1261,6 +1380,7 @@ impl NemoClient {
                                 block_on(session.send_to(&peer, TtlBucket::DEFAULT, &bytes, now));
                         }
                     }
+                    let _ = send_own_binding_gossip(session, peer, now);
                 }
                 new_rows
             }
@@ -1530,6 +1650,7 @@ impl NemoClient {
         {
             let session = inner.registered()?;
             block_on(session.send_attachment(&peer, TtlBucket::DEFAULT, &ptext, now))?;
+            let _ = send_own_binding_gossip(session, peer, now);
         }
         let Inner {
             inbox, next_seq, ..
@@ -2091,7 +2212,7 @@ fn push_control(
     let row = DisplayRow {
         conv_id,
         conv_seq,
-        text: if kind == "disappear" || kind.starts_with("call_") {
+        text: if kind == "disappear" || kind.starts_with("call_") || kind == "binding_conflict" {
             emoji.clone()
         } else {
             String::new()
@@ -2259,6 +2380,11 @@ mod tests {
         assert_eq!(rows[0].text, "hello from bob");
         assert_eq!(rows[0].conv_seq, sent.conv_seq);
         assert_eq!(alice.inbox().unwrap().len(), 1);
+        assert!(alice
+            .inbox()
+            .unwrap()
+            .iter()
+            .all(|r| r.kind != "binding_conflict"));
 
         drop(alice);
         drop(bob);

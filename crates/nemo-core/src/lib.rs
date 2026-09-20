@@ -23,7 +23,10 @@ pub use app::{
 };
 pub use attachment::{open_group_file, seal_group_file};
 pub use call::{Call, LocalSignal, TurnConfig};
-pub use discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
+pub use discovery::{
+    classify_binding_gossip, resolve_contact, BindingGossipCheck, ContactPin, Discovery,
+    DISCOVERY_REFRESH_SECS,
+};
 pub use error::{CoreError, Result};
 pub use group::{
     Group, PendingJoin, CIPHERSUITE, CREDENTIAL_ID_EXT, GROUP_SIGNING_EXT, UPDATE_BEFORE_SEND,

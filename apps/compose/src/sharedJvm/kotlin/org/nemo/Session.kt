@@ -1339,6 +1339,7 @@ private fun previewLine(row: DisplayRow): String = when {
     row.kind == "call_cancel" -> "Cancelled"
     row.kind == "call_end" -> "Call ended"
     row.kind == "lost" -> "Messages lost"
+    row.kind == "binding_conflict" -> "Home-server binding conflict"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
     else -> row.text
 }
@@ -1355,6 +1356,7 @@ private fun bubbleText(row: DisplayRow): String = when {
     row.kind == "call_cancel" -> "Cancelled"
     row.kind == "call_end" -> "Call ended"
     row.kind == "lost" -> "Messages lost"
+    row.kind == "binding_conflict" -> "Home-server binding conflict"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
     else -> row.text
 }
