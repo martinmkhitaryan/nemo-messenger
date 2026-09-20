@@ -23,6 +23,7 @@ How to use it:
 | Client identity, PQXDH, Double Ratchet, MLS (in RAM) | **Done** |
 | SQLCipher vault for identity + libsignal store (ADR-0034) | **Done** (`701b992`) |
 | MLS group state in the vault | **Done** (I1) |
+| Durable home session | **Done** (I2) |
 | UniFFI beyond create/open/save | **Not started** ← next
 | Compose UI | Placeholder window only |
 | 1:1 WebRTC media | Signaling types exist; media engine not wired |
@@ -107,10 +108,10 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] Integration test: two `HomeSession`s, restart both from vault, 1:1 message still decrypts
-- [ ] Revoked contact: fetch discovery, send refused
-- [ ] `cargo test --workspace`
-- [ ] Commit
+- [x] Integration test: two `HomeSession`s, restart both from vault, 1:1 message still decrypts
+- [x] Revoked contact: fetch discovery, send refused
+- [x] `cargo test --workspace`
+- [x] Commit
 
 ---
 
@@ -339,4 +340,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I1 is implemented** (OpenMLS `MemoryStorage` dump + group sidecars in SQLCipher). Start **I2** (durable home session: register / restock / fetch / send).
+**I2 is implemented.** Start **I3** (widen UniFFI: register, share card, send/receive text).

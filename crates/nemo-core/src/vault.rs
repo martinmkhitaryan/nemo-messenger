@@ -13,6 +13,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::{CoreError, Result};
 use crate::group::Group;
+use crate::home::HomeState;
 use crate::identity::Installation;
 
 pub const KDF_VERSION: u64 = 1;
@@ -28,6 +29,7 @@ const STORE_FILE: &str = "store.db";
 const SNAPSHOT_KEY: &str = "installation";
 const MLS_KEY: &str = "mls_storage";
 const GROUPS_KEY: &str = "groups";
+const HOME_KEY: &str = "home";
 
 pub struct Vault {
     dir: PathBuf,
@@ -119,6 +121,19 @@ impl Vault {
             groups.push(Group::load_sidecar(install.mls_provider(), sidecar)?);
         }
         Ok(groups)
+    }
+
+    pub fn save_home(&self, install: &Installation, state: &HomeState) -> Result<()> {
+        self.save(install)?;
+        self.put(HOME_KEY, &state.encode()?)?;
+        Ok(())
+    }
+
+    pub fn load_home(&self) -> Result<Option<HomeState>> {
+        let Some(bytes) = self.get_opt(HOME_KEY)? else {
+            return Ok(None);
+        };
+        Ok(Some(HomeState::decode(&bytes)?))
     }
 
     fn put(&self, k: &str, v: &[u8]) -> Result<()> {

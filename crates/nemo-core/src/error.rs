@@ -54,6 +54,8 @@ pub enum CoreError {
     HomeHttp(u16),
     #[error("home transport: {0}")]
     Transport(String),
+    #[error("unknown contact")]
+    UnknownContact,
     #[error("vault passphrase is too short")]
     WeakPassphrase,
     #[error("vault already exists")]

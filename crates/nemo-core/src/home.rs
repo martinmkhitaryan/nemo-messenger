@@ -1,15 +1,16 @@
 //! Client-to-home HTTP (phase 8). The server crate is not a runtime dependency.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_wire::cbor::{self, Value};
-use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope};
+use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::{self, IdentityId, KEY_LEN};
 use nemo_wire::prekey::SignedPrekey;
-use nemo_wire::{ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, ServerBundle};
+use nemo_wire::{ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, RevocationStatement, ServerBundle};
 
-use crate::discovery::Discovery;
+use crate::discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
 use crate::error::{CoreError, Result};
 use crate::identity::Installation;
 
@@ -65,11 +66,173 @@ pub struct MailboxRow {
     pub inner: InnerEnvelope,
 }
 
+/// A 1:1 peer we can send to after invite-first discovery.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredContact {
+    pub pin: ContactPin,
+    pub delivery_capability: [u8; KEY_LEN],
+    pub dest_hpke: [u8; KEY_LEN],
+    pub last_discovery_unix: u64,
+    pub revoked: bool,
+}
+
+/// Durable home-server binding: survives vault reopen (I2).
+#[derive(Clone, Debug)]
+pub struct HomeState {
+    pub bundle: ServerBundle,
+    pub cursor: u64,
+    pub contacts: HashMap<IdentityId, StoredContact>,
+    pub groups: Vec<HostGroup>,
+    /// HTTP origin for [`HttpHome`]; empty when the transport is in-process.
+    pub home_base: String,
+}
+
+impl HomeState {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut contacts = Vec::new();
+        let mut ids: Vec<_> = self.contacts.keys().copied().collect();
+        ids.sort();
+        for id in ids {
+            let c = &self.contacts[&id];
+            contacts.push(Value::Map(vec![
+                (0, Value::Bytes(id.to_vec())),
+                (1, Value::Bytes(c.pin.identity_public_key.to_vec())),
+                (2, Value::Bytes(c.pin.revocation_public_key.to_vec())),
+                (3, Value::Uint(c.pin.seq)),
+                (4, Value::Bytes(c.delivery_capability.to_vec())),
+                (5, Value::Bytes(c.dest_hpke.to_vec())),
+                (6, Value::Uint(c.last_discovery_unix)),
+                (7, Value::Uint(u64::from(c.revoked))),
+            ]));
+        }
+        let groups = self
+            .groups
+            .iter()
+            .map(|g| {
+                Value::Array(vec![
+                    Value::Bytes(g.group_id.to_vec()),
+                    Value::Bytes(g.cred.credential_id.to_vec()),
+                    Value::Bytes(g.cred.credential_secret.to_vec()),
+                ])
+            })
+            .collect();
+        Ok(cbor::encode(&Value::Map(vec![
+            (0, Value::Uint(1)),
+            (1, Value::Bytes(self.bundle.encode())),
+            (2, Value::Uint(self.cursor)),
+            (3, Value::Array(contacts)),
+            (4, Value::Array(groups)),
+            (5, Value::Text(self.home_base.clone())),
+        ])))
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let Value::Map(m) = cbor::decode(bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if version != 1 {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let bundle = ServerBundle::decode(
+            cbor::expect_bytes(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?,
+        )?;
+        let cursor = cbor::expect_uint(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        let mut contacts = HashMap::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 3).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            let Value::Map(cm) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            let id = ids::copy_fixed(
+                cbor::expect_bytes(cbor::map_get(cm, 0).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            let pk = ids::copy_fixed(
+                cbor::expect_bytes(cbor::map_get(cm, 1).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            let rpk = ids::copy_fixed(
+                cbor::expect_bytes(cbor::map_get(cm, 2).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            let seq = cbor::expect_uint(cbor::map_get(cm, 3).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+            let cap = ids::copy_fixed(
+                cbor::expect_bytes(cbor::map_get(cm, 4).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            let hpke = ids::copy_fixed(
+                cbor::expect_bytes(cbor::map_get(cm, 5).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            let last = cbor::expect_uint(cbor::map_get(cm, 6).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+            let revoked =
+                cbor::expect_uint(cbor::map_get(cm, 7).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    != 0;
+            contacts.insert(
+                id,
+                StoredContact {
+                    pin: ContactPin {
+                        identity_id: id,
+                        identity_public_key: pk,
+                        revocation_public_key: rpk,
+                        seq,
+                    },
+                    delivery_capability: cap,
+                    dest_hpke: hpke,
+                    last_discovery_unix: last,
+                    revoked,
+                },
+            );
+        }
+        let mut groups = Vec::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 4).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 3 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            groups.push(HostGroup {
+                group_id: ids::copy_fixed(cbor::expect_bytes(&row[0])?)?,
+                cred: HostCred {
+                    credential_id: ids::copy_fixed(cbor::expect_bytes(&row[1])?)?,
+                    credential_secret: ids::copy_fixed(cbor::expect_bytes(&row[2])?)?,
+                },
+            });
+        }
+        Ok(Self {
+            bundle,
+            cursor,
+            contacts,
+            groups,
+            home_base: match cbor::map_get_opt(&m, 5) {
+                Some(v) => cbor::expect_text(v)
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned(),
+                None => String::new(),
+            },
+        })
+    }
+}
+
 pub struct HomeSession<T> {
     transport: T,
     pub install: Installation,
     pub bundle: ServerBundle,
     pub cursor: u64,
+    pub contacts: HashMap<IdentityId, StoredContact>,
+    pub groups: Vec<HostGroup>,
+    pub home_base: String,
 }
 
 impl<T: HomeTransport> HomeSession<T> {
@@ -100,9 +263,132 @@ impl<T: HomeTransport> HomeSession<T> {
                 install,
                 bundle,
                 cursor: 0,
+                contacts: HashMap::new(),
+                groups: Vec::new(),
+                home_base: String::new(),
             },
             card,
         ))
+    }
+
+    pub fn resume(transport: T, install: Installation, state: HomeState) -> Self {
+        Self {
+            transport,
+            install,
+            bundle: state.bundle,
+            cursor: state.cursor,
+            contacts: state.contacts,
+            groups: state.groups,
+            home_base: state.home_base,
+        }
+    }
+
+    pub fn snapshot(&self) -> HomeState {
+        HomeState {
+            bundle: self.bundle.clone(),
+            cursor: self.cursor,
+            contacts: self.contacts.clone(),
+            groups: self.groups.clone(),
+            home_base: self.home_base.clone(),
+        }
+    }
+
+    pub fn set_home_base(&mut self, base: impl Into<String>) {
+        self.home_base = base.into().trim_end_matches('/').to_string();
+    }
+
+    /// Fetch the current binding, start PQXDH, and remember the delivery address.
+    pub async fn add_contact(
+        &mut self,
+        card: &ContactCard,
+        delivery_capability: [u8; KEY_LEN],
+        now_unix: u64,
+    ) -> Result<()> {
+        let disc = self.discovery(card.identity_id()).await?;
+        let binding = resolve_contact(card, &disc, now_unix)?;
+        let prekey = self.fetch_prekey(card.share_token).await?;
+        self.install.start_session(card, &prekey, now_unix).await?;
+        let mut pin = ContactPin::from_card(card);
+        pin.seq = binding.seq;
+        self.contacts.insert(
+            card.identity_id(),
+            StoredContact {
+                pin,
+                delivery_capability,
+                dest_hpke: binding.server_hpke_public_key,
+                last_discovery_unix: now_unix,
+                revoked: false,
+            },
+        );
+        Ok(())
+    }
+
+    pub async fn refresh_contact(&mut self, peer: &IdentityId, now_unix: u64) -> Result<()> {
+        let disc = self.discovery(*peer).await?;
+        disc.verify(now_unix)?;
+        let contact = self
+            .contacts
+            .get_mut(peer)
+            .ok_or(CoreError::UnknownContact)?;
+        if disc.revocation.is_some() {
+            contact.revoked = true;
+            return Err(CoreError::Revoked);
+        }
+        let binding = contact.pin.refresh(&disc, now_unix)?;
+        contact.dest_hpke = binding.server_hpke_public_key;
+        contact.last_discovery_unix = now_unix;
+        Ok(())
+    }
+
+    pub async fn send_to(
+        &mut self,
+        peer: &IdentityId,
+        ttl_bucket: TtlBucket,
+        plaintext: &[u8],
+        now_unix: u64,
+    ) -> Result<EnqueueResult> {
+        let stale = match self.contacts.get(peer) {
+            None => return Err(CoreError::UnknownContact),
+            Some(c) if c.revoked => return Err(CoreError::Revoked),
+            Some(c) => now_unix.saturating_sub(c.last_discovery_unix) >= DISCOVERY_REFRESH_SECS,
+        };
+        if stale {
+            self.refresh_contact(peer, now_unix).await?;
+        }
+        let contact = self.contacts.get(peer).ok_or(CoreError::UnknownContact)?;
+        if contact.revoked {
+            return Err(CoreError::Revoked);
+        }
+        let dest_hpke = contact.dest_hpke;
+        let cap = contact.delivery_capability;
+        let outer = self
+            .install
+            .encrypt_to_mailbox(peer, &dest_hpke, cap, ttl_bucket, plaintext)
+            .await?;
+        self.post_envelope(&outer).await
+    }
+
+    /// Publish one-time prekeys until the stock is above the restock floor.
+    pub async fn restock_publish(&mut self) -> Result<usize> {
+        let mut n = 0;
+        while self.install.needs_restock() {
+            self.publish_prekey().await?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    pub async fn submit_revocation(&self, stmt: &RevocationStatement) -> Result<()> {
+        let res = self
+            .transport
+            .call(HttpRequest {
+                method: "POST",
+                path: "/v1/revocation".into(),
+                headers: vec![],
+                body: stmt.encode(),
+            })
+            .await?;
+        check_empty(&res)
     }
 
     pub fn hpke_public(&self) -> [u8; KEY_LEN] {
@@ -472,6 +758,10 @@ impl<T: HomeTransport> HomeSession<T> {
             })
             .await?;
         Ok(check_body(&res)?.to_vec())
+    }
+
+    pub fn remember_group(&mut self, group: HostGroup) {
+        self.groups.push(group);
     }
 
     fn owner_header(&self, cursor: u64, limit: u64) -> Result<String> {
