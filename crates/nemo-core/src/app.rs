@@ -395,7 +395,7 @@ fn decode_ice(v: &Value) -> Result<Vec<String>> {
     Ok(ice)
 }
 
-fn reject_direct_ice(ice: &[String]) -> Result<()> {
+pub fn reject_direct_ice(ice: &[String]) -> Result<()> {
     for c in ice {
         let lower = c.to_ascii_lowercase();
         if ice_typ(&lower, "host") || ice_typ(&lower, "srflx") {

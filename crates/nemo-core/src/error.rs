@@ -22,6 +22,10 @@ pub enum CoreError {
     EmojiTooLong,
     #[error("ICE candidate is not relay-only")]
     DirectIceForbidden,
+    #[error("DTLS fingerprint does not match the E2EE signaling claim")]
+    DtlsFingerprintMismatch,
+    #[error("call: {0}")]
+    Call(String),
     #[error("mls: {0}")]
     Mls(String),
     #[error("own MLS Update is older than 72 hours; Update first")]

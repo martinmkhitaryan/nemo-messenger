@@ -5,6 +5,7 @@
 pub mod app;
 pub mod attachment;
 pub mod bundle;
+pub mod call;
 pub mod discovery;
 pub mod error;
 pub mod group;
@@ -15,8 +16,12 @@ pub mod privacy;
 mod store;
 pub mod vault;
 
-pub use app::{decode, decode_text, encode, encode_text, AppBody, AppHeader, AppMessage, FileMeta};
+pub use app::{
+    decode, decode_text, encode, encode_text, invite_ttl_bucket, random_call_id, reject_direct_ice,
+    AppBody, AppHeader, AppMessage, FileMeta, CALL_ID_LEN,
+};
 pub use attachment::{open_group_file, seal_group_file};
+pub use call::{Call, LocalSignal, TurnConfig};
 pub use discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
 pub use error::{CoreError, Result};
 pub use group::{

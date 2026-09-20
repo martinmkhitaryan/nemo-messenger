@@ -418,6 +418,9 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                     row.hidden || row.kind == "deleted" -> "$who: (deleted)"
                                     row.kind == "reaction" -> "$who reacted ${row.emoji} to #${row.target}"
                                     row.kind == "disappear" -> "$who set disappear ${row.text}s"
+                                    row.kind == "call_invite" -> "$who: incoming call ${row.text}"
+                                    row.kind == "call_answer" -> "$who: answered ${row.text}"
+                                    row.kind == "call_end" -> "$who: hung up"
                                     row.fileName.isNotEmpty() -> "$who file: ${row.fileName} (${row.fileBytes.size} bytes)"
                                     else -> "$who: ${row.text}"
                                 }
@@ -455,6 +458,45 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                         }
                                     },
                                 ) { Text("Fetch") }
+                            }
+                            Row {
+                                Button(
+                                    enabled = !busy && peerId.isNotEmpty(),
+                                    onClick = {
+                                        runIo {
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.startCall(peerId)
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                        }
+                                    },
+                                ) { Text("Call") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = !busy,
+                                    onClick = {
+                                        runIo {
+                                            val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                ?: return@runIo
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.answerCall(id)
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                        }
+                                    },
+                                ) { Text("Answer") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = !busy,
+                                    onClick = {
+                                        runIo {
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.endCall()
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                        }
+                                    },
+                                ) { Text("Hang up") }
                             }
                             OutlinedTextField(
                                 value = emoji,

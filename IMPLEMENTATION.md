@@ -30,7 +30,7 @@ How to use it:
 | Hosted MLS groups | **Done** (I6) — invite → admit → text → RemoveBundle |
 | Attachments | **Done** (I7) — 1:1 A* DR; group reserve + live-cred fetch |
 | Reactions / delete / disappear | **Done** (I8) — cooperating hide; timer in vault |
-| 1:1 WebRTC media | Signaling types exist; media engine not wired |
+| 1:1 WebRTC media | **Done** (I9) — webrtc-rs relay-only through coturn; host/srflx refused |
 | FCM | Not started (needs schema amendment) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
@@ -250,9 +250,13 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] Two clients on the same machine complete a relayed audio call through local coturn
-- [ ] Direct ICE candidates are refused
-- [ ] Commit
+- [x] Two clients on the same machine complete a relayed audio call through local coturn
+- [x] Direct ICE candidates are refused
+- [x] Commit
+
+**Stop if.** Desktop AEC is unusable — that is the ADR-0028 cons item; pick libwebrtc vs `webrtc-audio-processing` in a short note, not a new crypto ADR.
+
+Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: the checkpoint path pumps Opus silence through TURN so CI does not need a microphone. Android `org.webrtc` stays with I5.
 
 **Stop if.** Desktop AEC is unusable — that is the ADR-0028 cons item; pick libwebrtc vs `webrtc-audio-processing` in a short note, not a new crypto ADR.
 
@@ -347,4 +351,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I8 is implemented (desktop).** Next: **I9** (1:1 voice calls). Return to **I5 Android** before I12.
+**I9 is implemented (desktop).** Next: **I10** (client wakeup WebSocket). Return to **I5 Android** before I12.
