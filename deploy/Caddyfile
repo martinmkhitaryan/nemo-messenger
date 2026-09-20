@@ -1,8 +1,16 @@
 {
 	auto_https off
+	servers {
+		# Host maps TCP 8443→443 only; HTTP/3 would listen on UDP 443 unused.
+		protocols h1 h2
+	}
 }
 
 :443 {
-	tls internal
+	# Catch-all has no hostname at config time; the local CA cert is issued at handshake.
+	tls internal {
+		on_demand
+	}
+	# /v1/wakeup is a long-lived WebSocket; reverse_proxy forwards Upgrade.
 	reverse_proxy nemo:8787
 }

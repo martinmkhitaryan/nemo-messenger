@@ -262,6 +262,10 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                             )
+                            Text(
+                                "Compose HTTPS: https://localhost:8443 · local cargo: http://127.0.0.1:8787",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                             Button(
                                 enabled = !busy,
                                 onClick = {

@@ -3,7 +3,8 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: nemo
-      POSTGRES_PASSWORD: nemo
+      # Reference default only; set NEMO_POSTGRES_PASSWORD before a real deploy.
+      POSTGRES_PASSWORD: ${NEMO_POSTGRES_PASSWORD:-nemo}
       POSTGRES_DB: nemo
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -23,7 +24,7 @@ services:
       NEMO_HOST: localhost
       NEMO_S2S_PORT: "9443"
       NEMO_S2S_LISTEN: 0.0.0.0:9443
-      DATABASE_URL: postgres://nemo:nemo@postgres:5432/nemo
+      DATABASE_URL: postgres://nemo:${NEMO_POSTGRES_PASSWORD:-nemo}@postgres:5432/nemo
     expose:
       - "8787"
       - "9443"

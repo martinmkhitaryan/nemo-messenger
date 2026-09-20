@@ -2,4 +2,5 @@
 .git
 **/*.md
 crates/nemo-core
+crates/nemo-ffi
 apps

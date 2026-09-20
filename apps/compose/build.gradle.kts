@@ -1,3 +1,5 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+
 plugins {
     kotlin("jvm") version "2.0.21"
     id("org.jetbrains.compose") version "1.7.1"
@@ -27,6 +29,18 @@ compose.desktop {
     application {
         mainClass = "org.nemo.MainKt"
         jvmArgs += "-Djna.library.path=${ffiLibDir.absolutePath}"
+        nativeDistributions {
+            targetFormats(TargetFormat.Deb)
+            packageName = "nemo-messenger"
+            packageVersion = "0.1.0"
+            description = "Nemo Messenger"
+            vendor = "Nemo"
+            copyright = "AGPL-3.0-only"
+            linux {
+                debMaintainer = "nemo"
+                menuGroup = "Network"
+            }
+        }
     }
 }
 
@@ -72,4 +86,9 @@ tasks.test {
     dependsOn("cargoBuildFfi")
     systemProperty("jna.library.path", ffiLibDir.absolutePath)
     environment("jna.library.path", ffiLibDir.absolutePath)
+}
+
+afterEvaluate {
+    tasks.named("run") { dependsOn("cargoBuildFfi") }
+    tasks.matching { it.name.startsWith("package") }.configureEach { dependsOn("cargoBuildFfi") }
 }

@@ -33,6 +33,7 @@ How to use it:
 | 1:1 WebRTC media | **Done** (I9) — webrtc-rs relay-only through coturn; host/srflx refused |
 | FCM | Not started (needs schema amendment) |
 | Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
+| Packaging / self-host docs | **Done** (I11) — compose HTTPS :8443; JVM `./gradlew run`; LICENSE split |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -287,9 +288,9 @@ Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: t
 
 **Checkpoint.**
 
-- [ ] Fresh clone: compose up, two clients register on `https://localhost:8443` (or documented port)
-- [ ] LICENSE.md still maps MIT vs AGPL correctly
-- [ ] Commit
+- [x] Fresh clone: compose up, two clients register on `https://localhost:8443` (or documented port)
+- [x] LICENSE.md still maps MIT vs AGPL correctly
+- [x] Commit
 
 ---
 
@@ -352,4 +353,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I10a is implemented (desktop).** Next: **I11** (packaging and self-host docs). FCM is I10b and needs ADR-0035. Return to **I5 Android** before I12.
+**I11 is implemented.** Next: **I12** (hardening / v1 freeze). FCM is I10b and needs ADR-0035. Return to **I5 Android** before I12.

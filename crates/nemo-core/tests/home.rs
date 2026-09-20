@@ -353,3 +353,42 @@ async fn revoked_contact_refuses_send() {
         .unwrap_err();
     assert!(matches!(err, CoreError::Revoked));
 }
+
+/// Set `NEMO_TEST_HOME_URL` (e.g. `https://localhost:8443` after compose up).
+#[tokio::test]
+async fn two_installations_register_on_env_home() {
+    let Ok(base) = std::env::var("NEMO_TEST_HOME_URL") else {
+        eprintln!("skip two_installations_register_on_env_home: set NEMO_TEST_HOME_URL");
+        return;
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (mut alice, alice_card) =
+        HomeSession::register(HttpHome::new(&base).unwrap(), alice_inst, now)
+            .await
+            .expect("alice register");
+    let (mut bob, bob_card) = HomeSession::register(HttpHome::new(&base).unwrap(), bob_inst, now)
+        .await
+        .expect("bob register");
+    assert_ne!(alice_card.identity_id(), bob_card.identity_id());
+
+    alice.publish_prekey().await.unwrap();
+    let cap = alice.mint_contact().await.unwrap();
+    bob.add_contact(&alice_card, cap, now).await.unwrap();
+    let wake = tokio::spawn({
+        let handle = alice.wakeup_handle().unwrap();
+        async move { handle.0.wait_wakeup(&handle.1).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let ptext = encode_text(1, now, "https wake").unwrap();
+    bob.send_to(&alice.identity_id(), TtlBucket::DEFAULT, &ptext, now)
+        .await
+        .unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(8), wake)
+        .await
+        .expect("wss wakeup joined")
+        .unwrap()
+        .expect("wss wakeup");
+    assert!(frame.is_empty());
+}

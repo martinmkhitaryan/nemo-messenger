@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_wire::cbor::{self, Value};
@@ -896,17 +897,22 @@ fn read_key(m: &[(u64, Value)], k: u64) -> Result<[u8; KEY_LEN]> {
 #[derive(Clone)]
 pub struct HttpHome {
     client: reqwest::Client,
+    tls: Arc<rustls::ClientConfig>,
     base: String,
 }
 
 impl HttpHome {
     pub fn new(base: impl Into<String>) -> Result<Self> {
         let base = base.into().trim_end_matches('/').to_string();
+        let tls = tls_config_bundle_is_identity()?;
+        // Caddy `tls internal` (and any other Web PKI) is transport, not identity
+        // (ADR-0033). Clients authenticate the home via ServerBundle HPKE.
         let client = reqwest::Client::builder()
             .http1_only()
+            .use_preconfigured_tls(tls.as_ref().clone())
             .build()
             .map_err(|e| CoreError::Transport(e.to_string()))?;
-        Ok(Self { client, base })
+        Ok(Self { client, tls, base })
     }
 
     /// Long-lived `/v1/wakeup`. Returns the next binary frame (must be empty).
@@ -914,8 +920,10 @@ impl HttpHome {
         use futures::StreamExt;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         use tokio_tungstenite::tungstenite::Message as WsMsg;
+        use tokio_tungstenite::{connect_async, connect_async_tls_with_config, Connector};
 
         let ws_url = wakeup_url(&self.base);
+        let use_tls = ws_url.starts_with("wss://");
         let mut req = ws_url
             .into_client_request()
             .map_err(|e| CoreError::Transport(e.to_string()))?;
@@ -925,9 +933,18 @@ impl HttpHome {
                 .parse()
                 .map_err(|e| CoreError::Transport(format!("{e}")))?,
         );
-        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+        let (mut ws, _) = if use_tls {
+            connect_async_tls_with_config(
+                req,
+                None,
+                false,
+                Some(Connector::Rustls(self.tls.clone())),
+            )
             .await
-            .map_err(|e| CoreError::Transport(e.to_string()))?;
+        } else {
+            connect_async(req).await
+        }
+        .map_err(|e| CoreError::Transport(e.to_string()))?;
         loop {
             match ws.next().await {
                 Some(Ok(WsMsg::Binary(b))) => {
@@ -949,13 +966,75 @@ impl HttpHome {
     }
 }
 
-fn wakeup_url(base: &str) -> String {
+pub(crate) fn wakeup_url(base: &str) -> String {
     if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}/v1/wakeup")
     } else if let Some(rest) = base.strip_prefix("http://") {
         format!("ws://{rest}/v1/wakeup")
     } else {
         format!("{base}/v1/wakeup")
+    }
+}
+
+/// Web PKI is not server identity (ADR-0002 / ADR-0033). Accept Caddy `tls internal`.
+fn tls_config_bundle_is_identity() -> Result<Arc<rustls::ClientConfig>> {
+    let provider = rustls::crypto::ring::default_provider();
+    let cfg = rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| CoreError::Transport(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(WebPkiIsNotIdentity))
+        .with_no_client_auth();
+    Ok(Arc::new(cfg))
+}
+
+#[derive(Debug)]
+struct WebPkiIsNotIdentity;
+
+impl rustls::client::danger::ServerCertVerifier for WebPkiIsNotIdentity {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -985,5 +1064,22 @@ impl HomeTransport for HttpHome {
             .map_err(|e| CoreError::Transport(e.to_string()))?
             .to_vec();
         Ok(HttpResponse { status, body })
+    }
+}
+
+#[cfg(test)]
+mod wakeup_url_tests {
+    use super::wakeup_url;
+
+    #[test]
+    fn https_home_wakeup_is_wss() {
+        assert_eq!(
+            wakeup_url("https://localhost:8443"),
+            "wss://localhost:8443/v1/wakeup"
+        );
+        assert_eq!(
+            wakeup_url("http://127.0.0.1:8787"),
+            "ws://127.0.0.1:8787/v1/wakeup"
+        );
     }
 }
