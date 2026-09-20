@@ -25,7 +25,7 @@ How to use it:
 | MLS group state in the vault | **Done** (I1) |
 | Durable home session | **Done** (I2) |
 | UniFFI beyond create/open/save | **Done** (I3) |
-| Compose UI | Placeholder window only ← next |
+| Compose UI | **Done** (I4) — dual-pane desktop + vault exchange test | |
 | 1:1 WebRTC media | Signaling types exist; media engine not wired |
 | FCM | Not started (needs schema amendment) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
@@ -158,10 +158,10 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] Two desktop processes (or one process, two vault dirs) exchange a text message via local `nemo-server`
-- [ ] Killing and relaunching both still decrypts new messages (vault I1+I2)
-- [ ] Shell writes no `*.db` of its own besides what `nemo-core` creates
-- [ ] Commit
+- [x] Two desktop processes (or one process, two vault dirs) exchange a text message via local `nemo-server`
+- [x] Killing and relaunching both still decrypts new messages (vault I1+I2)
+- [x] Shell writes no `*.db` of its own besides what `nemo-core` creates
+- [x] Commit
 
 ---
 
@@ -340,4 +340,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I3 is implemented.** Start **I4** (Compose: create/unlock, fingerprint, 1:1 text).
+**I4 is implemented.** Start **I5** (Gradle UniFFI generation + Android skeleton).

@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_core::{
-    decode, encode_text, AppBody, AppMessage, CoreError, HomeSession, HttpHome, Installation, Vault,
+    decode, encode, encode_text, AppBody, AppHeader, AppMessage, CoreError, HomeSession, HttpHome,
+    Installation, Vault,
 };
 use nemo_wire::envelope::TtlBucket;
 use nemo_wire::{ids, parse_identity_id, ContactCard};
@@ -91,14 +92,25 @@ fn lock_err() -> FfiError {
 }
 
 fn parse_card(card_or_uri: &str) -> Result<ContactCard, FfiError> {
-    if card_or_uri.starts_with(nemo_wire::card::URI_PREFIX) {
-        return Ok(ContactCard::from_uri(card_or_uri)?);
+    let uri = card_or_uri
+        .split_once('#')
+        .map(|(u, _)| u)
+        .unwrap_or(card_or_uri);
+    if uri.starts_with(nemo_wire::card::URI_PREFIX) {
+        return Ok(ContactCard::from_uri(uri)?);
     }
-    if let Ok(card) = ContactCard::from_uri(card_or_uri) {
+    if let Ok(card) = ContactCard::from_uri(uri) {
         return Ok(card);
     }
-    let bytes = ids::from_hex(card_or_uri)?;
+    let bytes = ids::from_hex(uri)?;
     Ok(ContactCard::decode(&bytes)?)
+}
+
+fn parse_delivery_cap(card_or_uri: &str, card: &ContactCard) -> Result<[u8; 32], FfiError> {
+    match card_or_uri.split_once('#') {
+        Some((_, hex)) if !hex.is_empty() => Ok(ids::copy_fixed(&ids::from_hex(hex)?)?),
+        _ => Ok(card.share_token),
+    }
 }
 
 fn bump_seq(map: &mut HashMap<String, u64>, peer: &str) -> u64 {
@@ -252,14 +264,15 @@ impl NemoClient {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let session = inner.registered()?;
         let card = block_on(session.mint_share_card(now_unix()))?;
+        let cap = block_on(session.mint_contact())?;
         persist(&inner)?;
-        Ok(card.to_uri()?)
+        Ok(format!("{}#{}", card.to_uri()?, ids::to_hex(&cap)))
     }
 
     pub fn add_contact(&self, card_or_uri: String, nickname: String) -> Result<String, FfiError> {
         let card = parse_card(&card_or_uri)?;
+        let cap = parse_delivery_cap(&card_or_uri, &card)?;
         let peer = ids::to_hex(&card.identity_id());
-        let cap = card.share_token;
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let session = inner.registered()?;
         block_on(session.add_contact(&card, cap, now_unix()))?;
@@ -298,6 +311,7 @@ impl NemoClient {
             block_on(session.ingest_mailbox())?
         };
         let mut new_rows = Vec::new();
+        let mut gossip = Vec::new();
         for (peer, plaintext) in opened {
             let conv_id = ids::to_hex(&peer);
             match decode(&plaintext) {
@@ -305,6 +319,7 @@ impl NemoClient {
                     header,
                     body: AppBody::Text { text },
                 }) => {
+                    gossip.push(peer);
                     let seq = *inner.next_seq.get(&conv_id).unwrap_or(&0);
                     if header.conv_seq > seq {
                         inner.next_seq.insert(conv_id.clone(), header.conv_seq);
@@ -329,6 +344,28 @@ impl NemoClient {
                     }
                 }
                 _ => {}
+            }
+        }
+        let now = now_unix();
+        if let Some(ClientState::Registered(session)) = &mut inner.state {
+            for peer in gossip {
+                if !session.contacts.contains_key(&peer) {
+                    continue;
+                }
+                if let Ok(cap) = block_on(session.mint_contact()) {
+                    if let Ok(bytes) = encode(&AppMessage {
+                        header: AppHeader {
+                            conv_seq: 0,
+                            sent_at: now,
+                            reply_to: None,
+                        },
+                        body: AppBody::Capability {
+                            contact_capability: cap,
+                        },
+                    }) {
+                        let _ = block_on(session.send_to(&peer, TtlBucket::DEFAULT, &bytes, now));
+                    }
+                }
             }
         }
         persist(&inner)?;
