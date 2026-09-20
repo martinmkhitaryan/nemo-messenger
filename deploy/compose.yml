@@ -8,6 +8,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ../crates/nemo-server/migrations/0001_init.sql:/docker-entrypoint-initdb.d/0001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nemo"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
 
   nemo:
     build:
@@ -15,10 +20,14 @@ services:
       dockerfile: deploy/Dockerfile
     environment:
       NEMO_LISTEN: 0.0.0.0:8787
+      NEMO_HOST: localhost
+      NEMO_S2S_PORT: "8443"
+      DATABASE_URL: postgres://nemo:nemo@postgres:5432/nemo
     expose:
       - "8787"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   caddy:
     image: caddy:2-alpine

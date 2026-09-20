@@ -1,6 +1,6 @@
 # Phase 8 — API and persistence
 
-- **Status:** Complete (HTTP routes and DDL frozen; in-memory runtime; sqlx adapter not required to compile)
+- **Status:** Complete (HTTP routes, frozen DDL, sqlx write-through when `DATABASE_URL` is set)
 - **Date:** 2026-09-20
 - **Phase:** 8 of 8 ([ADR-0027](../decisions/0027-protocol-first-development-order.md))
 - **Depends on:** [04-delivery-protocol.md](04-delivery-protocol.md), [05-federation.md](05-federation.md)
@@ -19,7 +19,7 @@ peer    --mTLS-->   s2s_port (not this listener; ADR-0032)
 
 - Default bind: `127.0.0.1:8787`. Override: `NEMO_LISTEN`.
 - Reference deploy: container + PostgreSQL + Caddy + optional coturn ([ADR-0028](../decisions/0028-implementation-languages-and-libraries.md)).
-- This implementation may keep mailbox and group state in process (`HomeServer`, `GroupHost`) while the SQL below is the durable schema.
+- This implementation serves from in-memory `HomeServer` / `GroupHost`. When `DATABASE_URL` is set, that state is loaded from the SQL below at start and flushed after successful mutating HTTP requests. Unset `DATABASE_URL` keeps the prototype in-memory runtime.
 
 Body limit: **18 000 000** bytes.
 
@@ -160,4 +160,4 @@ Retention defaults remain 14 days / 500 MiB for mailboxes ([ADR-0031](../decisio
 
 ## 6. Phase completion
 
-v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented against the in-memory delivery engine. Group join and files are on `/v1`. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: sqlx on a live database, S2S TCP listener, optional `/wakeup` WebSocket, FCM. Those MUST keep the tables and routes above.
+v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: S2S TCP listener, optional `/wakeup` WebSocket, FCM. Those MUST keep the tables and routes above.

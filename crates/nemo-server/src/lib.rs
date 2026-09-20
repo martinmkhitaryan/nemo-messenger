@@ -7,6 +7,7 @@ pub mod federation;
 pub mod group;
 pub mod home;
 pub mod http;
+pub mod pg;
 
 pub use error::{Result, ServerError};
 pub use federation::{apply_sign_rotate, pin, pin_each_other, pump, refuse, Enqueue, PumpStats};

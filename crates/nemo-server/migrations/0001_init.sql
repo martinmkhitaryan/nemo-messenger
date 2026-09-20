@@ -2,7 +2,7 @@
 -- (ADR-0027). received_at / expires_at are internal (ADR-0013) and MUST NOT
 -- be returned on client HTTP. No plaintext, nicknames, senders, or receipts.
 
-CREATE TABLE server_identity (
+CREATE TABLE IF NOT EXISTS server_identity (
     singleton             BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
     hpke_secret           BYTEA NOT NULL,
     hpke_public           BYTEA NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE server_identity (
     s2s_port              INTEGER NOT NULL
 );
 
-CREATE TABLE identities (
+CREATE TABLE IF NOT EXISTS identities (
     identity_id           BYTEA PRIMARY KEY,
     identity_public_key   BYTEA NOT NULL,
     revocation_public_key BYTEA NOT NULL,
@@ -24,7 +24,7 @@ CREATE TABLE identities (
     mailbox_bytes         BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE TABLE mailbox_rows (
+CREATE TABLE IF NOT EXISTS mailbox_rows (
     identity_id           BYTEA NOT NULL REFERENCES identities (identity_id),
     seq                   BIGINT NOT NULL,
     received_at           BIGINT NOT NULL,
@@ -34,10 +34,10 @@ CREATE TABLE mailbox_rows (
     PRIMARY KEY (identity_id, seq)
 );
 
-CREATE UNIQUE INDEX mailbox_idempotency
+CREATE UNIQUE INDEX IF NOT EXISTS mailbox_idempotency
     ON mailbox_rows (identity_id, idempotency_token);
 
-CREATE TABLE tokens (
+CREATE TABLE IF NOT EXISTS tokens (
     token                 BYTEA PRIMARY KEY,
     kind                  SMALLINT NOT NULL, -- 1 share, 2 contact
     mailbox               BYTEA NOT NULL REFERENCES identities (identity_id),
@@ -49,20 +49,20 @@ CREATE TABLE tokens (
     window_count          INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE prekeys (
+CREATE TABLE IF NOT EXISTS prekeys (
     identity_id           BYTEA NOT NULL REFERENCES identities (identity_id),
     pos                   BIGSERIAL,
     blob                  BYTEA NOT NULL,
     PRIMARY KEY (identity_id, pos)
 );
 
-CREATE TABLE groups (
+CREATE TABLE IF NOT EXISTS groups (
     group_id              BYTEA PRIMARY KEY,
     next_seq              BIGINT NOT NULL DEFAULT 1,
     bytes                 BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE TABLE group_creds (
+CREATE TABLE IF NOT EXISTS group_creds (
     group_id              BYTEA NOT NULL REFERENCES groups (group_id),
     credential_id         BYTEA NOT NULL,
     credential_secret     BYTEA NOT NULL,
@@ -73,7 +73,7 @@ CREATE TABLE group_creds (
     PRIMARY KEY (group_id, credential_id)
 );
 
-CREATE TABLE group_invites (
+CREATE TABLE IF NOT EXISTS group_invites (
     group_id              BYTEA NOT NULL REFERENCES groups (group_id),
     nonce                 BYTEA NOT NULL,
     expires_at            BIGINT NOT NULL,
@@ -81,7 +81,7 @@ CREATE TABLE group_invites (
     PRIMARY KEY (group_id, nonce)
 );
 
-CREATE TABLE group_pending (
+CREATE TABLE IF NOT EXISTS group_pending (
     group_id              BYTEA NOT NULL REFERENCES groups (group_id),
     pending_id            BYTEA NOT NULL,
     credential_id         BYTEA NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE group_pending (
     PRIMARY KEY (group_id, pending_id)
 );
 
-CREATE TABLE group_stream (
+CREATE TABLE IF NOT EXISTS group_stream (
     group_id              BYTEA NOT NULL REFERENCES groups (group_id),
     seq                   BIGINT NOT NULL,
     type                  SMALLINT NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE group_stream (
     PRIMARY KEY (group_id, seq)
 );
 
-CREATE TABLE group_files (
+CREATE TABLE IF NOT EXISTS group_files (
     fetch_token           BYTEA PRIMARY KEY,
     group_id              BYTEA NOT NULL REFERENCES groups (group_id),
     owner_cred            BYTEA NOT NULL,
@@ -108,13 +108,13 @@ CREATE TABLE group_files (
     bytes                 BYTEA
 );
 
-CREATE TABLE memberships (
+CREATE TABLE IF NOT EXISTS memberships (
     identity_id           BYTEA NOT NULL REFERENCES identities (identity_id),
     group_id              BYTEA NOT NULL,
     PRIMARY KEY (identity_id, group_id)
 );
 
-CREATE TABLE peers (
+CREATE TABLE IF NOT EXISTS peers (
     server_id             BYTEA PRIMARY KEY,
     bundle_cbor           BYTEA NOT NULL,
     refused               BOOLEAN NOT NULL DEFAULT FALSE,
@@ -122,7 +122,7 @@ CREATE TABLE peers (
     last_send_counter     BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE TABLE outbound (
+CREATE TABLE IF NOT EXISTS outbound (
     id                    BIGSERIAL PRIMARY KEY,
     dest                  BYTEA NOT NULL,
     outer_cbor            BYTEA NOT NULL,
@@ -131,7 +131,7 @@ CREATE TABLE outbound (
     backoff_secs          BIGINT NOT NULL
 );
 
-CREATE TABLE hpke_seen (
+CREATE TABLE IF NOT EXISTS hpke_seen (
     enc                   BYTEA PRIMARY KEY,
     seq                   BIGINT NOT NULL,
     seen_at               BIGINT NOT NULL

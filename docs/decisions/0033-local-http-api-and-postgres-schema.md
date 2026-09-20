@@ -113,3 +113,4 @@ Rejected in ADR-0028; restated: padded envelopes and self-host reverse proxies.
 
 - 2026-09-20 — Accepted. Local HTTP `/v1` routes; PostgreSQL DDL; Caddy TLS; no JSON protocol objects.
 - 2026-09-20 — Amendment 1: group invite / accept / admit / fan-out / file routes; `nemo-cred-*` headers for opaque file bodies. No new stored fields.
+- 2026-09-20 — Amendment 2: sqlx adapter uses this DDL (`query()`, not compile-time `query!`, so tests need no live database). `DATABASE_URL` loads on start and write-throughs after successful mutating `/v1` requests; unset keeps the in-memory runtime.

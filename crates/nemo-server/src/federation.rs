@@ -26,7 +26,7 @@ pub struct PeerState {
     pub hello_done: bool,
     pub window_sec: u64,
     pub window_ok: u32,
-    seen_enc: HashMap<[u8; KEY_LEN], u64>,
+    pub(crate) seen_enc: HashMap<[u8; KEY_LEN], u64>,
 }
 
 impl PeerState {
@@ -37,6 +37,25 @@ impl PeerState {
             last_rx: 0,
             next_tx: 1,
             hello_done: false,
+            window_sec: 0,
+            window_ok: 0,
+            seen_enc: HashMap::new(),
+        }
+    }
+
+    /// Counters from Postgres. Hello is treated as done if a frame already moved.
+    pub(crate) fn restore(
+        bundle: ServerBundle,
+        refused: bool,
+        last_rx: u64,
+        next_tx: u64,
+    ) -> Self {
+        Self {
+            bundle,
+            refused,
+            last_rx,
+            next_tx,
+            hello_done: last_rx > 0 || next_tx > 1,
             window_sec: 0,
             window_ok: 0,
             seen_enc: HashMap::new(),

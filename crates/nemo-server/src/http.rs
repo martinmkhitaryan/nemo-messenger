@@ -16,6 +16,11 @@ use nemo_wire::{
     ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, MailboxOwnerAuth, RevocationStatement,
 };
 
+use axum::extract::Request;
+use axum::http::Method;
+use axum::middleware::{self, Next};
+use sqlx::PgPool;
+
 use crate::error::ServerError;
 use crate::federation::Enqueue;
 use crate::group::{FanoutTarget, GroupHost, GroupId, MemberCred};
@@ -28,6 +33,7 @@ const BODY_LIMIT: usize = 18_000_000;
 pub struct AppState {
     pub home: Arc<tokio::sync::Mutex<HomeServer>>,
     pub groups: Arc<tokio::sync::Mutex<GroupHost>>,
+    pub db: Option<PgPool>,
 }
 
 impl AppState {
@@ -39,6 +45,23 @@ impl AppState {
         Self {
             home: Arc::new(tokio::sync::Mutex::new(home)),
             groups: Arc::new(tokio::sync::Mutex::new(groups)),
+            db: None,
+        }
+    }
+
+    pub fn with_db(mut self, db: PgPool) -> Self {
+        self.db = Some(db);
+        self
+    }
+
+    pub async fn persist(&self) {
+        let Some(pool) = &self.db else {
+            return;
+        };
+        let home = self.home.lock().await;
+        let groups = self.groups.lock().await;
+        if let Err(e) = crate::pg::flush(pool, &home, &groups).await {
+            eprintln!("nemo-server persist: {e}");
         }
     }
 }
@@ -50,6 +73,7 @@ impl Default for AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    let persist_state = state.clone();
     Router::new()
         .route("/v1/bundle", get(bundle))
         .route("/v1/register", post(register))
@@ -72,7 +96,22 @@ pub fn router(state: AppState) -> Router {
             get(group_fetch_file).post(group_upload_file),
         )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(persist_state, persist_after))
         .with_state(state)
+}
+
+async fn persist_after(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
+    let res = next.run(req).await;
+    if st.db.is_none() {
+        return res;
+    }
+    let mutating = method != Method::GET || path == "/v1/prekeys";
+    if mutating && res.status().is_success() {
+        st.persist().await;
+    }
+    res
 }
 
 pub async fn serve(addr: &str, state: AppState) -> std::io::Result<()> {

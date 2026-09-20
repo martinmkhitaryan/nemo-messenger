@@ -49,21 +49,21 @@ pub struct StoredEnvelope {
     pub inner: InnerEnvelope,
 }
 
-struct Mailbox {
-    owner_pk: [u8; KEY_LEN],
-    next_seq: u64,
-    rows: BTreeMap<u64, StoredEnvelope>,
-    idempotency: HashMap<[u8; KEY_LEN], u64>,
-    bytes: u64,
-    disabled: bool,
+pub(crate) struct Mailbox {
+    pub owner_pk: [u8; KEY_LEN],
+    pub next_seq: u64,
+    pub rows: BTreeMap<u64, StoredEnvelope>,
+    pub idempotency: HashMap<[u8; KEY_LEN], u64>,
+    pub bytes: u64,
+    pub disabled: bool,
 }
 
-struct DirectoryRow {
-    identity_public_key: [u8; KEY_LEN],
-    revocation_public_key: [u8; KEY_LEN],
-    binding: HomeServerBinding,
-    binding_seq: u64,
-    revocation: Option<RevocationStatement>,
+pub(crate) struct DirectoryRow {
+    pub identity_public_key: [u8; KEY_LEN],
+    pub revocation_public_key: [u8; KEY_LEN],
+    pub binding: HomeServerBinding,
+    pub binding_seq: u64,
+    pub revocation: Option<RevocationStatement>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +74,7 @@ pub struct DiscoveryRow {
     pub revocation: Option<RevocationStatement>,
 }
 
-enum TokenKind {
+pub(crate) enum TokenKind {
     Share {
         mailbox: IdentityId,
         expires_at: u64,
@@ -90,17 +90,17 @@ enum TokenKind {
 }
 
 pub struct HomeServer {
-    hpke: HpkeKeypair,
-    sign: SigningKey,
-    bundle: ServerBundle,
+    pub(crate) hpke: HpkeKeypair,
+    pub(crate) sign: SigningKey,
+    pub(crate) bundle: ServerBundle,
     pub now: u64,
-    limits: Limits,
-    mailboxes: HashMap<IdentityId, Mailbox>,
-    directory: HashMap<IdentityId, DirectoryRow>,
-    memberships: HashMap<IdentityId, Vec<GroupId>>,
-    tokens: Vec<([u8; KEY_LEN], TokenKind)>,
-    prekeys: HashMap<IdentityId, VecDeque<Vec<u8>>>,
-    seen_enc: HashMap<[u8; KEY_LEN], u64>,
+    pub(crate) limits: Limits,
+    pub(crate) mailboxes: HashMap<IdentityId, Mailbox>,
+    pub(crate) directory: HashMap<IdentityId, DirectoryRow>,
+    pub(crate) memberships: HashMap<IdentityId, Vec<GroupId>>,
+    pub(crate) tokens: Vec<([u8; KEY_LEN], TokenKind)>,
+    pub(crate) prekeys: HashMap<IdentityId, VecDeque<Vec<u8>>>,
+    pub(crate) seen_enc: HashMap<[u8; KEY_LEN], u64>,
     pub(crate) peers: HashMap<ServerId, PeerState>,
     pub(crate) outbound: Vec<OutboundRow>,
 }
@@ -142,6 +142,63 @@ impl HomeServer {
         let mut s = Self::new();
         s.limits = limits;
         s
+    }
+
+    /// Rebuild the advertised bundle (operator hostname / S2S port).
+    pub fn rebind_host(&mut self, host: String, s2s_port: u16) {
+        self.bundle = ServerBundle::sign(
+            &self.sign,
+            ServerBundle {
+                server_id: self.hpke.server_id(),
+                server_hpke_public_key: self.hpke.public,
+                server_sign_public_key: self.sign.verifying_key().to_bytes(),
+                host,
+                s2s_port: s2s_port as u64,
+                signature: [0; 64],
+            },
+        )
+        .expect("rebind bundle");
+    }
+
+    pub fn advertise(host: impl Into<String>, s2s_port: u16) -> Self {
+        let mut s = Self::new();
+        s.rebind_host(host.into(), s2s_port);
+        s
+    }
+
+    pub(crate) fn from_identity(
+        hpke: HpkeKeypair,
+        sign: SigningKey,
+        host: String,
+        s2s_port: u16,
+    ) -> Self {
+        let bundle = ServerBundle::sign(
+            &sign,
+            ServerBundle {
+                server_id: hpke.server_id(),
+                server_hpke_public_key: hpke.public,
+                server_sign_public_key: sign.verifying_key().to_bytes(),
+                host,
+                s2s_port: s2s_port as u64,
+                signature: [0; 64],
+            },
+        )
+        .expect("stored bundle");
+        Self {
+            hpke,
+            sign,
+            bundle,
+            now: 1_700_000_000,
+            limits: Limits::default(),
+            mailboxes: HashMap::new(),
+            directory: HashMap::new(),
+            memberships: HashMap::new(),
+            tokens: Vec::new(),
+            prekeys: HashMap::new(),
+            seen_enc: HashMap::new(),
+            peers: HashMap::new(),
+            outbound: Vec::new(),
+        }
     }
 
     pub fn hpke_public(&self) -> [u8; KEY_LEN] {
@@ -730,3 +787,36 @@ pub(crate) fn random_token() -> [u8; KEY_LEN] {
     rand::rngs::OsRng.fill_bytes(&mut t);
     t
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebind_keeps_keys() {
+        let mut home = HomeServer::new();
+        let id = home.server_id();
+        let pk = home.hpke_public();
+        home.rebind_host("example.invalid".into(), 9443);
+        assert_eq!(home.server_id(), id);
+        assert_eq!(home.hpke_public(), pk);
+        assert_eq!(home.bundle().host, "example.invalid");
+        assert_eq!(home.bundle().s2s_port, 9443);
+        home.bundle().verify().unwrap();
+    }
+
+    #[test]
+    fn from_identity_restores_server_id() {
+        let src = HomeServer::new();
+        let restored = HomeServer::from_identity(
+            src.hpke.clone(),
+            src.sign.clone(),
+            "restored".into(),
+            1,
+        );
+        assert_eq!(restored.server_id(), src.server_id());
+        assert_eq!(restored.hpke_public(), src.hpke_public());
+        assert_eq!(restored.bundle().host, "restored");
+    }
+}
+

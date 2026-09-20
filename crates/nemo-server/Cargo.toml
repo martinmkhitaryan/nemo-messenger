@@ -11,6 +11,7 @@ repository.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "matched-path"] }
 nemo-wire = { path = "../nemo-wire" }
 rand = "0.8"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros"] }
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }

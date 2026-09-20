@@ -51,43 +51,51 @@ pub struct StreamAppend {
     pub outers: Vec<OuterEnvelope>,
 }
 
-struct CredRecord {
-    secret: [u8; KEY_LEN],
-    live: bool,
-    signing_pk: Option<[u8; KEY_LEN]>,
-    fanout: Option<FanoutTarget>,
+pub(crate) struct CredRecord {
+    pub secret: [u8; KEY_LEN],
+    pub live: bool,
+    pub signing_pk: Option<[u8; KEY_LEN]>,
+    pub fanout: Option<FanoutTarget>,
 }
 
-struct StoredInvite {
-    expires_at: u64,
-    invitee_binding: Option<[u8; KEY_LEN]>,
+pub(crate) struct StoredInvite {
+    pub expires_at: u64,
+    pub invitee_binding: Option<[u8; KEY_LEN]>,
 }
 
-struct PendingRecord {
-    cred: MemberCred,
-    expires_at: u64,
+pub(crate) struct PendingRecord {
+    pub cred: MemberCred,
+    pub expires_at: u64,
 }
 
-struct FileSlot {
-    group_id: GroupId,
-    owner: [u8; KEY_LEN],
-    size: usize,
-    expires_at: u64,
-    bytes: Option<Vec<u8>>,
+pub(crate) struct FileSlot {
+    pub group_id: GroupId,
+    pub owner: [u8; KEY_LEN],
+    pub size: usize,
+    pub expires_at: u64,
+    pub bytes: Option<Vec<u8>>,
 }
 
-struct GroupState {
-    next_seq: u64,
-    creds: HashMap<[u8; KEY_LEN], CredRecord>,
-    invites: HashMap<[u8; KEY_LEN], StoredInvite>,
-    pending: HashMap<[u8; KEY_LEN], PendingRecord>,
-    bytes: u64,
+pub(crate) struct StreamRow {
+    pub seq: u64,
+    pub type_: MessageType,
+    pub body: Vec<u8>,
+    pub received_at: u64,
+}
+
+pub(crate) struct GroupState {
+    pub next_seq: u64,
+    pub creds: HashMap<[u8; KEY_LEN], CredRecord>,
+    pub invites: HashMap<[u8; KEY_LEN], StoredInvite>,
+    pub pending: HashMap<[u8; KEY_LEN], PendingRecord>,
+    pub bytes: u64,
+    pub stream: Vec<StreamRow>,
 }
 
 pub struct GroupHost {
     pub now: u64,
-    groups: HashMap<GroupId, GroupState>,
-    files: HashMap<[u8; KEY_LEN], FileSlot>,
+    pub(crate) groups: HashMap<GroupId, GroupState>,
+    pub(crate) files: HashMap<[u8; KEY_LEN], FileSlot>,
 }
 
 impl GroupHost {
@@ -127,6 +135,7 @@ impl GroupHost {
                 invites: HashMap::new(),
                 pending: HashMap::new(),
                 bytes: 0,
+                stream: Vec::new(),
             },
         );
         Ok(CreatedGroup { group_id, cred })
@@ -412,6 +421,7 @@ impl GroupHost {
         type_: MessageType,
         body: Vec<u8>,
     ) -> Result<StreamAppend> {
+        let now = self.now;
         let g = self.groups.get_mut(&group_id).ok_or(ServerError::Denied)?;
         let add = body.len() as u64;
         if g.bytes.saturating_add(add) > STREAM_MAX_BYTES {
@@ -420,6 +430,12 @@ impl GroupHost {
         let seq = g.next_seq;
         g.next_seq += 1;
         g.bytes = g.bytes.saturating_add(add);
+        g.stream.push(StreamRow {
+            seq,
+            type_,
+            body: body.clone(),
+            received_at: now,
+        });
         let targets: Vec<FanoutTarget> = g
             .creds
             .values()

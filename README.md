@@ -2369,14 +2369,14 @@ Defines:
 
 ## Phase 8 — API and persistence
 
-**Complete (HTTP + DDL; in-memory runtime):** [`docs/protocol/08-api-and-persistence.md`](docs/protocol/08-api-and-persistence.md), [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)
+**Complete (HTTP + DDL + sqlx):** [`docs/protocol/08-api-and-persistence.md`](docs/protocol/08-api-and-persistence.md), [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)
 
 * HTTP `/v1` on localhost; Caddy TLS;
-* Postgres schema from phases 1–5 only;
+* Postgres schema from phases 1–5 only; sqlx load-on-start and write-through when `DATABASE_URL` is set;
 * outbound queue as specified in phase 5;
 * no Redis;
 * WebSocket wakeup reserved; poll fetch is required;
-* sqlx on a live database, S2S TCP, and FCM remain operational follow-ons that MUST NOT add columns.
+* S2S TCP and FCM remain operational follow-ons that MUST NOT add columns.
 
 ---
 
