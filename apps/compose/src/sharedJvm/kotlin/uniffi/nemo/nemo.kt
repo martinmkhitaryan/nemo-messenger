@@ -796,6 +796,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -864,6 +866,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_react(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_register(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_reject_call(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member(
 ): Short
@@ -1006,6 +1010,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(`ptr`: Pointer,uniffi_out_
 ): Long
 fun uniffi_nemo_ffi_fn_method_nemoclient_register(`ptr`: Pointer,`homeHttpsBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_nemo_ffi_fn_method_nemoclient_reject_call(`ptr`: Pointer,`callIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`credentialIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_save(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1233,6 +1239,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_register() != 63416.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_reject_call() != 9377.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member() != 22502.toShort()) {
@@ -1749,6 +1758,8 @@ public interface NemoClientInterface {
     
     fun `register`(`homeHttpsBase`: kotlin.String)
     
+    fun `rejectCall`(`callIdHex`: kotlin.String): DisplayRow
+    
     fun `removeGroupMember`(`groupIdHex`: kotlin.String, `credentialIdHex`: kotlin.String)
     
     fun `save`()
@@ -2212,6 +2223,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
 }
     }
     
+    
+
+    
+    @Throws(FfiException::class)override fun `rejectCall`(`callIdHex`: kotlin.String): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_reject_call(
+        it, FfiConverterString.lower(`callIdHex`),_status)
+}
+    }
+    )
+    }
     
 
     

@@ -509,6 +509,17 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     messages.add(row)
                                                 }
                                             },
+                                            onDecline = {
+                                                runIo {
+                                                    val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                        ?: return@runIo
+                                                    stopCallAudio()
+                                                    val row = withContext(Dispatchers.IO) {
+                                                        c?.rejectCall(id)
+                                                    } ?: return@runIo
+                                                    messages.add(row)
+                                                }
+                                            },
                                             onReact = { row ->
                                                 runIo {
                                                     val r = withContext(Dispatchers.IO) {
@@ -576,6 +587,17 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         stopCallAudio()
                                         val row = withContext(Dispatchers.IO) { c?.endCall() }
                                             ?: return@runIo
+                                        messages.add(row)
+                                    }
+                                },
+                                onDecline = {
+                                    runIo {
+                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                            ?: return@runIo
+                                        stopCallAudio()
+                                        val row = withContext(Dispatchers.IO) {
+                                            c?.rejectCall(id)
+                                        } ?: return@runIo
                                         messages.add(row)
                                     }
                                 },
@@ -948,6 +970,7 @@ private fun ChatThread(
     onCall: () -> Unit,
     onAnswer: () -> Unit,
     onHangup: () -> Unit,
+    onDecline: () -> Unit,
     onReact: (DisplayRow) -> Unit,
     onDelete: (DisplayRow) -> Unit,
 ) {
@@ -991,6 +1014,7 @@ private fun ChatThread(
                     }
                     DropdownMenu(expanded = chatMenu, onDismissRequest = { onChatMenu(false) }) {
                         DropdownMenuItem(text = { Text("Answer call") }, onClick = { onChatMenu(false); onAnswer() })
+                        DropdownMenuItem(text = { Text("Decline call") }, onClick = { onChatMenu(false); onDecline() })
                         DropdownMenuItem(
                             text = { Text("Hang up") },
                             leadingIcon = { Icon(Icons.Filled.CallEnd, null) },
@@ -1309,7 +1333,10 @@ private fun previewLine(row: DisplayRow): String = when {
     row.hidden || row.kind == "deleted" -> "Message deleted"
     row.kind == "reaction" -> "Reacted ${row.emoji}"
     row.kind == "call_invite" -> "Incoming call"
+    row.kind == "call_ringing" -> "Ringing"
     row.kind == "call_answer" -> "Call answered"
+    row.kind == "call_reject" -> "Declined"
+    row.kind == "call_cancel" -> "Cancelled"
     row.kind == "call_end" -> "Call ended"
     row.kind == "lost" -> "Messages lost"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
@@ -1322,7 +1349,10 @@ private fun bubbleText(row: DisplayRow): String = when {
     row.kind == "reaction" -> "Reacted ${row.emoji}"
     row.kind == "disappear" -> "Disappearing messages: ${row.text}s"
     row.kind == "call_invite" -> "Incoming call"
+    row.kind == "call_ringing" -> "Ringing"
     row.kind == "call_answer" -> "Answered"
+    row.kind == "call_reject" -> "Declined"
+    row.kind == "call_cancel" -> "Cancelled"
     row.kind == "call_end" -> "Call ended"
     row.kind == "lost" -> "Messages lost"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
@@ -1340,7 +1370,7 @@ private fun formatTime(sentAt: ULong): String {
 
 private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {
     for (row in rows) {
-        if (row.kind == "call_end") {
+        if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
             stopCallAudio()
         }
         if (row.kind == "deleted" || row.kind == "expired") {

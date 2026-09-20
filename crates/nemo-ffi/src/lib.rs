@@ -90,6 +90,7 @@ struct PendingEntry {
 struct PendingInvite {
     peer: String,
     signal: LocalSignal,
+    expires_at: u64,
 }
 
 enum ClientState {
@@ -111,6 +112,7 @@ struct Inner {
     pending_invites: HashMap<String, PendingInvite>,
     live_call: Option<Arc<Call>>,
     call_peer: Option<String>,
+    call_connected: bool,
 }
 
 /// One installation. The shell must not persist ratchet or MLS keys.
@@ -189,6 +191,90 @@ fn bump_seq(map: &mut HashMap<String, u64>, peer: &str) -> u64 {
     *e
 }
 
+fn emit_call(
+    session: &mut HomeSession<HttpHome>,
+    inbox: &mut Vec<DisplayRow>,
+    next_seq: &mut HashMap<String, u64>,
+    peer_hex: String,
+    body: AppBody,
+    kind: &str,
+    now: u64,
+    echo: bool,
+) -> Result<DisplayRow, FfiError> {
+    let seq = bump_seq(next_seq, &peer_hex);
+    let id_hex = match &body {
+        AppBody::CallRinging { call_id }
+        | AppBody::CallReject { call_id }
+        | AppBody::CallCancel { call_id }
+        | AppBody::CallEnd { call_id } => ids::to_hex(call_id),
+        _ => String::new(),
+    };
+    let ptext = encode(&AppMessage {
+        header: AppHeader {
+            conv_seq: seq,
+            sent_at: now,
+            reply_to: None,
+        },
+        body,
+    })?;
+    let peer = parse_identity_id(&peer_hex)?;
+    block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
+    if echo {
+        Ok(push_control(
+            inbox, next_seq, peer_hex, seq, now, kind, id_hex, 0,
+        ))
+    } else {
+        Ok(DisplayRow {
+            conv_id: peer_hex,
+            conv_seq: seq,
+            text: id_hex,
+            sent_at: now,
+            file_name: String::new(),
+            file_mime: String::new(),
+            file_bytes: Vec::new(),
+            fetch_token: String::new(),
+            kind: kind.into(),
+            emoji: String::new(),
+            target: 0,
+            hidden: false,
+            displayed_at: now,
+        })
+    }
+}
+
+fn hangup_live(
+    live_call: &mut Option<Arc<Call>>,
+    call_peer: &mut Option<String>,
+    call_connected: &mut bool,
+) {
+    if let Some(call) = live_call.take() {
+        let _ = block_on(call.close());
+    }
+    *call_peer = None;
+    *call_connected = false;
+}
+
+fn send_call_body(
+    inner: &mut Inner,
+    peer_hex: String,
+    body: AppBody,
+    kind: &str,
+    now: u64,
+) -> Result<DisplayRow, FfiError> {
+    let Inner {
+        state,
+        inbox,
+        next_seq,
+        ..
+    } = inner;
+    let session = match state {
+        Some(ClientState::Registered(session)) => session,
+        Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+        None => return Err(FfiError::Core("busy".into())),
+    };
+    emit_call(session, inbox, next_seq, peer_hex, body, kind, now, true)
+}
+
 fn persist(inner: &Inner) -> Result<(), FfiError> {
     let Some(vault) = inner.vault.as_ref() else {
         return Ok(());
@@ -235,6 +321,7 @@ fn empty_inner(
         pending_invites: HashMap::new(),
         live_call: None,
         call_peer: None,
+        call_connected: false,
     }
 }
 
@@ -676,6 +763,7 @@ impl NemoClient {
                 pending_invites,
                 live_call,
                 call_peer,
+                call_connected,
                 ..
             } = &mut *inner;
             let session = match state {
@@ -819,26 +907,40 @@ impl NemoClient {
                                         sdp,
                                         dtls_fp,
                                         ice,
-                                        ..
+                                        expires_at,
                                     },
                             }) => {
                                 let hex = ids::to_hex(&call_id);
-                                pending_invites.insert(
-                                    hex.clone(),
-                                    PendingInvite {
-                                        peer: ids::to_hex(&peer),
-                                        signal: LocalSignal {
-                                            call_id,
-                                            sdp,
-                                            dtls_fp,
-                                            ice,
+                                let peer_hex = ids::to_hex(&peer);
+                                if expires_at > now_unix() {
+                                    pending_invites.insert(
+                                        hex.clone(),
+                                        PendingInvite {
+                                            peer: peer_hex.clone(),
+                                            signal: LocalSignal {
+                                                call_id,
+                                                sdp,
+                                                dtls_fp,
+                                                ice,
+                                            },
+                                            expires_at,
                                         },
-                                    },
-                                );
+                                    );
+                                    let _ = emit_call(
+                                        session,
+                                        inbox,
+                                        next_seq,
+                                        peer_hex.clone(),
+                                        AppBody::CallRinging { call_id },
+                                        "call_ringing",
+                                        now_unix(),
+                                        false,
+                                    );
+                                }
                                 new_rows.push(push_control(
                                     inbox,
                                     next_seq,
-                                    ids::to_hex(&peer),
+                                    peer_hex,
                                     header.conv_seq,
                                     header.sent_at,
                                     "call_invite",
@@ -863,7 +965,9 @@ impl NemoClient {
                                         dtls_fp,
                                         ice,
                                     };
-                                    let _ = block_on(call.apply_answer(&sig));
+                                    if block_on(call.apply_answer(&sig)).is_ok() {
+                                        *call_connected = true;
+                                    }
                                 }
                                 new_rows.push(push_control(
                                     inbox,
@@ -886,15 +990,24 @@ impl NemoClient {
                             }
                             Ok(AppMessage {
                                 header,
-                                body:
-                                    AppBody::CallEnd { call_id }
-                                    | AppBody::CallReject { call_id }
-                                    | AppBody::CallCancel { call_id },
+                                body: AppBody::CallRinging { call_id },
                             }) => {
-                                if let Some(call) = live_call.take() {
-                                    let _ = block_on(call.close());
-                                }
-                                *call_peer = None;
+                                new_rows.push(push_control(
+                                    inbox,
+                                    next_seq,
+                                    ids::to_hex(&peer),
+                                    header.conv_seq,
+                                    header.sent_at,
+                                    "call_ringing",
+                                    ids::to_hex(&call_id),
+                                    0,
+                                ));
+                            }
+                            Ok(AppMessage {
+                                header,
+                                body: AppBody::CallEnd { call_id },
+                            }) => {
+                                hangup_live(live_call, call_peer, call_connected);
                                 new_rows.push(push_control(
                                     inbox,
                                     next_seq,
@@ -902,6 +1015,40 @@ impl NemoClient {
                                     header.conv_seq,
                                     header.sent_at,
                                     "call_end",
+                                    ids::to_hex(&call_id),
+                                    0,
+                                ));
+                            }
+                            Ok(AppMessage {
+                                header,
+                                body: AppBody::CallReject { call_id },
+                            }) => {
+                                hangup_live(live_call, call_peer, call_connected);
+                                pending_invites.remove(&ids::to_hex(&call_id));
+                                new_rows.push(push_control(
+                                    inbox,
+                                    next_seq,
+                                    ids::to_hex(&peer),
+                                    header.conv_seq,
+                                    header.sent_at,
+                                    "call_reject",
+                                    ids::to_hex(&call_id),
+                                    0,
+                                ));
+                            }
+                            Ok(AppMessage {
+                                header,
+                                body: AppBody::CallCancel { call_id },
+                            }) => {
+                                hangup_live(live_call, call_peer, call_connected);
+                                pending_invites.remove(&ids::to_hex(&call_id));
+                                new_rows.push(push_control(
+                                    inbox,
+                                    next_seq,
+                                    ids::to_hex(&peer),
+                                    header.conv_seq,
+                                    header.sent_at,
+                                    "call_cancel",
                                     ids::to_hex(&call_id),
                                     0,
                                 ));
@@ -1605,6 +1752,9 @@ impl NemoClient {
                 expired.push(row.clone());
             }
         }
+        inner
+            .pending_invites
+            .retain(|_, invite| invite.expires_at > now);
         persist(&inner)?;
         Ok(expired)
     }
@@ -1661,6 +1811,7 @@ impl NemoClient {
         pump_call(Arc::clone(&call));
         inner.live_call = Some(call);
         inner.call_peer = Some(peer_id_hex.clone());
+        inner.call_connected = false;
         let Inner {
             inbox, next_seq, ..
         } = &mut *inner;
@@ -1714,6 +1865,7 @@ impl NemoClient {
         pump_call(Arc::clone(&call));
         inner.live_call = Some(call);
         inner.call_peer = Some(pending.peer.clone());
+        inner.call_connected = true;
         let Inner {
             inbox, next_seq, ..
         } = &mut *inner;
@@ -1729,51 +1881,71 @@ impl NemoClient {
         ))
     }
 
+    pub fn reject_call(&self, call_id_hex: String) -> Result<DisplayRow, FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let pending = inner
+            .pending_invites
+            .remove(&call_id_hex)
+            .ok_or_else(|| FfiError::Core("unknown call".into()))?;
+        send_call_body(
+            &mut inner,
+            pending.peer,
+            AppBody::CallReject {
+                call_id: pending.signal.call_id,
+            },
+            "call_reject",
+            now_unix(),
+        )
+    }
+
     pub fn end_call(&self) -> Result<DisplayRow, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let now = now_unix();
         if let Some(call) = inner.live_call.take() {
             let _ = block_on(call.close());
             let peer_hex = inner.call_peer.take().unwrap_or_default();
-            if !peer_hex.is_empty() {
-                let seq = bump_seq(&mut inner.next_seq, &peer_hex);
-                let ptext = encode(&AppMessage {
-                    header: AppHeader {
-                        conv_seq: seq,
-                        sent_at: now,
-                        reply_to: None,
-                    },
-                    body: AppBody::CallEnd {
-                        call_id: call.call_id(),
-                    },
-                })?;
-                let peer = parse_identity_id(&peer_hex)?;
-                {
-                    let session = inner.registered()?;
-                    block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
-                }
-                let Inner {
-                    inbox, next_seq, ..
-                } = &mut *inner;
-                return Ok(push_control(
-                    inbox,
-                    next_seq,
-                    peer_hex,
-                    seq,
-                    now,
-                    "call_end",
-                    ids::to_hex(&call.call_id()),
-                    0,
-                ));
+            let connected = inner.call_connected;
+            inner.call_connected = false;
+            if peer_hex.is_empty() {
+                return Err(FfiError::Core("no live call".into()));
             }
+            let call_id = call.call_id();
+            let (body, kind) = if connected {
+                (AppBody::CallEnd { call_id }, "call_end")
+            } else {
+                (AppBody::CallCancel { call_id }, "call_cancel")
+            };
+            return send_call_body(&mut inner, peer_hex, body, kind, now);
         }
-        Err(FfiError::Core("no live call".into()))
+        let hex = inner
+            .pending_invites
+            .keys()
+            .next()
+            .cloned()
+            .ok_or_else(|| FfiError::Core("no live call".into()))?;
+        let pending = inner
+            .pending_invites
+            .remove(&hex)
+            .ok_or_else(|| FfiError::Core("no live call".into()))?;
+        send_call_body(
+            &mut inner,
+            pending.peer,
+            AppBody::CallReject {
+                call_id: pending.signal.call_id,
+            },
+            "call_reject",
+            now,
+        )
     }
 
     pub fn call_state(&self) -> Result<String, FfiError> {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         if inner.live_call.is_some() {
-            Ok("live".into())
+            if inner.call_connected {
+                Ok("live".into())
+            } else {
+                Ok("calling".into())
+            }
         } else if !inner.pending_invites.is_empty() {
             Ok("ringing".into())
         } else {
@@ -2400,17 +2572,29 @@ mod tests {
             }
             Ok(invite) => {
                 assert_eq!(invite.kind, "call_invite");
+                assert_eq!(alice.call_state().unwrap(), "calling");
                 let rows = bob.fetch_now().unwrap();
                 let incoming = rows
                     .iter()
                     .find(|r| r.kind == "call_invite")
                     .expect("invite");
+                assert_eq!(bob.call_state().unwrap(), "ringing");
+                let ring = alice.fetch_now().unwrap();
+                assert!(
+                    ring.iter().any(|r| r.kind == "call_ringing"),
+                    "callee must send call_ringing"
+                );
                 match bob.answer_call(incoming.text.clone()) {
                     Err(e) => eprintln!("skip I9 FFI answer: {e}"),
                     Ok(answer) => {
                         assert_eq!(answer.kind, "call_answer");
-                        let _ = alice.fetch_now().unwrap();
-                        let _ = alice.end_call();
+                        let answered = alice.fetch_now().unwrap();
+                        assert!(answered.iter().any(|r| r.kind == "call_answer"));
+                        assert_eq!(alice.call_state().unwrap(), "live");
+                        let ended = alice.end_call().unwrap();
+                        assert_eq!(ended.kind, "call_end");
+                        let hang = bob.fetch_now().unwrap();
+                        assert!(hang.iter().any(|r| r.kind == "call_end"));
                     }
                 }
             }
@@ -2420,6 +2604,77 @@ mod tests {
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
         let _ = alice_id;
+    }
+
+    #[test]
+    fn callee_reject_closes_caller() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-reject-a");
+        let bob_dir = temp_dir("nemo-ffi-reject-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+        match alice.start_call(bob_id) {
+            Err(e) => eprintln!("skip I9 FFI call: {e}"),
+            Ok(_) => {
+                let incoming = bob
+                    .fetch_now()
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.kind == "call_invite")
+                    .expect("invite");
+                let rejected = bob.reject_call(incoming.text).unwrap();
+                assert_eq!(rejected.kind, "call_reject");
+                assert_eq!(bob.call_state().unwrap(), "idle");
+                let rows = alice.fetch_now().unwrap();
+                assert!(rows.iter().any(|r| r.kind == "call_reject"));
+                assert_eq!(alice.call_state().unwrap(), "idle");
+            }
+        }
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn caller_hangup_before_answer_sends_cancel() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-cancel-a");
+        let bob_dir = temp_dir("nemo-ffi-cancel-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+        match alice.start_call(bob_id) {
+            Err(e) => eprintln!("skip I9 FFI call: {e}"),
+            Ok(_) => {
+                let _ = bob.fetch_now().unwrap();
+                let canceled = alice.end_call().unwrap();
+                assert_eq!(canceled.kind, "call_cancel");
+                assert_eq!(alice.call_state().unwrap(), "idle");
+                let rows = bob.fetch_now().unwrap();
+                assert!(rows.iter().any(|r| r.kind == "call_cancel"));
+                assert_eq!(bob.call_state().unwrap(), "idle");
+            }
+        }
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
     }
 
     #[test]
