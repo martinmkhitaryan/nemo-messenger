@@ -2171,10 +2171,13 @@ dependencies = [
 name = "nemo-ffi"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "nemo-core",
+ "nemo-server",
  "nemo-wire",
  "rand 0.8.8",
  "thiserror 2.0.20",
+ "tokio",
  "uniffi",
 ]
 

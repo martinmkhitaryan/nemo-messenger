@@ -56,6 +56,8 @@ pub enum CoreError {
     Transport(String),
     #[error("unknown contact")]
     UnknownContact,
+    #[error("not registered with a home server")]
+    NotRegistered,
     #[error("vault passphrase is too short")]
     WeakPassphrase,
     #[error("vault already exists")]

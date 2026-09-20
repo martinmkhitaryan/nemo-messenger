@@ -8,7 +8,9 @@ use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::{self, IdentityId, KEY_LEN};
 use nemo_wire::prekey::SignedPrekey;
-use nemo_wire::{ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, RevocationStatement, ServerBundle};
+use nemo_wire::{
+    ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, RevocationStatement, ServerBundle,
+};
 
 use crate::discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
 use crate::error::{CoreError, Result};
@@ -170,8 +172,9 @@ impl HomeState {
                 cbor::expect_bytes(cbor::map_get(cm, 5).map_err(|_| CoreError::VaultCorrupt)?)
                     .map_err(|_| CoreError::VaultCorrupt)?,
             )?;
-            let last = cbor::expect_uint(cbor::map_get(cm, 6).map_err(|_| CoreError::VaultCorrupt)?)
-                .map_err(|_| CoreError::VaultCorrupt)?;
+            let last =
+                cbor::expect_uint(cbor::map_get(cm, 6).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?;
             let revoked =
                 cbor::expect_uint(cbor::map_get(cm, 7).map_err(|_| CoreError::VaultCorrupt)?)
                     .map_err(|_| CoreError::VaultCorrupt)?
@@ -453,6 +456,36 @@ impl<T: HomeTransport> HomeSession<T> {
 
     pub async fn mint_share(&self) -> Result<[u8; KEY_LEN]> {
         self.mint_token("/v1/tokens/share").await
+    }
+
+    /// New `nemo:1:` card whose share token is live on this home (ADR-0007).
+    pub async fn mint_share_card(&mut self, now_unix: u64) -> Result<ContactCard> {
+        let share_token = self.mint_share().await?;
+        self.install.card_with_share(
+            self.bundle.server_hpke_public_key,
+            &self.bundle.host,
+            now_unix.saturating_add(CARD_TTL_SECS),
+            share_token,
+        )
+    }
+
+    /// Fetch, decrypt 1:1 rows against known contacts, ack.
+    pub async fn ingest_mailbox(&mut self) -> Result<Vec<(IdentityId, Vec<u8>)>> {
+        let rows = self.fetch_mailbox().await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let contacts: Vec<_> = self.contacts.keys().copied().collect();
+        let mut opened = Vec::new();
+        for row in &rows {
+            match self.install.decrypt_incoming(&row.inner, &contacts).await {
+                Ok(item) => opened.push(item),
+                Err(CoreError::WrongMailboxType) => {}
+                Err(_) => {}
+            }
+        }
+        self.ack().await?;
+        Ok(opened)
     }
 
     async fn mint_token(&self, path: &str) -> Result<[u8; KEY_LEN]> {

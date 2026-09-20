@@ -24,8 +24,8 @@ How to use it:
 | SQLCipher vault for identity + libsignal store (ADR-0034) | **Done** (`701b992`) |
 | MLS group state in the vault | **Done** (I1) |
 | Durable home session | **Done** (I2) |
-| UniFFI beyond create/open/save | **Not started** ← next
-| Compose UI | Placeholder window only |
+| UniFFI beyond create/open/save | **Done** (I3) |
+| Compose UI | Placeholder window only ← next |
 | 1:1 WebRTC media | Signaling types exist; media engine not wired |
 | FCM | Not started (needs schema amendment) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
@@ -135,10 +135,10 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] Rust tests on the FFI crate for register+send against in-process server
-- [ ] No secret types in the UDL/UniFFI surface (ids, fingerprints, mnemonic once, ciphertext never)
-- [ ] `cargo test -p nemo-ffi`
-- [ ] Commit
+- [x] Rust tests on the FFI crate for register+send against in-process server
+- [x] No secret types in the UDL/UniFFI surface (ids, fingerprints, mnemonic once, ciphertext never)
+- [x] `cargo test -p nemo-ffi`
+- [x] Commit
 
 ---
 
@@ -340,4 +340,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I2 is implemented.** Start **I3** (widen UniFFI: register, share card, send/receive text).
+**I3 is implemented.** Start **I4** (Compose: create/unlock, fingerprint, 1:1 text).

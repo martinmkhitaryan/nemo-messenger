@@ -5,13 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bip39::Mnemonic;
 use libsignal_protocol::{
     kem, message_decrypt, message_encrypt, process_prekey_bundle, CiphertextMessage,
-    GenericSignedPreKey, IdentityKeyPair, IdentityKeyStore, KeyPair, KyberPreKeyId,
+    GenericSignedPreKey, IdentityKey, IdentityKeyPair, IdentityKeyStore, KeyPair, KyberPreKeyId,
     KyberPreKeyRecord, KyberPreKeyStore, PreKeyId, PreKeyRecord, PreKeySignalMessage, PreKeyStore,
     ProtocolAddress, SignalMessage, SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore,
     Timestamp,
 };
-use nemo_wire::cbor::{self, Value};
 use nemo_wire::card::{ContactCard, HomeServerBinding};
+use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::{self, IdentityId, KEY_LEN};
 use nemo_wire::prekey::SignedPrekey;
@@ -195,9 +195,20 @@ impl Installation {
         host: &str,
         expires_at: u64,
     ) -> Result<ContactCard> {
-        self.binding_seq += 1;
         let mut share_token = [0u8; KEY_LEN];
         rand::rngs::OsRng.fill_bytes(&mut share_token);
+        self.binding_seq += 1;
+        self.card_with_share(server_hpke_public_key, host, expires_at, share_token)
+    }
+
+    /// Card for an already-minted share token, signed with the current binding seq.
+    pub fn card_with_share(
+        &self,
+        server_hpke_public_key: [u8; KEY_LEN],
+        host: &str,
+        expires_at: u64,
+        share_token: [u8; KEY_LEN],
+    ) -> Result<ContactCard> {
         let binding = HomeServerBinding::sign(
             &self.identity,
             HomeServerBinding {
@@ -329,6 +340,47 @@ impl Installation {
     ) -> Result<Vec<u8>> {
         let body = mailbox::expect_ratchet(inner)?;
         self.decrypt(peer, &parse_padded_dr(body)?).await
+    }
+
+    /// Open a sealed-sender 1:1 row. PreKey messages are decrypted once (the
+    /// one-time prekey must not be tried under the wrong address).
+    pub async fn decrypt_incoming(
+        &mut self,
+        inner: &InnerEnvelope,
+        extra_peers: &[IdentityId],
+    ) -> Result<(IdentityId, Vec<u8>)> {
+        let body = mailbox::expect_ratchet(inner)?;
+        let ctext = parse_padded_dr(body)?;
+        let mut peers: Vec<IdentityId> = extra_peers.to_vec();
+        for name in self.store.peer_address_names() {
+            if let Ok(id) = ids::parse_identity_id(&name) {
+                peers.push(id);
+            }
+        }
+        peers.sort();
+        peers.dedup();
+
+        if let Ok(pksm) = PreKeySignalMessage::try_from(ctext.as_slice()) {
+            let ls = pksm.identity_key();
+            for peer in &peers {
+                if identity_matches(&self.store, peer, ls).await {
+                    let pt = self.decrypt(peer, &ctext).await?;
+                    return Ok((*peer, pt));
+                }
+            }
+            let peer = provisional_peer_id(ls);
+            let pt = self.decrypt(&peer, &ctext).await?;
+            return Ok((peer, pt));
+        }
+
+        let mut last = CoreError::UnknownContact;
+        for peer in &peers {
+            match self.decrypt(peer, &ctext).await {
+                Ok(pt) => return Ok((*peer, pt)),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     }
 
     pub async fn decrypt(&mut self, peer: &IdentityId, ciphertext: &[u8]) -> Result<Vec<u8>> {
@@ -472,6 +524,21 @@ pub fn revocation_from_mnemonic(
 fn card_verifying_key(card: &ContactCard) -> Result<VerifyingKey> {
     VerifyingKey::from_bytes(&card.identity_public_key)
         .map_err(|_| CoreError::Wire(nemo_wire::WireError::Signature))
+}
+
+async fn identity_matches(
+    store: &crate::store::SignalStore,
+    peer: &IdentityId,
+    ls: &IdentityKey,
+) -> bool {
+    match store.get_identity(&address_for(peer)).await {
+        Ok(Some(known)) => known == *ls,
+        _ => false,
+    }
+}
+
+fn provisional_peer_id(ls: &IdentityKey) -> IdentityId {
+    ids::sha256(ls.serialize().as_ref())
 }
 
 fn address_for(id: &IdentityId) -> ProtocolAddress {

@@ -71,13 +71,14 @@ impl IdentityKeyStore for Identities {
         identity: &IdentityKey,
         _direction: Direction,
     ) -> SignalResult<bool> {
-        Ok(self.known.get(address).map(|k| k == identity).unwrap_or(true))
+        Ok(self
+            .known
+            .get(address)
+            .map(|k| k == identity)
+            .unwrap_or(true))
     }
 
-    async fn get_identity(
-        &self,
-        address: &ProtocolAddress,
-    ) -> SignalResult<Option<IdentityKey>> {
+    async fn get_identity(&self, address: &ProtocolAddress) -> SignalResult<Option<IdentityKey>> {
         Ok(self.known.get(address).copied())
     }
 }
@@ -96,11 +97,7 @@ impl PreKeyStore for PreKeys {
             .ok_or(SignalProtocolError::InvalidPreKeyId)
     }
 
-    async fn save_pre_key(
-        &mut self,
-        id: PreKeyId,
-        record: &PreKeyRecord,
-    ) -> SignalResult<()> {
+    async fn save_pre_key(&mut self, id: PreKeyId, record: &PreKeyRecord) -> SignalResult<()> {
         self.keys.insert(id, record.clone());
         Ok(())
     }
@@ -118,10 +115,7 @@ pub struct SignedPreKeys {
 
 #[async_trait(?Send)]
 impl SignedPreKeyStore for SignedPreKeys {
-    async fn get_signed_pre_key(
-        &self,
-        id: SignedPreKeyId,
-    ) -> SignalResult<SignedPreKeyRecord> {
+    async fn get_signed_pre_key(&self, id: SignedPreKeyId) -> SignalResult<SignedPreKeyRecord> {
         self.keys
             .get(&id)
             .cloned()
@@ -146,10 +140,7 @@ pub struct KyberPreKeys {
 
 #[async_trait(?Send)]
 impl KyberPreKeyStore for KyberPreKeys {
-    async fn get_kyber_pre_key(
-        &self,
-        id: KyberPreKeyId,
-    ) -> SignalResult<KyberPreKeyRecord> {
+    async fn get_kyber_pre_key(&self, id: KyberPreKeyId) -> SignalResult<KyberPreKeyRecord> {
         self.keys
             .get(&id)
             .cloned()
@@ -193,10 +184,7 @@ pub struct Sessions {
 
 #[async_trait(?Send)]
 impl SessionStore for Sessions {
-    async fn load_session(
-        &self,
-        address: &ProtocolAddress,
-    ) -> SignalResult<Option<SessionRecord>> {
+    async fn load_session(&self, address: &ProtocolAddress) -> SignalResult<Option<SessionRecord>> {
         Ok(self.sessions.get(address).cloned())
     }
 
@@ -232,6 +220,24 @@ impl SignalStore {
 
     pub fn all_pre_key_ids(&self) -> impl Iterator<Item = &PreKeyId> {
         self.pre_key_store.keys.keys()
+    }
+
+    pub fn peer_address_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .session_store
+            .sessions
+            .keys()
+            .map(|a| a.name().to_owned())
+            .collect();
+        names.extend(
+            self.identity_store
+                .known
+                .keys()
+                .map(|a| a.name().to_owned()),
+        );
+        names.sort();
+        names.dedup();
+        names
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -328,9 +334,11 @@ impl SignalStore {
     }
 
     fn from_map(m: &[(u64, Value)]) -> Result<Self> {
-        let pair_bytes = cbor::expect_bytes(cbor::map_get(m, 0).map_err(|_| CoreError::VaultCorrupt)?)
-            .map_err(|_| CoreError::VaultCorrupt)?;
-        let key_pair = IdentityKeyPair::try_from(pair_bytes).map_err(|_| CoreError::VaultCorrupt)?;
+        let pair_bytes =
+            cbor::expect_bytes(cbor::map_get(m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+        let key_pair =
+            IdentityKeyPair::try_from(pair_bytes).map_err(|_| CoreError::VaultCorrupt)?;
         let registration_id =
             cbor::expect_uint(cbor::map_get(m, 1).map_err(|_| CoreError::VaultCorrupt)?)
                 .map_err(|_| CoreError::VaultCorrupt)? as u32;
@@ -436,10 +444,7 @@ impl IdentityKeyStore for SignalStore {
             .await
     }
 
-    async fn get_identity(
-        &self,
-        address: &ProtocolAddress,
-    ) -> SignalResult<Option<IdentityKey>> {
+    async fn get_identity(&self, address: &ProtocolAddress) -> SignalResult<Option<IdentityKey>> {
         self.identity_store.get_identity(address).await
     }
 }
@@ -450,11 +455,7 @@ impl PreKeyStore for SignalStore {
         self.pre_key_store.get_pre_key(id).await
     }
 
-    async fn save_pre_key(
-        &mut self,
-        id: PreKeyId,
-        record: &PreKeyRecord,
-    ) -> SignalResult<()> {
+    async fn save_pre_key(&mut self, id: PreKeyId, record: &PreKeyRecord) -> SignalResult<()> {
         self.pre_key_store.save_pre_key(id, record).await
     }
 
@@ -465,10 +466,7 @@ impl PreKeyStore for SignalStore {
 
 #[async_trait(?Send)]
 impl SignedPreKeyStore for SignalStore {
-    async fn get_signed_pre_key(
-        &self,
-        id: SignedPreKeyId,
-    ) -> SignalResult<SignedPreKeyRecord> {
+    async fn get_signed_pre_key(&self, id: SignedPreKeyId) -> SignalResult<SignedPreKeyRecord> {
         self.signed_pre_key_store.get_signed_pre_key(id).await
     }
 
@@ -485,10 +483,7 @@ impl SignedPreKeyStore for SignalStore {
 
 #[async_trait(?Send)]
 impl KyberPreKeyStore for SignalStore {
-    async fn get_kyber_pre_key(
-        &self,
-        id: KyberPreKeyId,
-    ) -> SignalResult<KyberPreKeyRecord> {
+    async fn get_kyber_pre_key(&self, id: KyberPreKeyId) -> SignalResult<KyberPreKeyRecord> {
         self.kyber_pre_key_store.get_kyber_pre_key(id).await
     }
 
@@ -497,7 +492,9 @@ impl KyberPreKeyStore for SignalStore {
         id: KyberPreKeyId,
         record: &KyberPreKeyRecord,
     ) -> SignalResult<()> {
-        self.kyber_pre_key_store.save_kyber_pre_key(id, record).await
+        self.kyber_pre_key_store
+            .save_kyber_pre_key(id, record)
+            .await
     }
 
     async fn mark_kyber_pre_key_used(
