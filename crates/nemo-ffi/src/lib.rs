@@ -63,6 +63,13 @@ pub struct GroupRow {
     pub member_count: u64,
 }
 
+/// Local nickname for a 1:1 contact. No keys.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct ContactRow {
+    pub identity_id: String,
+    pub nickname: String,
+}
+
 const GROUP_INVITE_PREFIX: &str = "nemo-g:1:";
 const JOIN_REQUEST_PREFIX: &str = "nemo-j:1:";
 
@@ -1267,6 +1274,18 @@ impl NemoClient {
             .host
             .cred;
         Ok(block_on(session.fetch_file(gid, &cred, token))?)
+    }
+
+    pub fn list_contacts(&self) -> Result<Vec<ContactRow>, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        Ok(inner
+            .nicknames
+            .iter()
+            .map(|(id, nickname)| ContactRow {
+                identity_id: id.clone(),
+                nickname: nickname.clone(),
+            })
+            .collect())
     }
 
     pub fn list_groups(&self) -> Result<Vec<GroupRow>, FfiError> {

@@ -1,5 +1,6 @@
 /.gradle/
 /build/
+/.kotlin/
 /kotlin-js-store/
 /local.properties
 /src/androidMain/jniLibs/

@@ -1,36 +1,88 @@
 package org.nemo
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -38,18 +90,45 @@ import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-internal const val DEFAULT_HOME = "http://127.0.0.1:8787"
 private const val CANNOT_RECOVER =
-    "This identity cannot be recovered. If you lose the passphrase, the keys are gone. Write the revocation phrase down; it is shown once."
+    "This identity cannot be recovered. If you lose the passphrase, the keys are gone."
 
 expect fun pickLocalFile(): String?
 
+expect fun defaultHomeUrl(): String
+
+expect fun copyToClipboard(text: String)
+
 private enum class Phase { Locked, Create, Mnemonic, Home }
 
+private enum class Sheet { None, AddContact, NewGroup, JoinGroup }
+
+private data class ChatTarget(
+    val id: String,
+    val title: String,
+    val isGroup: Boolean,
+)
+
+private val AvatarPalette = listOf(
+    Color(0xFF0F766E),
+    Color(0xFF0369A1),
+    Color(0xFF7C3AED),
+    Color(0xFFB45309),
+    Color(0xFFBE185D),
+    Color(0xFF15803D),
+    Color(0xFF1D4ED8),
+    Color(0xFF0E7490),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
     var phase by remember {
         mutableStateOf(if (File(vaultDir, "kdf.cbor").isFile) Phase.Locked else Phase.Create)
     }
@@ -59,39 +138,66 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var mnemonic by remember { mutableStateOf<String?>(null) }
     var fingerprint by remember { mutableStateOf("") }
     var identityHex by remember { mutableStateOf("") }
-    var homeUrl by remember { mutableStateOf(DEFAULT_HOME) }
+    var homeUrl by remember { mutableStateOf(defaultHomeUrl()) }
+    var registered by remember { mutableStateOf(false) }
     var shareUri by remember { mutableStateOf("") }
     var cardPaste by remember { mutableStateOf("") }
-    var nickname by remember { mutableStateOf(label) }
-    var peerId by remember { mutableStateOf("") }
-    var draft by remember { mutableStateOf("") }
-    var groupName by remember { mutableStateOf(label) }
-    var groupId by remember { mutableStateOf("") }
-    var inviteUri by remember { mutableStateOf("") }
+    var nickname by remember { mutableStateOf("") }
+    var groupName by remember { mutableStateOf("") }
     var invitePaste by remember { mutableStateOf("") }
     var joinUri by remember { mutableStateOf("") }
     var joinPaste by remember { mutableStateOf("") }
-    var groupDraft by remember { mutableStateOf("") }
     var memberCred by remember { mutableStateOf("") }
-    var filePath by remember { mutableStateOf("") }
-    var emoji by remember { mutableStateOf("👍") }
+    var draft by remember { mutableStateOf("") }
     var disappearSecs by remember { mutableStateOf("0") }
-    var status by remember { mutableStateOf<String?>(null) }
-    val messages = remember { mutableStateListOf<DisplayRow>() }
     var busy by remember { mutableStateOf(false) }
+    var sheet by remember { mutableStateOf(Sheet.None) }
+    var showSettings by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<ChatTarget?>(null) }
+    var addMenu by remember { mutableStateOf(false) }
+    var chatMenu by remember { mutableStateOf(false) }
+    val messages = remember { mutableStateListOf<DisplayRow>() }
+    val outgoing = remember { mutableStateMapOf<String, Boolean>() }
+    val contacts = remember { mutableStateMapOf<String, String>() }
+    val groups = remember { mutableStateMapOf<String, String>() }
 
     fun runIo(block: suspend () -> Unit) {
         if (busy) return
         busy = true
-        status = null
         scope.launch {
             try {
                 block()
             } catch (e: Throwable) {
-                status = e.message ?: e.toString()
+                snackbar.showSnackbar(e.message ?: e.toString())
             } finally {
                 busy = false
             }
+        }
+    }
+
+    fun markOutgoing(row: DisplayRow) {
+        outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
+    }
+
+    fun reloadRoster(c: NemoClient) {
+        contacts.clear()
+        c.listContacts().forEach { contacts[it.identityId] = it.nickname }
+        groups.clear()
+        c.listGroups().forEach { groups[it.groupId] = it.nickname.ifBlank { "Group" } }
+    }
+
+    fun chats(): List<ChatTarget> {
+        val fromMessages = messages.map { it.convId }.distinct()
+        val ids = (contacts.keys + groups.keys + fromMessages).distinct()
+        return ids.map { id ->
+            val isGroup = groups.containsKey(id)
+            ChatTarget(
+                id = id,
+                title = contacts[id] ?: groups[id] ?: shortId(id),
+                isGroup = isGroup,
+            )
+        }.sortedByDescending { chat ->
+            messages.lastOrNull { it.convId == chat.id }?.sentAt ?: 0UL
         }
     }
 
@@ -105,12 +211,12 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                 applyIncoming(messages, rows)
                 val expired = withContext(Dispatchers.IO) { c.expireNow() }
                 applyIncoming(messages, expired)
-                if (groupId.isEmpty()) {
-                    val groups = withContext(Dispatchers.IO) { c.listGroups() }
-                    if (groups.isNotEmpty()) {
-                        groupId = groups[0].groupId
-                    }
-                }
+                val contactRows = withContext(Dispatchers.IO) { c.listContacts() }
+                val groupRows = withContext(Dispatchers.IO) { c.listGroups() }
+                contacts.clear()
+                contactRows.forEach { contacts[it.identityId] = it.nickname }
+                groups.clear()
+                groupRows.forEach { groups[it.groupId] = it.nickname.ifBlank { "Group" } }
             } catch (_: Throwable) {
             }
         }
@@ -131,20 +237,19 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     }
 
     Surface(modifier) {
-        Column(Modifier.fillMaxSize().padding(16.dp)) {
-            Text("$label · ${vaultDir.name}", style = MaterialTheme.typography.titleMedium)
-            status?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(8.dp))
+        Column(Modifier.fillMaxSize().imePadding()) {
+            SnackbarHost(snackbar)
             when (phase) {
-                Phase.Create -> {
-                    Text(CANNOT_RECOVER, style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
+                Phase.Create -> OnboardScaffold(
+                    title = "Create identity",
+                    subtitle = CANNOT_RECOVER,
+                ) {
                     PassField("Passphrase (min 8)", passphrase) { passphrase = it }
                     PassField("Confirm", confirm) { confirm = it }
+                    Spacer(Modifier.height(12.dp))
                     Button(
                         enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
                         onClick = {
                             runIo {
                                 if (passphrase.length < 8) {
@@ -167,11 +272,15 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                         TextButton(onClick = { phase = Phase.Locked }) { Text("Unlock existing instead") }
                     }
                 }
-                Phase.Locked -> {
-                    Text("Unlock this vault. There is no recovery if the passphrase is wrong.")
+                Phase.Locked -> OnboardScaffold(
+                    title = "Welcome back",
+                    subtitle = "Unlock this vault. There is no recovery if the passphrase is wrong.",
+                ) {
                     PassField("Passphrase", passphrase) { passphrase = it }
+                    Spacer(Modifier.height(12.dp))
                     Button(
                         enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
                         onClick = {
                             runIo {
                                 val c = withContext(Dispatchers.IO) {
@@ -180,420 +289,918 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 client = c
                                 fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                 identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
-                                val groups = withContext(Dispatchers.IO) { c.listGroups() }
-                                if (groups.isNotEmpty()) {
-                                    groupId = groups[0].groupId
-                                }
+                                withContext(Dispatchers.IO) { reloadRoster(c) }
+                                applyIncoming(messages, withContext(Dispatchers.IO) { c.inbox() })
+                                registered = true
                                 phase = Phase.Home
                             }
                         },
                     ) { Text("Unlock") }
                     TextButton(onClick = { phase = Phase.Create }) { Text("Create a new identity") }
                 }
-                Phase.Mnemonic -> {
-                    Text("Write this revocation phrase down. It is never stored.")
-                    Spacer(Modifier.height(8.dp))
-                    Text(mnemonic ?: "", fontFamily = FontFamily.Monospace)
-                    Spacer(Modifier.height(8.dp))
+                Phase.Mnemonic -> OnboardScaffold(
+                    title = "Recovery phrase",
+                    subtitle = "Write this revocation phrase down. It is never stored.",
+                ) {
+                    SelectionContainer {
+                        Text(
+                            mnemonic ?: "",
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(16.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
                     Button(
+                        modifier = Modifier.fillMaxWidth(),
                         onClick = {
                             runIo {
                                 val c = client ?: return@runIo
                                 fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                 identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
+                                showSettings = true
                                 phase = Phase.Home
                             }
                         },
                     ) { Text("I wrote it down") }
                 }
                 Phase.Home -> {
-                    val scroll = rememberScrollState()
-                    Box(Modifier.weight(1f)) {
-                        Column(Modifier.verticalScroll(scroll).padding(end = 12.dp)) {
-                            Text("Fingerprint", style = MaterialTheme.typography.labelSmall)
-                            Text(fingerprint, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            Text("identity_id", style = MaterialTheme.typography.labelSmall)
-                            Text(identityHex, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            OutlinedTextField(
-                                value = homeUrl,
-                                onValueChange = { homeUrl = it },
-                                label = { Text("Home server") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                            )
-                            Text(
-                                "Compose HTTPS: https://localhost:8443 · local cargo: http://127.0.0.1:8787",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            Button(
-                                enabled = !busy,
-                                onClick = {
+                    val c = client
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val split = maxWidth >= 720.dp
+                        val chat = selected
+                        when {
+                            showSettings -> SettingsScreen(
+                                fingerprint = fingerprint,
+                                identityHex = identityHex,
+                                homeUrl = homeUrl,
+                                onHomeUrl = { homeUrl = it },
+                                shareUri = shareUri,
+                                joinUri = joinUri,
+                                joinPaste = joinPaste,
+                                onJoinPaste = { joinPaste = it },
+                                memberCred = memberCred,
+                                disappearSecs = disappearSecs,
+                                onDisappearSecs = { disappearSecs = it },
+                                selected = chat,
+                                busy = busy,
+                                onBack = { showSettings = false },
+                                onRegister = {
                                     runIo {
-                                        withContext(Dispatchers.IO) { client?.register(homeUrl.trim()) }
-                                        status = "Registered on ${homeUrl.trim()}"
+                                        withContext(Dispatchers.IO) { c?.register(homeUrl.trim()) }
+                                        registered = true
+                                        snackbar.showSnackbar("Connected to home")
                                     }
                                 },
-                            ) { Text("Register") }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Button(
-                                    enabled = !busy,
-                                    onClick = {
-                                        runIo {
-                                            shareUri = withContext(Dispatchers.IO) {
-                                                client?.mintShareUri().orEmpty()
-                                            }
-                                        }
-                                    },
-                                ) { Text("Mint share card") }
-                            }
-                            if (shareUri.isNotEmpty()) {
-                                Text(shareUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            }
-                            OutlinedTextField(
-                                value = cardPaste,
-                                onValueChange = { cardPaste = it },
-                                label = { Text("Paste contact card (nemo:1:…)") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                value = nickname,
-                                onValueChange = { nickname = it },
-                                label = { Text("Local nickname") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                            )
-                            Button(
-                                enabled = !busy,
-                                onClick = {
+                                onShare = {
                                     runIo {
-                                        peerId = withContext(Dispatchers.IO) {
-                                            client?.addContact(cardPaste.trim(), nickname).orEmpty()
+                                        shareUri = withContext(Dispatchers.IO) {
+                                            c?.mintShareUri().orEmpty()
                                         }
-                                        status = "Added $peerId"
+                                        if (shareUri.isNotEmpty()) copyToClipboard(shareUri)
                                     }
                                 },
-                            ) { Text("Add contact") }
-                            if (peerId.isNotEmpty()) {
-                                Text("Peer $peerId", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            }
-                            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                            Text("Group", style = MaterialTheme.typography.titleSmall)
-                            OutlinedTextField(
-                                value = groupName,
-                                onValueChange = { groupName = it },
-                                label = { Text("Group nickname") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                            )
-                            Button(
-                                enabled = !busy,
-                                onClick = {
-                                    runIo {
-                                        groupId = withContext(Dispatchers.IO) {
-                                            client?.createGroup(groupName.ifBlank { label }).orEmpty()
-                                        }
-                                        status = "Created group $groupId"
-                                    }
-                                },
-                            ) { Text("Create group") }
-                            if (groupId.isNotEmpty()) {
-                                Text("Group $groupId", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            }
-                            Button(
-                                enabled = !busy && groupId.isNotEmpty(),
-                                onClick = {
-                                    runIo {
-                                        inviteUri = withContext(Dispatchers.IO) {
-                                            client?.mintGroupInvite(groupId).orEmpty()
-                                        }
-                                    }
-                                },
-                            ) { Text("Mint group invite") }
-                            if (inviteUri.isNotEmpty()) {
-                                Text(inviteUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            }
-                            OutlinedTextField(
-                                value = invitePaste,
-                                onValueChange = { invitePaste = it },
-                                label = { Text("Paste group invite (nemo-g:1:…)") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Button(
-                                enabled = !busy && invitePaste.isNotBlank(),
-                                onClick = {
-                                    runIo {
-                                        joinUri = withContext(Dispatchers.IO) {
-                                            client?.acceptGroupInvite(invitePaste.trim()).orEmpty()
-                                        }
-                                        status = "Accepted invite; give this join request to an existing member"
-                                    }
-                                },
-                            ) { Text("Accept invite") }
-                            if (joinUri.isNotEmpty()) {
-                                Text(joinUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                            }
-                            OutlinedTextField(
-                                value = joinPaste,
-                                onValueChange = { joinPaste = it },
-                                label = { Text("Paste join request (nemo-j:1:…)") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Button(
-                                enabled = !busy && joinPaste.isNotBlank(),
-                                onClick = {
+                                onAdmit = {
                                     runIo {
                                         memberCred = withContext(Dispatchers.IO) {
-                                            client?.admitJoin(joinPaste.trim()).orEmpty()
+                                            c?.admitJoin(joinPaste.trim()).orEmpty()
                                         }
-                                        status = "Admitted $memberCred"
+                                        snackbar.showSnackbar("Admitted member")
                                     }
                                 },
-                            ) { Text("Admit join") }
-                            OutlinedTextField(
-                                value = groupDraft,
-                                onValueChange = { groupDraft = it },
-                                label = { Text("Group message") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Row {
-                                Button(
-                                    enabled = !busy && groupId.isNotEmpty() && groupDraft.isNotBlank(),
-                                    onClick = {
-                                        val text = groupDraft
-                                        groupDraft = ""
-                                        runIo {
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.sendGroupText(groupId, text)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                        }
-                                    },
-                                ) { Text("Send group") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy && groupId.isNotEmpty() && memberCred.isNotEmpty(),
-                                    onClick = {
-                                        runIo {
-                                            withContext(Dispatchers.IO) {
-                                                client?.removeGroupMember(groupId, memberCred)
-                                            }
-                                            status = "Removed $memberCred"
-                                        }
-                                    },
-                                ) { Text("Remove member") }
-                            }
-                            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                            Text("Thread", style = MaterialTheme.typography.titleSmall)
-                            messages.forEach { row ->
-                                val who = when {
-                                    peerId.isNotEmpty() && row.convId == peerId -> "You"
-                                    groupId.isNotEmpty() && row.convId == groupId -> "Group"
-                                    else -> "Them"
-                                }
-                                val line = when {
-                                    row.hidden && row.kind == "expired" -> "$who: (expired)"
-                                    row.hidden || row.kind == "deleted" -> "$who: (deleted)"
-                                    row.kind == "reaction" -> "$who reacted ${row.emoji} to #${row.target}"
-                                    row.kind == "disappear" -> "$who set disappear ${row.text}s"
-                                    row.kind == "call_invite" -> "$who: incoming call ${row.text}"
-                                    row.kind == "call_answer" -> "$who: answered ${row.text}"
-                                    row.kind == "call_end" -> "$who: hung up"
-                                    row.fileName.isNotEmpty() -> "$who file: ${row.fileName} (${row.fileBytes.size} bytes)"
-                                    else -> "$who: ${row.text}"
-                                }
-                                Text(line, style = MaterialTheme.typography.bodyMedium)
-                            }
-                            OutlinedTextField(
-                                value = draft,
-                                onValueChange = { draft = it },
-                                label = { Text("Message") },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Row {
-                                Button(
-                                    enabled = !busy && peerId.isNotEmpty() && draft.isNotBlank(),
-                                    onClick = {
-                                        val text = draft
-                                        draft = ""
-                                        runIo {
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.sendText(peerId, text)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                        }
-                                    },
-                                ) { Text("Send") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy,
-                                    onClick = {
-                                        runIo {
-                                            val rows = withContext(Dispatchers.IO) {
-                                                client?.fetchNow().orEmpty()
-                                            }
-                                            applyIncoming(messages, rows)
-                                        }
-                                    },
-                                ) { Text("Fetch") }
-                            }
-                            Row {
-                                Button(
-                                    enabled = !busy && peerId.isNotEmpty(),
-                                    onClick = {
-                                        runIo {
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.startCall(peerId)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                        }
-                                    },
-                                ) { Text("Call") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy,
-                                    onClick = {
-                                        runIo {
-                                            val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                                ?: return@runIo
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.answerCall(id)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                        }
-                                    },
-                                ) { Text("Answer") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy,
-                                    onClick = {
-                                        runIo {
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.endCall()
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                        }
-                                    },
-                                ) { Text("Hang up") }
-                            }
-                            OutlinedTextField(
-                                value = emoji,
-                                onValueChange = { emoji = it },
-                                label = { Text("Reaction emoji") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                            )
-                            Row {
-                                Button(
-                                    enabled = !busy && (peerId.isNotEmpty() || groupId.isNotEmpty()) && emoji.isNotBlank(),
-                                    onClick = {
-                                        runIo {
-                                            val conv = peerId.ifEmpty { groupId }
-                                            val target = messages.lastOrNull {
-                                                it.convId == conv && it.kind.isEmpty() && !it.hidden
-                                            }?.convSeq ?: return@runIo
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.react(conv, target, emoji)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                        }
-                                    },
-                                ) { Text("React") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy && (peerId.isNotEmpty() || groupId.isNotEmpty()),
-                                    onClick = {
-                                        runIo {
-                                            val conv = peerId.ifEmpty { groupId }
-                                            val target = messages.lastOrNull {
-                                                it.convId == conv && it.kind.isEmpty() && !it.hidden
-                                            }?.convSeq ?: return@runIo
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.deleteMessage(conv, target)
-                                            } ?: return@runIo
-                                            applyIncoming(messages, listOf(row))
-                                        }
-                                    },
-                                ) { Text("Delete") }
-                            }
-                            OutlinedTextField(
-                                value = disappearSecs,
-                                onValueChange = { disappearSecs = it },
-                                label = { Text("Disappear seconds (0 = off)") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                            )
-                            Button(
-                                enabled = !busy && (peerId.isNotEmpty() || groupId.isNotEmpty()),
-                                onClick = {
+                                onInviteGroup = {
+                                    val id = chat?.id ?: return@SettingsScreen
+                                    if (chat.isGroup.not()) return@SettingsScreen
                                     runIo {
-                                        val conv = peerId.ifEmpty { groupId }
-                                        val secs = disappearSecs.toULongOrNull()?.toLong()?.coerceAtLeast(0) ?: 0
+                                        val uri = withContext(Dispatchers.IO) {
+                                            c?.mintGroupInvite(id).orEmpty()
+                                        }
+                                        copyToClipboard(uri)
+                                        snackbar.showSnackbar("Invite copied")
+                                    }
+                                },
+                                onDisappear = {
+                                    val id = chat?.id ?: return@SettingsScreen
+                                    runIo {
+                                        val secs = disappearSecs.toULongOrNull() ?: 0UL
                                         val row = withContext(Dispatchers.IO) {
-                                            client?.setDisappear(conv, secs.toULong())
+                                            c?.setDisappear(id, secs)
+                                        } ?: return@runIo
+                                        messages.add(row)
+                                        markOutgoing(row)
+                                    }
+                                },
+                            )
+                            split -> Row(Modifier.fillMaxSize()) {
+                                ChatListPane(
+                                    label = label,
+                                    chats = chats(),
+                                    messages = messages,
+                                    selectedId = chat?.id,
+                                    modifier = Modifier.width(340.dp).fillMaxHeight(),
+                                    onSelect = { selected = it; showSettings = false },
+                                    onSettings = { showSettings = true },
+                                    onAdd = { addMenu = true },
+                                    addMenu = addMenu,
+                                    onAddDismiss = { addMenu = false },
+                                    onAddContact = { addMenu = false; sheet = Sheet.AddContact },
+                                    onNewGroup = { addMenu = false; sheet = Sheet.NewGroup },
+                                    onJoinGroup = { addMenu = false; sheet = Sheet.JoinGroup },
+                                )
+                                VerticalDivider()
+                                Box(Modifier.weight(1f).fillMaxHeight()) {
+                                    if (chat == null) {
+                                        EmptyChatHint()
+                                    } else {
+                                        ChatThread(
+                                            chat = chat,
+                                            messages = messages.filter { it.convId == chat.id },
+                                            outgoing = outgoing,
+                                            draft = draft,
+                                            onDraft = { draft = it },
+                                            busy = busy,
+                                            showBack = false,
+                                            onBack = { selected = null },
+                                            onSettings = { showSettings = true },
+                                            chatMenu = chatMenu,
+                                            onChatMenu = { chatMenu = it },
+                                            onSend = { sendChat(c, chat, draft, messages, outgoing, runIo = { runIo(it) }) { draft = "" } },
+                                            onAttach = { attachFile(c, chat, messages, outgoing, snackbar, runIo = { runIo(it) }) },
+                                            onCall = {
+                                                runIo {
+                                                    val row = withContext(Dispatchers.IO) {
+                                                        c?.startCall(chat.id)
+                                                    } ?: return@runIo
+                                                    messages.add(row)
+                                                    markOutgoing(row)
+                                                }
+                                            },
+                                            onAnswer = {
+                                                runIo {
+                                                    val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                        ?: return@runIo
+                                                    val row = withContext(Dispatchers.IO) {
+                                                        c?.answerCall(id)
+                                                    } ?: return@runIo
+                                                    messages.add(row)
+                                                }
+                                            },
+                                            onHangup = {
+                                                runIo {
+                                                    val row = withContext(Dispatchers.IO) { c?.endCall() }
+                                                        ?: return@runIo
+                                                    messages.add(row)
+                                                }
+                                            },
+                                            onReact = { row ->
+                                                runIo {
+                                                    val r = withContext(Dispatchers.IO) {
+                                                        c?.react(chat.id, row.convSeq, "👍")
+                                                    } ?: return@runIo
+                                                    messages.add(r)
+                                                    markOutgoing(r)
+                                                }
+                                            },
+                                            onDelete = { row ->
+                                                runIo {
+                                                    val r = withContext(Dispatchers.IO) {
+                                                        c?.deleteMessage(chat.id, row.convSeq)
+                                                    } ?: return@runIo
+                                                    applyIncoming(messages, listOf(r))
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            chat != null -> ChatThread(
+                                chat = chat,
+                                messages = messages.filter { it.convId == chat.id },
+                                outgoing = outgoing,
+                                draft = draft,
+                                onDraft = { draft = it },
+                                busy = busy,
+                                showBack = true,
+                                onBack = { selected = null },
+                                onSettings = { showSettings = true },
+                                chatMenu = chatMenu,
+                                onChatMenu = { chatMenu = it },
+                                onSend = { sendChat(c, chat, draft, messages, outgoing, runIo = { runIo(it) }) { draft = "" } },
+                                onAttach = { attachFile(c, chat, messages, outgoing, snackbar, runIo = { runIo(it) }) },
+                                onCall = {
+                                    runIo {
+                                        val row = withContext(Dispatchers.IO) {
+                                            c?.startCall(chat.id)
+                                        } ?: return@runIo
+                                        messages.add(row)
+                                        markOutgoing(row)
+                                    }
+                                },
+                                onAnswer = {
+                                    runIo {
+                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                            ?: return@runIo
+                                        val row = withContext(Dispatchers.IO) {
+                                            c?.answerCall(id)
                                         } ?: return@runIo
                                         messages.add(row)
                                     }
                                 },
-                            ) { Text("Set disappear") }
-                            OutlinedTextField(
-                                value = filePath,
-                                onValueChange = { filePath = it },
-                                label = { Text("File path") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
+                                onHangup = {
+                                    runIo {
+                                        val row = withContext(Dispatchers.IO) { c?.endCall() }
+                                            ?: return@runIo
+                                        messages.add(row)
+                                    }
+                                },
+                                onReact = { row ->
+                                    runIo {
+                                        val r = withContext(Dispatchers.IO) {
+                                            c?.react(chat.id, row.convSeq, "👍")
+                                        } ?: return@runIo
+                                        messages.add(r)
+                                        markOutgoing(r)
+                                    }
+                                },
+                                onDelete = { row ->
+                                    runIo {
+                                        val r = withContext(Dispatchers.IO) {
+                                            c?.deleteMessage(chat.id, row.convSeq)
+                                        } ?: return@runIo
+                                        applyIncoming(messages, listOf(r))
+                                    }
+                                },
                             )
-                            Row {
-                                Button(
-                                    enabled = !busy,
-                                    onClick = {
-                                        pickLocalFile()?.let { filePath = it }
-                                    },
-                                ) { Text("Browse") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy && peerId.isNotEmpty() && filePath.isNotBlank(),
-                                    onClick = {
+                            else -> ChatListPane(
+                                label = label,
+                                chats = chats(),
+                                messages = messages,
+                                selectedId = null,
+                                modifier = Modifier.fillMaxSize(),
+                                onSelect = { selected = it },
+                                onSettings = { showSettings = true },
+                                onAdd = { addMenu = true },
+                                addMenu = addMenu,
+                                onAddDismiss = { addMenu = false },
+                                onAddContact = { addMenu = false; sheet = Sheet.AddContact },
+                                onNewGroup = { addMenu = false; sheet = Sheet.NewGroup },
+                                onJoinGroup = { addMenu = false; sheet = Sheet.JoinGroup },
+                            )
+                        }
+                    }
+                    if (sheet != Sheet.None) {
+                        ModalBottomSheet(
+                            onDismissRequest = { sheet = Sheet.None },
+                            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                        ) {
+                            when (sheet) {
+                                Sheet.AddContact -> SheetForm(
+                                    title = "New chat",
+                                    action = "Add",
+                                    enabled = !busy && cardPaste.isNotBlank(),
+                                    onAction = {
                                         runIo {
-                                            val f = File(filePath.trim())
-                                            if (!f.isFile) throw IllegalArgumentException("File not found")
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.sendFile(
-                                                    peerId,
-                                                    f.name,
-                                                    "application/octet-stream",
-                                                    f.readBytes(),
-                                                )
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                            status = "Sent ${f.name}"
+                                            val peer = withContext(Dispatchers.IO) {
+                                                c?.addContact(
+                                                    cardPaste.trim(),
+                                                    nickname.ifBlank { "Contact" },
+                                                ).orEmpty()
+                                            }
+                                            contacts[peer] = nickname.ifBlank { shortId(peer) }
+                                            selected = ChatTarget(peer, contacts[peer] ?: shortId(peer), false)
+                                            cardPaste = ""
+                                            nickname = ""
+                                            sheet = Sheet.None
                                         }
                                     },
-                                ) { Text("Send file") }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    enabled = !busy && groupId.isNotEmpty() && filePath.isNotBlank(),
-                                    onClick = {
+                                ) {
+                                    OutlinedTextField(
+                                        value = cardPaste,
+                                        onValueChange = { cardPaste = it },
+                                        label = { Text("Contact card") },
+                                        placeholder = { Text("nemo:1:…") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                    OutlinedTextField(
+                                        value = nickname,
+                                        onValueChange = { nickname = it },
+                                        label = { Text("Name") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                    )
+                                }
+                                Sheet.NewGroup -> SheetForm(
+                                    title = "New group",
+                                    action = "Create",
+                                    enabled = !busy && groupName.isNotBlank(),
+                                    onAction = {
                                         runIo {
-                                            val f = File(filePath.trim())
-                                            if (!f.isFile) throw IllegalArgumentException("File not found")
-                                            val row = withContext(Dispatchers.IO) {
-                                                client?.sendGroupFile(
-                                                    groupId,
-                                                    f.name,
-                                                    "application/octet-stream",
-                                                    f.readBytes(),
-                                                )
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                            status = "Sent group file ${f.name}"
+                                            val id = withContext(Dispatchers.IO) {
+                                                c?.createGroup(groupName).orEmpty()
+                                            }
+                                            groups[id] = groupName
+                                            selected = ChatTarget(id, groupName, true)
+                                            groupName = ""
+                                            sheet = Sheet.None
                                         }
                                     },
-                                ) { Text("Send group file") }
+                                ) {
+                                    OutlinedTextField(
+                                        value = groupName,
+                                        onValueChange = { groupName = it },
+                                        label = { Text("Group name") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                    )
+                                }
+                                Sheet.JoinGroup -> SheetForm(
+                                    title = "Join group",
+                                    action = "Accept invite",
+                                    enabled = !busy && invitePaste.isNotBlank(),
+                                    onAction = {
+                                        runIo {
+                                            joinUri = withContext(Dispatchers.IO) {
+                                                c?.acceptGroupInvite(invitePaste.trim()).orEmpty()
+                                            }
+                                            copyToClipboard(joinUri)
+                                            invitePaste = ""
+                                            sheet = Sheet.None
+                                            snackbar.showSnackbar("Join request copied — send it to a member")
+                                        }
+                                    },
+                                ) {
+                                    OutlinedTextField(
+                                        value = invitePaste,
+                                        onValueChange = { invitePaste = it },
+                                        label = { Text("Group invite") },
+                                        placeholder = { Text("nemo-g:1:…") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                }
+                                Sheet.None -> {}
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+private fun sendChat(
+    client: NemoClient?,
+    chat: ChatTarget,
+    draft: String,
+    messages: MutableList<DisplayRow>,
+    outgoing: MutableMap<String, Boolean>,
+    runIo: (suspend () -> Unit) -> Unit,
+    clear: () -> Unit,
+) {
+    val text = draft.trim()
+    if (text.isEmpty()) return
+    clear()
+    runIo {
+        val row = withContext(Dispatchers.IO) {
+            if (chat.isGroup) client?.sendGroupText(chat.id, text)
+            else client?.sendText(chat.id, text)
+        } ?: return@runIo
+        messages.add(row)
+        outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
+    }
+}
+
+private fun attachFile(
+    client: NemoClient?,
+    chat: ChatTarget,
+    messages: MutableList<DisplayRow>,
+    outgoing: MutableMap<String, Boolean>,
+    snackbar: SnackbarHostState,
+    runIo: (suspend () -> Unit) -> Unit,
+) {
+    val path = pickLocalFile()
+    if (path == null) {
+        runIo { snackbar.showSnackbar("File picker is not available on this device yet") }
+        return
+    }
+    runIo {
+        val f = File(path)
+        if (!f.isFile) throw IllegalArgumentException("File not found")
+        val row = withContext(Dispatchers.IO) {
+            if (chat.isGroup) {
+                client?.sendGroupFile(chat.id, f.name, "application/octet-stream", f.readBytes())
+            } else {
+                client?.sendFile(chat.id, f.name, "application/octet-stream", f.readBytes())
+            }
+        } ?: return@runIo
+        messages.add(row)
+        outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
+    }
+}
+
+@Composable
+private fun OnboardScaffold(title: String, subtitle: String, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier
+                .widthIn(max = 420.dp)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp))
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Nemo", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(20.dp))
+            content()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatListPane(
+    label: String,
+    chats: List<ChatTarget>,
+    messages: List<DisplayRow>,
+    selectedId: String?,
+    modifier: Modifier,
+    onSelect: (ChatTarget) -> Unit,
+    onSettings: () -> Unit,
+    onAdd: () -> Unit,
+    addMenu: Boolean,
+    onAddDismiss: () -> Unit,
+    onAddContact: () -> Unit,
+    onNewGroup: () -> Unit,
+    onJoinGroup: () -> Unit,
+) {
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text(if (label == "Nemo") "Chats" else "$label · Chats", fontWeight = FontWeight.SemiBold) },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+                actions = {
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
+                },
+            )
+        },
+        floatingActionButton = {
+            Box {
+                FloatingActionButton(onClick = onAdd) {
+                    Icon(Icons.Filled.Add, contentDescription = "New chat")
+                }
+                DropdownMenu(expanded = addMenu, onDismissRequest = onAddDismiss) {
+                    DropdownMenuItem(
+                        text = { Text("New chat") },
+                        leadingIcon = { Icon(Icons.Filled.PersonAdd, null) },
+                        onClick = onAddContact,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("New group") },
+                        leadingIcon = { Icon(Icons.Filled.Group, null) },
+                        onClick = onNewGroup,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Join group") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, null) },
+                        onClick = onJoinGroup,
+                    )
+                }
+            }
+        },
+    ) { padding ->
+        if (chats.isEmpty()) {
+            Column(
+                Modifier.fillMaxSize().padding(padding).padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(12.dp))
+                Text("No conversations yet", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Connect to your home server, then add someone with a Nemo contact card.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+                items(chats, key = { it.id }) { chat ->
+                    val last = messages.lastOrNull { it.convId == chat.id }
+                    ChatRow(
+                        chat = chat,
+                        preview = last?.let { previewLine(it) } ?: "No messages yet",
+                        time = last?.let { formatTime(it.sentAt) }.orEmpty(),
+                        selected = chat.id == selectedId,
+                        onClick = { onSelect(chat) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatRow(
+    chat: ChatTarget,
+    preview: String,
+    time: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Avatar(chat.title, chat.isGroup)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    chat.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (time.isNotEmpty()) {
+                    Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Text(
+                preview,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatThread(
+    chat: ChatTarget,
+    messages: List<DisplayRow>,
+    outgoing: Map<String, Boolean>,
+    draft: String,
+    onDraft: (String) -> Unit,
+    busy: Boolean,
+    showBack: Boolean,
+    onBack: () -> Unit,
+    onSettings: () -> Unit,
+    chatMenu: Boolean,
+    onChatMenu: (Boolean) -> Unit,
+    onSend: () -> Unit,
+    onAttach: () -> Unit,
+    onCall: () -> Unit,
+    onAnswer: () -> Unit,
+    onHangup: () -> Unit,
+    onReact: (DisplayRow) -> Unit,
+    onDelete: (DisplayRow) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val dark = isSystemInDarkTheme()
+    val wallpaper = if (dark) NemoChatDark else NemoChatLight
+    LaunchedEffect(messages.size, chat.id) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
+    Scaffold(
+        containerColor = wallpaper,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(chat.title, chat.isGroup, size = 36.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(chat.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                if (chat.isGroup) "Group" else "End-to-end encrypted",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    if (showBack) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                },
+                actions = {
+                    if (!chat.isGroup) {
+                        IconButton(onClick = onCall) { Icon(Icons.Filled.Call, contentDescription = "Call") }
+                    }
+                    IconButton(onClick = { onChatMenu(true) }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = chatMenu, onDismissRequest = { onChatMenu(false) }) {
+                        DropdownMenuItem(text = { Text("Answer call") }, onClick = { onChatMenu(false); onAnswer() })
+                        DropdownMenuItem(
+                            text = { Text("Hang up") },
+                            leadingIcon = { Icon(Icons.Filled.CallEnd, null) },
+                            onClick = { onChatMenu(false); onHangup() },
+                        )
+                        DropdownMenuItem(text = { Text("Chat settings") }, onClick = { onChatMenu(false); onSettings() })
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+            )
+        },
+        bottomBar = {
+            Surface(tonalElevation = 2.dp) {
+                Row(
+                    Modifier.fillMaxWidth().padding(8.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    IconButton(onClick = onAttach) {
+                        Icon(Icons.Filled.AttachFile, contentDescription = "Attach")
+                    }
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = onDraft,
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Message") },
+                        shape = RoundedCornerShape(24.dp),
+                        maxLines = 5,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilledIconButton(
+                        onClick = onSend,
+                        enabled = !busy && draft.isNotBlank(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items(messages, key = { "${it.convId}:${it.convSeq}:${it.kind}:${it.target}" }) { row ->
+                val mine = outgoing["${row.convId}:${row.convSeq}:${row.kind}"] == true
+                MessageBubble(row, mine, onReact = { onReact(row) }, onDelete = { onDelete(row) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    row: DisplayRow,
+    mine: Boolean,
+    onReact: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var menu by remember { mutableStateOf(false) }
+    val dark = isSystemInDarkTheme()
+    val bg = when {
+        mine && dark -> NemoOutgoingDark
+        mine -> NemoOutgoingLight
+        dark -> NemoIncomingDark
+        else -> Color.White
+    }
+    val shape = RoundedCornerShape(
+        topStart = 16.dp,
+        topEnd = 16.dp,
+        bottomStart = if (mine) 16.dp else 4.dp,
+        bottomEnd = if (mine) 4.dp else 16.dp,
+    )
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+    ) {
+        Box {
+            Column(
+                Modifier
+                    .widthIn(max = 320.dp)
+                    .clip(shape)
+                    .background(bg)
+                    .clickable { menu = true }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(bubbleText(row), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    formatTime(row.sentAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.End),
+                )
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("React 👍") }, onClick = { menu = false; onReact() })
+                DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsScreen(
+    fingerprint: String,
+    identityHex: String,
+    homeUrl: String,
+    onHomeUrl: (String) -> Unit,
+    shareUri: String,
+    joinUri: String,
+    joinPaste: String,
+    onJoinPaste: (String) -> Unit,
+    memberCred: String,
+    disappearSecs: String,
+    onDisappearSecs: (String) -> Unit,
+    selected: ChatTarget?,
+    busy: Boolean,
+    onBack: () -> Unit,
+    onRegister: () -> Unit,
+    onShare: () -> Unit,
+    onAdmit: () -> Unit,
+    onInviteGroup: () -> Unit,
+    onDisappear: () -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Settings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 32.dp, top = 8.dp),
+        ) {
+            item {
+                Text("Identity", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Text("Fingerprint", style = MaterialTheme.typography.labelSmall)
+                SelectionContainer {
+                    Text(fingerprint, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("identity_id", style = MaterialTheme.typography.labelSmall)
+                SelectionContainer {
+                    Text(identityHex, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            item {
+                Text("Home server", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                OutlinedTextField(
+                    value = homeUrl,
+                    onValueChange = onHomeUrl,
+                    label = { Text("Home URL") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Button(enabled = !busy, onClick = onRegister, modifier = Modifier.fillMaxWidth()) {
+                    Text("Connect")
+                }
+            }
+            item {
+                Text("Share contact", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Button(enabled = !busy, onClick = onShare, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Copy my contact card")
+                }
+                if (shareUri.isNotEmpty()) {
+                    SelectionContainer {
+                        Text(shareUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            item {
+                Text("Group membership", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                if (selected?.isGroup == true) {
+                    Button(enabled = !busy, onClick = onInviteGroup, modifier = Modifier.fillMaxWidth()) {
+                        Text("Copy invite for ${selected.title}")
+                    }
+                }
+                OutlinedTextField(
+                    value = joinPaste,
+                    onValueChange = onJoinPaste,
+                    label = { Text("Join request (nemo-j:1:…)") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(enabled = !busy && joinPaste.isNotBlank(), onClick = onAdmit, modifier = Modifier.fillMaxWidth()) {
+                    Text("Admit to group")
+                }
+                if (joinUri.isNotEmpty()) {
+                    SelectionContainer {
+                        Text(joinUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (memberCred.isNotEmpty()) {
+                    Text("Last admitted $memberCred", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            item {
+                Text("Disappearing messages", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                OutlinedTextField(
+                    value = disappearSecs,
+                    onValueChange = onDisappearSecs,
+                    label = { Text("Seconds (0 = off)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = selected != null,
+                )
+                Button(enabled = !busy && selected != null, onClick = onDisappear, modifier = Modifier.fillMaxWidth()) {
+                    Text("Apply to this chat")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetForm(
+    title: String,
+    action: String,
+    enabled: Boolean,
+    onAction: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(12.dp))
+        content()
+        Spacer(Modifier.height(16.dp))
+        Button(enabled = enabled, onClick = onAction, modifier = Modifier.fillMaxWidth()) { Text(action) }
+    }
+}
+
+@Composable
+private fun EmptyChatHint() {
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.outline)
+        Spacer(Modifier.height(8.dp))
+        Text("Select a chat", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun Avatar(title: String, isGroup: Boolean, size: androidx.compose.ui.unit.Dp = 48.dp) {
+    val color = AvatarPalette[kotlin.math.abs(title.hashCode()) % AvatarPalette.size]
+    Box(
+        Modifier.size(size).clip(CircleShape).background(color),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isGroup) {
+            Icon(Icons.Filled.Group, null, tint = Color.White, modifier = Modifier.size(size * 0.45f))
+        } else {
+            Text(
+                title.trim().take(1).uppercase(),
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = (size.value * 0.42f).sp,
+            )
         }
     }
 }
@@ -607,7 +1214,42 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit) 
         visualTransformation = PasswordVisualTransformation(),
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
+        shape = RoundedCornerShape(12.dp),
     )
+}
+
+private fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
+
+private fun previewLine(row: DisplayRow): String = when {
+    row.hidden && row.kind == "expired" -> "Message expired"
+    row.hidden || row.kind == "deleted" -> "Message deleted"
+    row.kind == "reaction" -> "Reacted ${row.emoji}"
+    row.kind == "call_invite" -> "Incoming call"
+    row.kind == "call_answer" -> "Call answered"
+    row.kind == "call_end" -> "Call ended"
+    row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
+    else -> row.text
+}
+
+private fun bubbleText(row: DisplayRow): String = when {
+    row.hidden && row.kind == "expired" -> "Expired"
+    row.hidden || row.kind == "deleted" -> "Deleted"
+    row.kind == "reaction" -> "Reacted ${row.emoji}"
+    row.kind == "disappear" -> "Disappearing messages: ${row.text}s"
+    row.kind == "call_invite" -> "Incoming call"
+    row.kind == "call_answer" -> "Answered"
+    row.kind == "call_end" -> "Call ended"
+    row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
+    else -> row.text
+}
+
+private fun formatTime(sentAt: ULong): String {
+    if (sentAt == 0UL) return ""
+    return try {
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(sentAt.toLong() * 1000))
+    } catch (_: Throwable) {
+        ""
+    }
 }
 
 private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {

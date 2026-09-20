@@ -71,15 +71,15 @@ export ANDROID_HOME=$HOME/Android/Sdk
 export ANDROID_SDK_ROOT=$ANDROID_HOME
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-  "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" \
-  "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
+  "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" \
+  "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk
 cd apps/compose
 ./gradlew assembleDebug
 # emulator (create identity, show fingerprint):
 "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n nemo \
-  -k "system-images;android-35;google_apis;x86_64" -d pixel --force
+  -k "system-images;android-36;google_apis;x86_64" -d pixel --force
 "$ANDROID_HOME/emulator/emulator" -avd nemo
 ./gradlew installDebug
 ```

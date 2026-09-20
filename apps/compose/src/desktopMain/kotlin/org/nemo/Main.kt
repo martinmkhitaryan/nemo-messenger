@@ -3,11 +3,14 @@ package org.nemo
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.io.File
 
 fun main() {
@@ -18,8 +21,12 @@ fun main() {
     }
     val data = File(System.getProperty("user.home"), ".local/share/nemo")
     application {
-        Window(onCloseRequest = ::exitApplication, title = "Nemo") {
-            MaterialTheme {
+        Window(
+            onCloseRequest = ::exitApplication,
+            title = "Nemo",
+            state = rememberWindowState(width = 1280.dp, height = 800.dp),
+        ) {
+            NemoTheme {
                 Row(Modifier.fillMaxSize()) {
                     SessionPane(
                         label = "Left",
@@ -54,4 +61,10 @@ actual fun pickLocalFile(): String? {
     val name = dlg.file
     if (dir.isNullOrEmpty() || name.isNullOrEmpty()) return null
     return File(dir, name).absolutePath
+}
+
+actual fun defaultHomeUrl(): String = "https://localhost:8443"
+
+actual fun copyToClipboard(text: String) {
+    Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
 }

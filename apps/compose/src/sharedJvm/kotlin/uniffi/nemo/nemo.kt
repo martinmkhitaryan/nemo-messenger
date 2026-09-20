@@ -784,6 +784,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -830,6 +832,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_inbox(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_list_groups(
 ): Short
@@ -959,6 +963,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(`ptr`: Pointer,`groupI
 fun uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_inbox(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_list_groups(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1164,6 +1170,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_inbox() != 58219.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts() != 64862.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() != 46878.toShort()) {
@@ -1624,6 +1633,8 @@ public interface NemoClientInterface {
     
     fun `inbox`(): List<DisplayRow>
     
+    fun `listContacts`(): List<ContactRow>
+    
     fun `listGroups`(): List<GroupRow>
     
     fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String
@@ -1956,6 +1967,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `listContacts`(): List<ContactRow> {
+            return FfiConverterSequenceTypeContactRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `listGroups`(): List<GroupRow> {
             return FfiConverterSequenceTypeGroupRow.lift(
     callWithPointer {
@@ -2238,6 +2262,41 @@ public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Pointer> {
 
 
 /**
+ * Local nickname for a 1:1 contact. No keys.
+ */
+data class ContactRow (
+    var `identityId`: kotlin.String, 
+    var `nickname`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeContactRow: FfiConverterRustBuffer<ContactRow> {
+    override fun read(buf: ByteBuffer): ContactRow {
+        return ContactRow(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ContactRow) = (
+            FfiConverterString.allocationSize(value.`identityId`) +
+            FfiConverterString.allocationSize(value.`nickname`)
+    )
+
+    override fun write(value: ContactRow, buf: ByteBuffer) {
+            FfiConverterString.write(value.`identityId`, buf)
+            FfiConverterString.write(value.`nickname`, buf)
+    }
+}
+
+
+
+/**
  * Decrypted 1:1 or group text/file for the shell. Never includes ratchet or MLS keys.
  */
 data class DisplayRow (
@@ -2451,6 +2510,34 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeContactRow: FfiConverterRustBuffer<List<ContactRow>> {
+    override fun read(buf: ByteBuffer): List<ContactRow> {
+        val len = buf.getInt()
+        return List<ContactRow>(len) {
+            FfiConverterTypeContactRow.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<ContactRow>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeContactRow.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<ContactRow>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeContactRow.write(it, buf)
         }
     }
 }

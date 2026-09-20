@@ -177,7 +177,7 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Goal.** One Gradle project produces desktop JVM and an Android debug APK that links `nemo-ffi` (JNA / AAR).
 
-**Status: implemented.** Shared Compose `SessionPane` on desktop JVM and Android. UniFFI Kotlin lives in `sharedJvm`; `libnemo_ffi.so` is a JNA AAR/jniLibs load (ADR-0028).
+**Status: implemented.** Shared Compose `SessionPane` on desktop JVM and Android. UniFFI Kotlin lives in `sharedJvm`; `libnemo_ffi.so` is a JNA AAR/jniLibs load (ADR-0028). Android floor is API 36 (Android 16).
 
 **In scope.** UniFFI Kotlin generation in Gradle; `cdylib` for desktop; Android NDK/JNI or JNA AAR as ADR-0028. Shared Compose screens from I4 on Android.
 

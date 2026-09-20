@@ -6,7 +6,7 @@ plugins {
     kotlin("multiplatform") version "2.0.21"
     id("org.jetbrains.compose") version "1.7.1"
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
-    id("com.android.application") version "8.7.3"
+    id("com.android.application") version "8.9.1"
 }
 
 group = "org.nemo"
@@ -17,6 +17,7 @@ val ffiLibDir = repoRoot.resolve("target/debug")
 val jniLibsDir = project.layout.projectDirectory.dir("src/androidMain/jniLibs")
 
 kotlin {
+    jvmToolchain(21)
     androidTarget {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
@@ -37,8 +38,9 @@ kotlin {
                 implementation(compose.foundation)
                 implementation(compose.material3)
                 implementation(compose.ui)
+                implementation(compose.materialIconsExtended)
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-                implementation("net.java.dev.jna:jna:5.15.0")
+                compileOnly("net.java.dev.jna:jna:5.15.0")
             }
             kotlin.srcDir("src/sharedJvm/kotlin")
         }
@@ -54,6 +56,7 @@ kotlin {
             dependencies {
                 implementation(compose.desktop.currentOs)
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+                implementation("net.java.dev.jna:jna:5.15.0")
             }
         }
         val desktopTest by getting {
@@ -67,11 +70,12 @@ kotlin {
 
 android {
     namespace = "org.nemo"
-    compileSdk = 35
+    compileSdk = 36
+    ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "org.nemo"
-        minSdk = 26
-        targetSdk = 35
+        minSdk = 36
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
     }
@@ -123,6 +127,15 @@ tasks.register<Exec>("cargoNdkFfi") {
         environment("ANDROID_NDK_HOME", ndk)
         environment("ANDROID_NDK_ROOT", ndk)
     }
+    // Android 16 requires 16 KiB ELF segments; NDK r27 does not default them.
+    environment(
+        "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS",
+        "-C link-arg=-Wl,-z,max-page-size=16384",
+    )
+    environment(
+        "CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS",
+        "-C link-arg=-Wl,-z,max-page-size=16384",
+    )
     commandLine(
         "cargo",
         "ndk",
@@ -131,7 +144,7 @@ tasks.register<Exec>("cargoNdkFfi") {
         "-t",
         "x86_64",
         "-P",
-        "26",
+        "35",
         "-o",
         jniLibsDir.asFile.absolutePath,
         "build",
