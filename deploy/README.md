@@ -6,4 +6,4 @@ MIT. Caddy terminates TLS; `nemo-server` listens on localhost (or `0.0.0.0` in t
 docker compose -f deploy/compose.yml up --build
 ```
 
-Default HTTPS port on the host: **8443**. Federation mTLS is **9443** inside the compose network (`NEMO_S2S_LISTEN`), not through Caddy. The app is not identity; fetch `/v1/bundle` and check HPKE against the contact card. Pin peer bundles as `NEMO_PEERS_DIR/*.cbor`.
+Default HTTPS port on the host: **8443**. Federation mTLS is **9443** inside the compose network (`NEMO_S2S_LISTEN`), not through Caddy. Optional coturn: `docker compose -f deploy/compose.yml --profile calls up`. The app is not identity; fetch `/v1/bundle` and check HPKE against the contact card. Pin peer bundles as `NEMO_PEERS_DIR/*.cbor`.

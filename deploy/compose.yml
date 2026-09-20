@@ -40,5 +40,29 @@ services:
     depends_on:
       - nemo
 
+  # Optional 1:1 media relay (ADR-0024 / ADR-0028). Credentials are a reference
+  # default, not identity. Enable with: docker compose --profile calls up
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    profiles: ["calls"]
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49152
+      - --max-port=49200
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=nemo:nemo
+      - --realm=nemo.local
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --listening-ip=0.0.0.0
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49152-49200:49152-49200/udp"
+
 volumes:
   pgdata:

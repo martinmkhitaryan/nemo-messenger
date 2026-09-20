@@ -4,7 +4,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/nemo-wire ./crates/nemo-wire
 COPY crates/nemo-server ./crates/nemo-server
-# Workspace still lists nemo-core; replace so this image never fetches libsignal.
+# Workspace still lists nemo-core / nemo-ffi; replace so this image never fetches libsignal.
 RUN printf '%s\n' \
     '[workspace]' \
     'resolver = "2"' \
