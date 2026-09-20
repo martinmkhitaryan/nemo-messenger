@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["crates/nemo-wire", "crates/nemo-core", "crates/nemo-server"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/martinmkhitaryan/nemo-messenger"

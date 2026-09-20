@@ -1,0 +1,23 @@
+[package]
+name = "nemo-server"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+description = "Blind delivery: mailboxes, capabilities, group streams. MUST NOT depend on libsignal or nemo-core."
+readme = false
+repository.workspace = true
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "matched-path"] }
+nemo-wire = { path = "../nemo-wire" }
+rand = "0.8"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+http-body-util = "0.1"
+rand = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }

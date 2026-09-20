@@ -1,0 +1,29 @@
+[package]
+name = "nemo-core"
+version = "0.1.0"
+edition.workspace = true
+license = "AGPL-3.0-only"
+description = "Nemo client core: identity, PQXDH, Double Ratchet, MLS. AGPL because it links libsignal."
+readme = false
+repository.workspace = true
+
+[dependencies]
+bip39 = "2"
+futures = { version = "0.3", features = ["executor"] }
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal.git", tag = "v0.99.0" }
+nemo-wire = { path = "../nemo-wire" }
+rand = "0.8"
+rand09 = { package = "rand", version = "0.9", features = ["os_rng"] }
+openmls = "0.6.0"
+openmls_basic_credential = "0.3.0"
+openmls_rust_crypto = "0.3.0"
+tls_codec = { version = "0.4.1", features = ["std"] }
+thiserror = "2"
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+http-body-util = "0.1"
+nemo-server = { path = "../nemo-server" }
+rand = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }

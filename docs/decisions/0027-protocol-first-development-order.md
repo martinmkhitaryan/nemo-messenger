@@ -51,10 +51,12 @@ Rejected: retrofits rarely remove fields already in production.
 
 ## Consequences
 
-- README section 54 is the normative phase list.
+- README section 54 is the normative phase list. Phase documents live under `docs/protocol/`.
 - Each phase ends with a specification document under `docs/` and, where choices were made, new or amended decision records.
 - Phase 8 cannot introduce a server-stored field without pointing to the phase 1–5 requirement that needs it.
 
 ## History
 
 - 2026-09-19 — Accepted. Protocol-first development order; APIs and schemas last.
+- 2026-09-19 — Phase documents 1–7 published under [`docs/protocol/`](../protocol/README.md). Phase 8 remains last.
+- 2026-09-20 — Phase 8 document published: [`docs/protocol/08-api-and-persistence.md`](../protocol/08-api-and-persistence.md), [ADR-0033](0033-local-http-api-and-postgres-schema.md).

@@ -13,7 +13,7 @@ Each decision lives in its own file and is never edited to say something differe
 
 ## Decision log
 
-IDs match reading order (foundations first). New records take the next free number (0028 is next) and are listed where a reader should encounter the decision.
+IDs match reading order (foundations first). New records take the next free number (0034 is next) and are listed where a reader should encounter the decision.
 
 ### Foundations
 
@@ -76,10 +76,21 @@ IDs match reading order (foundations first). New records take the next free numb
 | [ADR-0025](0025-self-hostable-open-source-no-custom-crypto.md) | 2026-09-19 | Self-hostable, open source, established cryptography only | Accepted |
 | [ADR-0026](0026-target-platforms.md) | 2026-09-19 | Android, Linux and Windows first; iOS later; shared Rust core | Accepted |
 | [ADR-0027](0027-protocol-first-development-order.md) | 2026-09-19 | Protocol-first development order; APIs and schemas come last | Accepted |
+| [ADR-0028](0028-implementation-languages-and-libraries.md) | 2026-09-19 | Implementation languages and libraries | Accepted |
+| [ADR-0029](0029-cryptographic-identifiers-and-encodings.md) | 2026-09-19 | Cryptographic identifiers, contact-card encoding, MLS suite, and PCS interval | Accepted |
+| [ADR-0030](0030-envelope-buckets-and-layout.md) | 2026-09-19 | Envelope version 1 layout, padding buckets, and ttl_bucket set | Accepted |
+| [ADR-0031](0031-mailbox-retention-and-owner-auth.md) | 2026-09-19 | Mailbox retention defaults and owner authentication | Accepted |
+| [ADR-0032](0032-server-signing-key-and-federation-tls.md) | 2026-09-19 | Server signing key and TLS-pinned federation hop | Accepted |
+
+### API and persistence
+
+| ID | Date | Title | Status |
+| --- | --- | --- | --- |
+| [ADR-0033](0033-local-http-api-and-postgres-schema.md) | 2026-09-20 | Local HTTP API and PostgreSQL schema | Accepted |
 
 ## Adding a decision
 
-1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0028 is next).
+1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0034 is next).
 2. Fill in every section. "Alternatives considered" and "Cons" are mandatory; a decision without a stated cost has not been thought through.
 3. Add a row to the log above under the fitting heading.
 4. Update the affected sections of `../../README.md` so the specification and the record agree, and add the record to the summary table in README section 0.

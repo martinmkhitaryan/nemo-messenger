@@ -1,9 +1,10 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 3 (2026-09-19)<br>
+**Status:** Draft, revision 7 (2026-09-20)<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
-**Decision history:** [`docs/decisions/`](docs/decisions/README.md)
+**Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
+**Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)
 
 ---
 
@@ -40,6 +41,12 @@ The choices below are binding for the current design. Each one has a full record
 | Open and self-hosted | Fully self-hostable, open source, standard audited cryptography only, no custom primitives. | [ADR-0025](docs/decisions/0025-self-hostable-open-source-no-custom-crypto.md) |
 | Platforms | Android, Linux, Windows first; iOS/macOS later; no web in v1; single Rust core. | [ADR-0026](docs/decisions/0026-target-platforms.md) |
 | Development order | Security model, then protocols, then envelope, delivery, federation, privacy, application; APIs and schemas last. | [ADR-0027](docs/decisions/0027-protocol-first-development-order.md) |
+| Implementation stack | Rust core and Rust server; libsignal primitives + OpenMLS; Compose Multiplatform + UniFFI; Axum + sqlx + PostgreSQL + Caddy; spec/server MIT, client AGPL; no Cargo workspace until the protocols exist. | [ADR-0028](docs/decisions/0028-implementation-languages-and-libraries.md) |
+| Crypto encodings | SHA-256 ids; CBOR contact card ≤400 bytes (`nemo:1:` URI); MLS suite 0x0003; Update every 7 days / 72 h before send; 30-minute share tokens. | [ADR-0029](docs/decisions/0029-cryptographic-identifiers-and-encodings.md) |
+| Envelopes | Version-1 buckets: text 1/4/16 KiB inner, 20 KiB outer; attachments up to 16 MiB; ttl 60s/1h/1d; no sender field. | [ADR-0030](docs/decisions/0030-envelope-buckets-and-layout.md) |
+| Mailboxes | 14-day / 500 MiB default retention; owner-only fetch; DR skip window ≥2000. | [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md) |
+| Federation hop | Server Ed25519 + HPKE X25519; TLS 1.3 with pinned keys; not Web PKI. | [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md) |
+| HTTP and schema | Client-to-home `/v1` on localhost HTTP; Caddy terminates TLS; CBOR/octet-stream, never JSON; Postgres DDL from phases 1–5 only. | [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md) |
 
 ## 0.1 Non-goals
 
@@ -1406,7 +1413,7 @@ Encrypted Message
 
 The device wakes up and fetches encrypted envelopes itself.
 
-Per ADR-0026 the first release targets Android (FCM, one priority class, opaque payload), Linux and Windows (no platform push; a persistent connection or periodic poll while the application runs). iOS (APNs, and PushKit/CallKit for calls) is specified when the platform is added. Every wake on a platform uses the same priority (ADR-0020).
+Per ADR-0026 the first release targets Android, Linux and Windows. On Android with Play Services, push is FCM (one priority class, opaque payload). Linux, Windows, and Android without Play Services have no platform push: a persistent WebSocket or periodic poll while the application runs (ADR-0028). The protocol MUST NOT require Google. iOS (APNs, and PushKit/CallKit for calls) is specified when the platform is added. Every wake on a platform uses the same priority (ADR-0020).
 
 ---
 
@@ -2089,17 +2096,19 @@ Advanced cryptographic information can be exposed through a security-details int
 
 The server must be self-hostable.
 
-A deployment should be possible using standard infrastructure such as:
+A deployment should be possible using standard infrastructure (ADR-0028):
 
 ```text
-Container
+Container (nemo-server)
 +
-Database
+PostgreSQL
 +
-Reverse Proxy
+Caddy (TLS)
++
+optional coturn
 ```
 
-The server should not require a central SaaS service to operate.
+The reference listen address is plain HTTP on `127.0.0.1:8787` (`NEMO_LISTEN`); Caddy terminates TLS ([ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)). nginx is an operator alternative, not the default. The server should not require a central SaaS service to operate. FCM, when used, is an operator-supplied credential for Android wake-up, not a protocol dependency.
 
 Possible deployment models:
 
@@ -2127,6 +2136,8 @@ The protocol itself must not depend on a specific cloud provider.
 # 50. Open Source (ADR-0025)
 
 The security-critical components should be open source.
+
+The protocol specification is MIT ([LICENSE](LICENSE), [LICENSE.md](LICENSE.md)). The blind server and shared wire types stay MIT. A client that links libsignal is AGPL-3.0 (ADR-0028). Until those crates exist, this repository is specification-only and MIT.
 
 The project should favor:
 
@@ -2191,12 +2202,12 @@ The initial product should focus on:
 * privacy transport abstraction;
 * optional Tor.
 
-## Platforms (ADR-0026)
+## Platforms (ADR-0026, ADR-0028)
 
 * Android, Linux, Windows;
-* opaque push notifications on Android;
+* opaque push notifications on Android with Play Services; long-lived connection otherwise;
 * encrypted message retrieval after wake-up;
-* single Rust core with thin platform shells.
+* single Rust core with a Compose Multiplatform shell over UniFFI.
 
 ---
 
@@ -2296,12 +2307,19 @@ No identity recovery, never state recovery, no history backup in v1.
 
 ## 53.12 Still open
 
-* Contact-card encoding and size (must fit a QR code; ADR-0007 fixes that QR is a freshly minted token, not the numbers).
-* Share-token TTL numeric defaults (ADR-0007: consume on first envelope; race accepted).
-* Concrete text and attachment bucket sizes (ADR-0010, ADR-0011 and ADR-0019 fix the rule and the 16 MiB cap, not every intermediate size).
+Resolved by later records (kept here so the original list stays traceable):
+
+* Contact-card encoding and size — [ADR-0029](docs/decisions/0029-cryptographic-identifiers-and-encodings.md), [`docs/protocol/02-cryptographic-protocol.md`](docs/protocol/02-cryptographic-protocol.md).
+* Share-token TTL numeric defaults — ADR-0029 (5 / 30 / 60 minutes, default 30).
+* Concrete text and attachment bucket sizes — [ADR-0030](docs/decisions/0030-envelope-buckets-and-layout.md).
+* Double Ratchet skip window vs retention — [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md).
+* Federation HPKE suite, handshake, replay — [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md), [`docs/protocol/05-federation.md`](docs/protocol/05-federation.md).
+
+Still open:
+
 * TURN credential issuance across servers for cross-server calls (section 64, ADR-0024).
 * Behaviour when a hosting server is unreachable for an extended time: how a group detects it and re-forms.
-* Push wake-token format, coalescing rules, and desktop background delivery (ADR-0020).
+* Push wake-token format beyond "opaque 32-byte token", and desktop background delivery when the app is not running.
 
 ---
 
@@ -2309,11 +2327,15 @@ No identity recovery, never state recovery, no history backup in v1.
 
 The project should not begin by defining REST endpoints or database tables.
 
+Languages and libraries for *this* implementation are bound by ADR-0028. Client-to-home routes and Postgres DDL are [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md). FCM project configuration remains operator-supplied and is not a protocol object.
+
 The recommended sequence is:
 
 ## Phase 1 — Security model
 
-Define:
+**Complete:** [`docs/protocol/01-security-model.md`](docs/protocol/01-security-model.md)
+
+Defines:
 
 * threat model;
 * security properties;
@@ -2323,89 +2345,38 @@ Define:
 
 ## Phase 2 — Cryptographic protocol
 
-Define:
-
-* identity key and the keys it signs (PQXDH prekeys, MLS key packages, revocation key binding);
-* contact card encoding;
-* PQXDH + Double Ratchet integration (library selection, session policy);
-* MLS integration (ciphersuite, in-band KeyPackage, periodic Update commits for PCS, RemoveBundle, SigningKeyReplace);
-* key lifecycle;
-* revocation statement and its handling.
+**Complete:** [`docs/protocol/02-cryptographic-protocol.md`](docs/protocol/02-cryptographic-protocol.md), [ADR-0029](docs/decisions/0029-cryptographic-identifiers-and-encodings.md)
 
 ## Phase 3 — Envelope protocol
 
-Define:
-
-* opaque envelope with sealed sender (ADR-0009);
-* message framing and version field;
-* padding bucket set;
-* per-container sequence numbers and idempotency tokens;
-* HPKE nested layer to the recipient server (ADR-0016);
-* replay protection;
-* expiration.
+**Complete:** [`docs/protocol/03-envelope-protocol.md`](docs/protocol/03-envelope-protocol.md), [ADR-0030](docs/decisions/0030-envelope-buckets-and-layout.md)
 
 ## Phase 4 — Delivery protocol
 
-Define:
-
-* mailbox model;
-* delivery capabilities;
-* offline queues;
-* acknowledgement;
-* retries;
-* deduplication.
+**Complete:** [`docs/protocol/04-delivery-protocol.md`](docs/protocol/04-delivery-protocol.md), [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md)
 
 ## Phase 5 — Federation
 
-Define:
-
-```text
-Server A <-> Server B
-```
-
-including:
-
-* server authentication;
-* routing;
-* authorization;
-* delivery;
-* expiry;
-* failure handling.
+**Complete:** [`docs/protocol/05-federation.md`](docs/protocol/05-federation.md), [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md)
 
 ## Phase 6 — Privacy transport
 
-Define:
-
-* batching;
-* timing jitter;
-* cover traffic;
-* Tor;
-* future privacy relays.
-
-Envelope padding buckets belong to Phase 3 (ADR-0010), not this phase.
+**Complete (v1 subset):** [`docs/protocol/06-privacy-transport.md`](docs/protocol/06-privacy-transport.md). Cover traffic and Maximum mode remain deferred (ADR-0021).
 
 ## Phase 7 — Application protocol
 
-Define:
-
-* text messages;
-* attachments;
-* reactions;
-* group changes;
-* message state;
-* disappearing messages (44.1);
-* call signaling (section 64, ADR-0024).
+**Complete (v1 types):** [`docs/protocol/07-application-protocol.md`](docs/protocol/07-application-protocol.md)
 
 ## Phase 8 — API and persistence
 
-Only after protocol semantics are stable:
+**Complete (HTTP + DDL; in-memory runtime):** [`docs/protocol/08-api-and-persistence.md`](docs/protocol/08-api-and-persistence.md), [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)
 
-* HTTP APIs;
-* WebSocket APIs;
-* database schema;
-* queues;
-* caches;
-* operational infrastructure.
+* HTTP `/v1` on localhost; Caddy TLS;
+* Postgres schema from phases 1–5 only;
+* outbound queue as specified in phase 5;
+* no Redis;
+* WebSocket wakeup reserved; poll fetch is required;
+* sqlx on a live database, S2S TCP, and FCM remain operational follow-ons that MUST NOT add columns.
 
 ---
 
@@ -2735,7 +2706,7 @@ The long-term architecture therefore becomes:
 
 The first implementation should concentrate on establishing the **security invariants, identity lifecycle, cryptographic state machines, envelope format, delivery protocol, and federation protocol**.
 
-Concrete API endpoints, database schemas, framework choices, and infrastructure details should follow those protocol definitions rather than define them.
+Languages and libraries for this project's code are bound by [ADR-0028](docs/decisions/0028-implementation-languages-and-libraries.md). Concrete API endpoints, database schemas, and operator configuration still follow those protocol definitions rather than define them (ADR-0027).
 
 ---
 
@@ -2776,6 +2747,8 @@ call_end
 ## 64.2 1:1 media
 
 WebRTC with DTLS-SRTP, **always relayed through TURN**. There is no peer-to-peer ICE. Clients MUST set `iceTransportPolicy=relay` and MUST NOT gather host or srflx candidates. The DTLS fingerprints are exchanged inside `call_invite` / `call_answer`, which are already authenticated by the Double Ratchet, so the media path inherits contact verification. No separate short authentication string is needed; one may be derived and shown as an option.
+
+Signaling and fingerprint binding live in the Rust core. The media engine (capture, AEC/AGC/NS, RTP) may live in the platform shell (ADR-0028, amending ADR-0026): Android may use `org.webrtc`; desktop may use webrtc-rs plus a WebRTC audio-processing module. webrtc-rs without AEC is not sufficient.
 
 ## 64.3 Media transport
 
@@ -2819,5 +2792,5 @@ Calls are the worst case for the metadata layer: long, bidirectional, near-const
 
 ## 64.6 Wake-up
 
-Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. On Android this is FCM at the platform's single wake priority plus a foreground service. iOS (PushKit/CallKit) is specified with the platform (ADR-0026).
+Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. On Android with Play Services this is FCM at the platform's single wake priority plus a foreground service. On Android without Play Services and on desktop, the long-lived connection (ADR-0028) carries the envelope. iOS (PushKit/CallKit) is specified with the platform (ADR-0026).
 

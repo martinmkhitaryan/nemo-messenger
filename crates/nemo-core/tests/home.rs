@@ -1,0 +1,176 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::body::Body;
+use axum::http::Request;
+use http_body_util::BodyExt;
+use nemo_core::app::{decode_text, encode_text};
+use nemo_core::discovery::resolve_contact;
+use nemo_core::home::{EnqueueResult, HomeSession, HomeTransport, HttpRequest, HttpResponse};
+use nemo_core::identity::Installation;
+use nemo_core::CoreError;
+use nemo_server::{router, AppState};
+use nemo_wire::envelope::TtlBucket;
+use nemo_wire::{GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_MIN};
+use tower::ServiceExt;
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_secs()
+}
+
+#[derive(Clone)]
+struct RouterTransport {
+    app: axum::Router,
+}
+
+impl HomeTransport for RouterTransport {
+    async fn call(&self, req: HttpRequest) -> nemo_core::Result<HttpResponse> {
+        let mut builder = Request::builder().method(req.method).uri(&req.path);
+        for (k, v) in &req.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        let res = self
+            .app
+            .clone()
+            .oneshot(
+                builder
+                    .body(Body::from(req.body))
+                    .map_err(|_| CoreError::HomeHttp(0))?,
+            )
+            .await
+            .map_err(|_| CoreError::HomeHttp(0))?;
+        let status = res.status().as_u16();
+        let body = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| CoreError::HomeHttp(status))?
+            .to_bytes()
+            .to_vec();
+        Ok(HttpResponse { status, body })
+    }
+}
+
+#[tokio::test]
+async fn alice_messages_bob_through_home_http() {
+    let transport = RouterTransport {
+        app: router(AppState::new()),
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (mut alice, _) = HomeSession::register(transport.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let (mut bob, bob_card) = HomeSession::register(transport, bob_inst, now)
+        .await
+        .unwrap();
+    bob.publish_prekey().await.unwrap();
+
+    let disc = alice.discovery(bob.identity_id()).await.unwrap();
+    resolve_contact(&bob_card, &disc, now).unwrap();
+    let prekey = alice.fetch_prekey(bob_card.share_token).await.unwrap();
+    alice
+        .install
+        .start_session(&bob_card, &prekey, now)
+        .await
+        .unwrap();
+
+    let ptext = encode_text(1, now, "hello bob").unwrap();
+    let outer = alice
+        .install
+        .encrypt_to_mailbox(
+            &bob.identity_id(),
+            &bob.hpke_public(),
+            bob_card.share_token,
+            TtlBucket::DEFAULT,
+            &ptext,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        alice.post_envelope(&outer).await.unwrap(),
+        EnqueueResult::Local(_)
+    ));
+
+    let rows = bob.fetch_mailbox().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    let opened = bob
+        .install
+        .decrypt_from_mailbox(&alice.identity_id(), &rows[0].inner)
+        .await
+        .unwrap();
+    assert_eq!(decode_text(&opened).unwrap(), (1, "hello bob".into()));
+    bob.ack().await.unwrap();
+}
+
+#[tokio::test]
+async fn group_join_through_home_client() {
+    let transport = RouterTransport {
+        app: router(AppState::new()),
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (alice, _) = HomeSession::register(transport.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let (bob, _) = HomeSession::register(transport, bob_inst, now)
+        .await
+        .unwrap();
+    let alice_cap = alice.mint_contact().await.unwrap();
+    let bob_cap = bob.mint_contact().await.unwrap();
+
+    let alice_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let bob_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let created = alice
+        .create_group(alice_group_sk.verifying_key().to_bytes(), alice_cap)
+        .await
+        .unwrap();
+
+    let nonce = [0x22u8; 32];
+    let invite = GroupInvite::sign(
+        &alice_group_sk,
+        created.group_id,
+        nonce,
+        INTRO_TTL_30_MIN,
+        None,
+    )
+    .unwrap();
+    alice
+        .store_invite(created.group_id, &created.cred, &invite)
+        .await
+        .unwrap();
+    let pending = bob.accept_invite(created.group_id, nonce).await.unwrap();
+    let admit = GroupAdmit::sign(&alice_group_sk, created.group_id, pending.pending_id).unwrap();
+    let activated = alice
+        .admit(
+            created.group_id,
+            &created.cred,
+            &admit,
+            bob_group_sk.verifying_key().to_bytes(),
+            bob_cap,
+            bob.hpke_public(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(activated, pending.cred.credential_id);
+    bob.refresh_fanout(created.group_id, &pending.cred, bob_cap, bob.hpke_public())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn unknown_discovery_is_denied() {
+    let transport = RouterTransport {
+        app: router(AppState::new()),
+    };
+    let (inst, _) = Installation::create().unwrap();
+    let (alice, _) = HomeSession::register(transport, inst, now_unix())
+        .await
+        .unwrap();
+    let err = alice.discovery([0x11u8; 32]).await.unwrap_err();
+    assert!(matches!(err, CoreError::Denied));
+}
