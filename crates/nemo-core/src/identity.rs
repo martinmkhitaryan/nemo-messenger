@@ -5,11 +5,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bip39::Mnemonic;
 use libsignal_protocol::{
     kem, message_decrypt, message_encrypt, process_prekey_bundle, CiphertextMessage,
-    GenericSignedPreKey, IdentityKeyPair, IdentityKeyStore, InMemSignalProtocolStore, KeyPair,
-    KyberPreKeyId, KyberPreKeyRecord, KyberPreKeyStore, PreKeyId, PreKeyRecord,
-    PreKeySignalMessage, PreKeyStore, ProtocolAddress, SignalMessage, SignedPreKeyId,
-    SignedPreKeyRecord, SignedPreKeyStore, Timestamp,
+    GenericSignedPreKey, IdentityKeyPair, IdentityKeyStore, KeyPair, KyberPreKeyId,
+    KyberPreKeyRecord, KyberPreKeyStore, PreKeyId, PreKeyRecord, PreKeySignalMessage, PreKeyStore,
+    ProtocolAddress, SignalMessage, SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore,
+    Timestamp,
 };
+use nemo_wire::cbor::{self, Value};
 use nemo_wire::card::{ContactCard, HomeServerBinding};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::{self, IdentityId, KEY_LEN};
@@ -24,6 +25,7 @@ use crate::bundle;
 use crate::discovery::{resolve_contact, Discovery};
 use crate::error::{CoreError, Result};
 use crate::mailbox;
+use crate::store::SignalStore;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 
 pub const PREKEY_STOCK_TARGET: usize = 100;
@@ -41,7 +43,7 @@ pub struct Installation {
     identity: SigningKey,
     revocation_public_key: [u8; KEY_LEN],
     address: ProtocolAddress,
-    store: InMemSignalProtocolStore,
+    store: SignalStore,
     next_pre_key_id: u32,
     next_kyber_id: u32,
     signed_pre_key_id: SignedPreKeyId,
@@ -68,7 +70,7 @@ impl Installation {
         let registration_id = u32::from_le_bytes(rid).max(1);
         let id = identity_id(&identity.verifying_key().to_bytes());
         let address = ProtocolAddress::new(hex_bytes(&id), bundle::device_id());
-        let store = InMemSignalProtocolStore::new(libsignal_id, registration_id)?;
+        let store = SignalStore::new(libsignal_id, registration_id);
 
         let mut installation = Self {
             identity,
@@ -371,6 +373,75 @@ impl Installation {
                 .save_signed_pre_key(self.signed_pre_key_id, &record),
         )?;
         Ok(())
+    }
+
+    pub fn encode_snapshot(&self) -> Result<Vec<u8>> {
+        Ok(cbor::encode(&Value::Map(vec![
+            (0, Value::Uint(1)),
+            (1, Value::Bytes(self.identity.to_bytes().to_vec())),
+            (2, Value::Bytes(self.revocation_public_key.to_vec())),
+            (3, Value::Bytes(self.store.encode()?)),
+            (4, Value::Uint(self.next_pre_key_id as u64)),
+            (5, Value::Uint(self.next_kyber_id as u64)),
+            (6, Value::Uint(u32::from(self.signed_pre_key_id) as u64)),
+            (7, Value::Uint(self.binding_seq)),
+        ])))
+    }
+
+    pub fn decode_snapshot(bytes: &[u8]) -> Result<Self> {
+        let Value::Map(m) = cbor::decode(bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if version != 1 {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let sk = cbor::expect_bytes(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if sk.len() != KEY_LEN {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let mut seed = [0u8; KEY_LEN];
+        seed.copy_from_slice(sk);
+        let identity = SigningKey::from_bytes(&seed);
+        let rev = cbor::expect_bytes(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if rev.len() != KEY_LEN {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let mut revocation_public_key = [0u8; KEY_LEN];
+        revocation_public_key.copy_from_slice(rev);
+        let store_bytes =
+            cbor::expect_bytes(cbor::map_get(&m, 3).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+        let store = SignalStore::decode(store_bytes)?;
+        let next_pre_key_id =
+            cbor::expect_uint(cbor::map_get(&m, 4).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)? as u32;
+        let next_kyber_id =
+            cbor::expect_uint(cbor::map_get(&m, 5).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)? as u32;
+        let signed_pre_key_id = SignedPreKeyId::from(
+            cbor::expect_uint(cbor::map_get(&m, 6).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)? as u32,
+        );
+        let binding_seq =
+            cbor::expect_uint(cbor::map_get(&m, 7).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+        let id = identity_id(&identity.verifying_key().to_bytes());
+        let address = ProtocolAddress::new(hex_bytes(&id), bundle::device_id());
+        Ok(Self {
+            identity,
+            revocation_public_key,
+            address,
+            store,
+            next_pre_key_id,
+            next_kyber_id,
+            signed_pre_key_id,
+            binding_seq,
+            mls_provider: OpenMlsRustCrypto::default(),
+        })
     }
 }
 

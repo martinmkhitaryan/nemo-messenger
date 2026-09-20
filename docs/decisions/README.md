@@ -28,6 +28,7 @@ IDs match reading order (foundations first). New records take the next free numb
 | --- | --- | --- | --- |
 | [ADR-0003](0003-single-key-identity.md) | 2026-09-19 | One identity per client installation, no device layer | Accepted |
 | [ADR-0004](0004-revocation-key.md) | 2026-09-19 | Revocation key instead of successor or recovery mechanisms | Accepted |
+| [ADR-0034](0034-local-vault-passphrase.md) | 2026-09-20 | Local vault passphrase, Argon2id, and SQLCipher | Accepted |
 
 ### Cryptography and discovery
 
@@ -90,7 +91,7 @@ IDs match reading order (foundations first). New records take the next free numb
 
 ## Adding a decision
 
-1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0034 is next).
+1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0035 is next).
 2. Fill in every section. "Alternatives considered" and "Cons" are mandatory; a decision without a stated cost has not been thought through.
 3. Add a row to the log above under the fitting heading.
 4. Update the affected sections of `../../README.md` so the specification and the record agree, and add the record to the summary table in README section 0.

@@ -54,6 +54,20 @@ pub enum CoreError {
     HomeHttp(u16),
     #[error("home transport: {0}")]
     Transport(String),
+    #[error("vault passphrase is too short")]
+    WeakPassphrase,
+    #[error("vault already exists")]
+    VaultExists,
+    #[error("vault is missing")]
+    VaultMissing,
+    #[error("vault passphrase is wrong or the file is corrupt")]
+    VaultLocked,
+    #[error("vault snapshot is corrupt")]
+    VaultCorrupt,
+    #[error("vault I/O: {0}")]
+    VaultIo(String),
+    #[error("no vault is attached")]
+    VaultDetached,
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

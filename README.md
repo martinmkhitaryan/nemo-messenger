@@ -1,6 +1,6 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 7 (2026-09-20)<br>
+**Status:** Draft, revision 8 (2026-09-20)<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
@@ -47,6 +47,7 @@ The choices below are binding for the current design. Each one has a full record
 | Mailboxes | 14-day / 500 MiB default retention; owner-only fetch; DR skip window ≥2000. | [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md) |
 | Federation hop | Server Ed25519 + HPKE X25519; TLS 1.3 with pinned keys; not Web PKI. | [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md) |
 | HTTP and schema | Client-to-home `/v1` on localhost HTTP; Caddy terminates TLS; CBOR/octet-stream, never JSON; Postgres DDL from phases 1–5 only. | [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md) |
+| Local vault | App passphrase (min 8); Argon2id; SQLCipher in `nemo-core`; revocation mnemonic never stored; lost passphrase is a lost identity. | [ADR-0034](docs/decisions/0034-local-vault-passphrase.md) |
 
 ## 0.1 Non-goals
 
@@ -2159,6 +2160,7 @@ The initial product should focus on:
 ## Identity
 
 * one cryptographic identity per installation;
+* passphrase-locked SQLCipher vault on the device ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md));
 * revocation key and revocation flow;
 * contact card and invite-first contact establishment;
 * local contact nicknames;
@@ -2301,7 +2303,7 @@ The hosting server knows the member capability set. Stream append is authorised 
 
 ## 53.11 Backup and recovery — resolved as non-goal (ADR-0023)
 
-No identity recovery, never state recovery, no history backup in v1.
+No identity recovery, never state recovery, no history backup in v1. The local SQLCipher vault ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md)) is at-rest encryption on that device, not a backup: a forgotten passphrase is a lost identity.
 
 ---
 

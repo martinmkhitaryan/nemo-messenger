@@ -11,6 +11,8 @@ pub mod home;
 pub mod identity;
 pub mod mailbox;
 pub mod privacy;
+mod store;
+pub mod vault;
 
 pub use app::{decode, decode_text, encode, encode_text, AppBody, AppHeader, AppMessage};
 pub use discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
@@ -28,3 +30,4 @@ pub use identity::{
     PREKEY_STOCK_TARGET,
 };
 pub use mailbox::messages_lost;
+pub use vault::Vault;

@@ -8,6 +8,8 @@ readme = false
 repository.workspace = true
 
 [dependencies]
+argon2 = "0.5"
+async-trait = "0.1"
 bip39 = "2"
 futures = { version = "0.3", features = ["executor"] }
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal.git", tag = "v0.99.0" }
@@ -17,6 +19,7 @@ rand09 = { package = "rand", version = "0.9", features = ["os_rng"] }
 openmls = "0.6.0"
 openmls_basic_credential = "0.3.0"
 openmls_rust_crypto = "0.3.0"
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 tls_codec = { version = "0.4.1", features = ["std"] }
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
