@@ -337,6 +337,32 @@ async fn owner_auth_rejected_without_header() {
 }
 
 #[tokio::test]
+async fn owner_auth_rejected_when_older_than_120s() {
+    let state = AppState::new();
+    let (server_id, hpke) = {
+        let home = state.home.lock().await;
+        (
+            home.bundle().server_id,
+            home.bundle().server_hpke_public_key,
+        )
+    };
+    let app = router(state);
+    let (sk, id, _, _) = register_and_contact(app.clone(), server_id, hpke).await;
+    let stale =
+        MailboxOwnerAuth::sign(&sk, id.to_vec(), 0, 16, unix_now().saturating_sub(121)).unwrap();
+    let (status, _, _) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/mailbox/fetch")
+            .body(Body::from(stale.encode()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn json_register_is_bad_request() {
     let app = router(AppState::new());
     let (status, _, _) = call(
@@ -665,16 +691,16 @@ async fn wakeup_sends_empty_binary_on_ingest() {
     let Value::Map(m) = cbor::decode(&res.bytes().await.unwrap()).unwrap() else {
         panic!("token map");
     };
-    let token = ids::copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 0).unwrap()).unwrap()).unwrap();
+    let token =
+        ids::copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 0).unwrap()).unwrap()).unwrap();
 
     let mut ws_req = format!("ws://{addr}/v1/wakeup")
         .into_client_request()
         .unwrap();
     let wake_auth = owner_auth(&sk, id, 0, 1);
-    ws_req.headers_mut().insert(
-        "nemo-owner",
-        owner_header(&wake_auth).parse().unwrap(),
-    );
+    ws_req
+        .headers_mut()
+        .insert("nemo-owner", owner_header(&wake_auth).parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
 
     let env_auth = owner_auth(&sk, id, 0, 1);

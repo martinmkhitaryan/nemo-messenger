@@ -34,6 +34,8 @@ How to use it:
 | FCM | Not started (needs schema amendment) |
 | Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
 | Packaging / self-host docs | **Done** (I11) — compose HTTPS :8443; JVM `./gradlew run`; LICENSE split |
+| Desktop hardening | **Done** (I12) — 120 s owner auth, capability/peer rate limits, cargo-deny, log redaction |
+| v1 freeze | **Blocked on I5 Android** — do not delete this file until the APK checkpoint |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -302,11 +304,11 @@ Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: t
 
 **Checkpoint.**
 
-- [ ] `cargo test --workspace`
-- [ ] `cargo test -p nemo-wire -p nemo-server --test no_libsignal`
-- [ ] Manual: revoke phrase kills discovery; stolen-vault-without-passphrase does not unlock
-- [ ] Delete **this file** or replace it with a one-paragraph “v1 shipped” note in `docs/`
-- [ ] Commit
+- [x] `cargo test --workspace`
+- [x] `cargo test -p nemo-wire -p nemo-server --test no_libsignal`
+- [x] Manual: revoke phrase kills discovery; stolen-vault-without-passphrase does not unlock
+- [ ] Delete **this file** or replace it with a one-paragraph “v1 shipped” note in `docs/` — **blocked on I5 Android**
+- [x] Commit (desktop hardening; freeze waits)
 
 ---
 
@@ -353,4 +355,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I11 is implemented.** Next: **I12** (hardening / v1 freeze). FCM is I10b and needs ADR-0035. Return to **I5 Android** before I12.
+**I12 desktop hardening is implemented.** v1 freeze (delete this file) waits on **I5 Android**. FCM is I10b and needs ADR-0035.

@@ -61,3 +61,17 @@ cd apps/compose
 ## Licence split
 
 `deploy/`, `nemo-wire`, and `nemo-server` are MIT. The desktop binary is AGPL-3.0-only. See [LICENSE.md](../LICENSE.md).
+
+## Rate limits (v1 defaults)
+
+These are capability- and peer-scoped. Excess is a generic failure, never "rate limited for Alice" ([docs/protocol/04-delivery-protocol.md](../docs/protocol/04-delivery-protocol.md), [05-federation.md](../docs/protocol/05-federation.md)).
+
+| Limit | Default |
+| --- | --- |
+| Contact-capability mailbox appends | 30 / minute / capability |
+| Federation inners accepted | 100 / second / peer |
+| Mailbox owner `ts` | rejected if older than 120 s or more than 120 s in the future |
+| Mailbox retention | 14 days / 500 MiB |
+| Group stream | 30 days / 2 GiB |
+
+Operators MAY tighten these; they MUST NOT advertise unbounded retention. There is no sender identity to rate-limit.

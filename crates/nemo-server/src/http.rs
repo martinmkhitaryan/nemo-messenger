@@ -64,7 +64,7 @@ impl AppState {
         let home = self.home.lock().await;
         let groups = self.groups.lock().await;
         if let Err(e) = crate::pg::flush(pool, &home, &groups).await {
-            eprintln!("nemo-server persist: {e}");
+            crate::log_ops("nemo-server persist", e);
         }
     }
 }
@@ -329,11 +329,7 @@ async fn revocation(State(st): State<AppState>, body: Bytes) -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn wakeup(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> Response {
+async fn wakeup(State(st): State<AppState>, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     let (owner, auth) = match require_owner(&headers) {
         Ok(v) => v,
         Err(s) => return s.into_response(),

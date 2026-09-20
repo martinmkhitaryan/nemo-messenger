@@ -60,13 +60,28 @@ fn sqlcipher_open_wrong_passphrase_fails() {
         Ok(_) => panic!("wrong passphrase opened the vault"),
         Err(e) => e,
     };
-    assert!(matches!(err, CoreError::VaultLocked | CoreError::VaultIo(_)));
+    assert!(matches!(
+        err,
+        CoreError::VaultLocked | CoreError::VaultIo(_)
+    ));
     let db = fs::read(dir.join("store.db")).unwrap();
     let pk = install.revocation_public_key();
     assert!(
         !db.windows(pk.len()).any(|w| w == pk),
         "revocation public key must not appear in the ciphertext file"
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stolen_vault_without_passphrase_does_not_unlock() {
+    let dir = temp_dir();
+    let (install, _) = Installation::create().unwrap();
+    Vault::create(&dir, "correct horse", &install).unwrap();
+    assert!(matches!(
+        Vault::open(&dir, "not the passphrase!!"),
+        Err(CoreError::VaultLocked | CoreError::VaultIo(_))
+    ));
     let _ = fs::remove_dir_all(&dir);
 }
 

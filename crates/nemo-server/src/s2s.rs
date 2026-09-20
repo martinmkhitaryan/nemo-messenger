@@ -36,7 +36,7 @@ pub async fn accept_loop(listener: TcpListener, state: AppState) -> std::io::Res
         let st = state.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_inbound(st, acc, tcp).await {
-                eprintln!("s2s inbound: {e}");
+                crate::log_ops("s2s inbound", e);
             }
         });
     }
@@ -56,7 +56,8 @@ async fn handle_inbound(
     let pk = tls::ed25519_spki(cert)?;
     let peer = {
         let home = state.home.lock().await;
-        home.peer_id_for_sign_key(&pk).ok_or(ServerError::NotPinned)?
+        home.peer_id_for_sign_key(&pk)
+            .ok_or(ServerError::NotPinned)?
     };
     let mut stream = tls;
     let hello = read_frame(&mut stream).await?;
@@ -75,9 +76,7 @@ async fn handle_inbound(
         let reply = {
             let mut home = state.home.lock().await;
             match accept_frame(&mut home, peer, &frame) {
-                Ok(payload) if !payload.is_empty() => {
-                    Some(take_frame(&mut home, peer, payload)?)
-                }
+                Ok(payload) if !payload.is_empty() => Some(take_frame(&mut home, peer, payload)?),
                 Ok(_) => None,
                 Err(ServerError::CounterGap) => {
                     reset_link(&mut home, peer);
@@ -133,7 +132,9 @@ pub async fn dial_and_pump(state: &AppState, dest: ServerId) -> Result<PumpStats
     write_frame(&mut tls, &hello)
         .await
         .map_err(|_| ServerError::Denied)?;
-    let peer_hello = read_frame(&mut tls).await.map_err(|_| ServerError::Denied)?;
+    let peer_hello = read_frame(&mut tls)
+        .await
+        .map_err(|_| ServerError::Denied)?;
     {
         let mut home = state.home.lock().await;
         accept_frame(&mut home, dest, &peer_hello)?;
@@ -188,7 +189,7 @@ pub async fn pump_due(state: &AppState) {
     };
     for dest in dests {
         if let Err(e) = dial_and_pump(state, dest).await {
-            eprintln!("s2s pump {e}");
+            crate::log_ops("s2s pump", e);
         }
     }
 }
@@ -223,26 +224,33 @@ fn due_destinations(home: &HomeServer) -> Vec<ServerId> {
 
 fn next_due(home: &mut HomeServer, dest: ServerId) -> Option<crate::federation::OutboundRow> {
     let now = home.now;
-    home.outbound.iter().find(|r| {
-        r.dest == dest
-            && r.next_attempt <= now
-            && now.saturating_sub(r.enqueued_at) <= OUTBOUND_MAX_AGE_SECS
-    }).cloned()
+    home.outbound
+        .iter()
+        .find(|r| {
+            r.dest == dest
+                && r.next_attempt <= now
+                && now.saturating_sub(r.enqueued_at) <= OUTBOUND_MAX_AGE_SECS
+        })
+        .cloned()
 }
 
 fn remove_matching_outbound(home: &mut HomeServer, row: &crate::federation::OutboundRow) {
-    if let Some(i) = home.outbound.iter().position(|r| {
-        r.dest == row.dest && r.outer.hpke_ciphertext == row.outer.hpke_ciphertext
-    }) {
+    if let Some(i) = home
+        .outbound
+        .iter()
+        .position(|r| r.dest == row.dest && r.outer.hpke_ciphertext == row.outer.hpke_ciphertext)
+    {
         home.outbound.remove(i);
     }
 }
 
 fn backoff_row(home: &mut HomeServer, row: &crate::federation::OutboundRow) {
     let now = home.now;
-    if let Some(r) = home.outbound.iter_mut().find(|r| {
-        r.dest == row.dest && r.outer.hpke_ciphertext == row.outer.hpke_ciphertext
-    }) {
+    if let Some(r) = home
+        .outbound
+        .iter_mut()
+        .find(|r| r.dest == row.dest && r.outer.hpke_ciphertext == row.outer.hpke_ciphertext)
+    {
         r.backoff_secs = (r.backoff_secs.saturating_mul(2)).min(BACKOFF_CAP_SECS);
         r.next_attempt = now.saturating_add(r.backoff_secs);
     }
@@ -279,13 +287,10 @@ async fn forward_row<S: AsyncRead + AsyncWrite + Unpin>(
     }
 }
 
-async fn write_frame<W: AsyncWrite + Unpin>(
-    w: &mut W,
-    frame: &S2sFrame,
-) -> std::io::Result<()> {
-    let bytes = frame.encode().map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "s2s frame")
-    })?;
+async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, frame: &S2sFrame) -> std::io::Result<()> {
+    let bytes = frame
+        .encode()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "s2s frame"))?;
     w.write_all(&bytes).await?;
     w.flush().await
 }

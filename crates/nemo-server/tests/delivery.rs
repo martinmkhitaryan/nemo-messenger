@@ -137,11 +137,44 @@ fn owner_fetch_ack_not_capability() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].seq, 1);
 
+    let stale = auth(&sk, id, 0, 16, ts.saturating_sub(121));
+    assert!(matches!(
+        home.fetch(id, &stale, ts),
+        Err(ServerError::OwnerAuth)
+    ));
+
     home.ack(id, &auth(&sk, id, 1, 0, ts), ts).unwrap();
     assert!(home
         .fetch(id, &auth(&sk, id, 0, 16, ts), ts)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn contact_capability_rate_limit_is_generic_denied() {
+    let mut home = HomeServer::new();
+    let (_sk, id) = register(&mut home);
+    let cap = home.mint_contact_capability(id).unwrap();
+    for i in 0..nemo_server::home::RATE_PER_MIN {
+        home.ingest(&wrap(
+            &home.hpke_public(),
+            cap,
+            TtlBucket::DEFAULT,
+            MessageType::DoubleRatchet,
+            vec![i as u8],
+        ))
+        .unwrap();
+    }
+    assert!(matches!(
+        home.ingest(&wrap(
+            &home.hpke_public(),
+            cap,
+            TtlBucket::DEFAULT,
+            MessageType::DoubleRatchet,
+            vec![0xff],
+        )),
+        Err(ServerError::Denied)
+    ));
 }
 
 #[test]

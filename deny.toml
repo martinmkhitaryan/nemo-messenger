@@ -33,8 +33,12 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "allow"
 wildcards = "allow"
-# Enforced in tests (`nemo-server`/`nemo-wire` `no_libsignal.rs`) as well.
-deny = []
+# ADR-0028: MIT crates must not pull libsignal. Only AGPL `nemo-core` may wrap it.
+
+[[bans.deny]]
+name = "libsignal-protocol"
+wrappers = ["nemo-core"]
+reason = "ADR-0028"
 
 [sources]
 unknown-registry = "deny"

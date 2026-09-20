@@ -14,6 +14,9 @@ jobs:
         run: cargo test --workspace
       - name: MIT crates must not link libsignal
         run: cargo test -p nemo-wire -p nemo-server --test no_libsignal
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
