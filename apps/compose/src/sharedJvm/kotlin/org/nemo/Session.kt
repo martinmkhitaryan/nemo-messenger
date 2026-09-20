@@ -1,18 +1,15 @@
 package org.nemo
 
-import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -21,7 +18,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,8 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.application
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -45,51 +39,16 @@ import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
 import java.io.File
 
-private const val DEFAULT_HOME = "http://127.0.0.1:8787"
+internal const val DEFAULT_HOME = "http://127.0.0.1:8787"
 private const val CANNOT_RECOVER =
     "This identity cannot be recovered. If you lose the passphrase, the keys are gone. Write the revocation phrase down; it is shown once."
 
-fun main() {
-    val root = repoRoot()
-    val libDir = File(root, "target/debug")
-    if (libDir.resolve("libnemo_ffi.so").isFile) {
-        System.setProperty("jna.library.path", libDir.absolutePath)
-    }
-    val data = File(System.getProperty("user.home"), ".local/share/nemo")
-    application {
-        Window(onCloseRequest = ::exitApplication, title = "Nemo") {
-            MaterialTheme {
-                Row(Modifier.fillMaxSize()) {
-                    SessionPane(
-                        label = "Left",
-                        vaultDir = File(data, "left"),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    VerticalDivider()
-                    SessionPane(
-                        label = "Right",
-                        vaultDir = File(data, "right"),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun repoRoot(): File {
-    var dir = File(System.getProperty("user.dir")).absoluteFile
-    repeat(8) {
-        if (File(dir, "crates/nemo-ffi").isDirectory) return dir
-        dir = dir.parentFile ?: return File(".")
-    }
-    return File(".")
-}
+expect fun pickLocalFile(): String?
 
 private enum class Phase { Locked, Create, Mnemonic, Home }
 
 @Composable
-private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modifier) {
+internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     var phase by remember {
         mutableStateOf(if (File(vaultDir, "kdf.cbor").isFile) Phase.Locked else Phase.Create)
@@ -587,13 +546,7 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                 Button(
                                     enabled = !busy,
                                     onClick = {
-                                        val dlg = java.awt.FileDialog(null as java.awt.Frame?, "Send file", java.awt.FileDialog.LOAD)
-                                        dlg.isVisible = true
-                                        val dir = dlg.directory
-                                        val name = dlg.file
-                                        if (!dir.isNullOrEmpty() && !name.isNullOrEmpty()) {
-                                            filePath = java.io.File(dir, name).absolutePath
-                                        }
+                                        pickLocalFile()?.let { filePath = it }
                                     },
                                 ) { Text("Browse") }
                                 Spacer(Modifier.width(8.dp))
@@ -638,10 +591,6 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                 ) { Text("Send group file") }
                             }
                         }
-                        VerticalScrollbar(
-                            adapter = rememberScrollbarAdapter(scroll),
-                            modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
-                        )
                     }
                 }
             }

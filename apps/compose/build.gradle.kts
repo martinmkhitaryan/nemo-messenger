@@ -1,28 +1,89 @@
+import org.gradle.api.tasks.testing.Test
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    kotlin("jvm") version "2.0.21"
+    kotlin("multiplatform") version "2.0.21"
     id("org.jetbrains.compose") version "1.7.1"
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
+    id("com.android.application") version "8.7.3"
 }
 
 group = "org.nemo"
 version = "0.1.0"
 
-repositories {
-    google()
-    mavenCentral()
-}
-
 val repoRoot = rootDir.parentFile.parentFile
 val ffiLibDir = repoRoot.resolve("target/debug")
+val jniLibsDir = project.layout.projectDirectory.dir("src/androidMain/jniLibs")
 
-dependencies {
-    implementation(compose.desktop.currentOs)
-    implementation(compose.material3)
-    implementation("net.java.dev.jna:jna:5.15.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
-    testImplementation(kotlin("test"))
+kotlin {
+    androidTarget {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_11)
+        }
+    }
+    jvm("desktop") {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_21)
+        }
+    }
+
+    sourceSets {
+        val commonMain by getting
+        val sharedJvm by creating {
+            dependsOn(commonMain)
+            dependencies {
+                implementation(compose.runtime)
+                implementation(compose.foundation)
+                implementation(compose.material3)
+                implementation(compose.ui)
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+                implementation("net.java.dev.jna:jna:5.15.0")
+            }
+            kotlin.srcDir("src/sharedJvm/kotlin")
+        }
+        val androidMain by getting {
+            dependsOn(sharedJvm)
+            dependencies {
+                implementation("net.java.dev.jna:jna:5.15.0@aar")
+                implementation("androidx.activity:activity-compose:1.9.3")
+            }
+        }
+        val desktopMain by getting {
+            dependsOn(sharedJvm)
+            dependencies {
+                implementation(compose.desktop.currentOs)
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+            }
+        }
+        val desktopTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+                implementation("net.java.dev.jna:jna:5.15.0")
+            }
+        }
+    }
+}
+
+android {
+    namespace = "org.nemo"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "org.nemo"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    packaging {
+        jniLibs {
+            keepDebugSymbols += setOf("**/libnemo_ffi.so")
+        }
+    }
 }
 
 compose.desktop {
@@ -44,15 +105,40 @@ compose.desktop {
     }
 }
 
-kotlin {
-    jvmToolchain(21)
-}
-
 tasks.register<Exec>("cargoBuildFfi") {
     group = "nemo"
     workingDir = repoRoot
     environment("CARGO_TARGET_DIR", repoRoot.resolve("target").absolutePath)
     commandLine("cargo", "build", "-p", "nemo-ffi", "-p", "nemo-server")
+}
+
+tasks.register<Exec>("cargoNdkFfi") {
+    group = "nemo"
+    workingDir = repoRoot
+    environment("CARGO_TARGET_DIR", repoRoot.resolve("target").absolutePath)
+    val ndk = System.getenv("ANDROID_NDK_HOME")
+        ?: System.getenv("ANDROID_NDK_ROOT")
+        ?: ""
+    if (ndk.isNotEmpty()) {
+        environment("ANDROID_NDK_HOME", ndk)
+        environment("ANDROID_NDK_ROOT", ndk)
+    }
+    commandLine(
+        "cargo",
+        "ndk",
+        "-t",
+        "arm64-v8a",
+        "-t",
+        "x86_64",
+        "-P",
+        "26",
+        "-o",
+        jniLibsDir.asFile.absolutePath,
+        "build",
+        "-p",
+        "nemo-ffi",
+        "--release",
+    )
 }
 
 tasks.register<Exec>("generateUniffi") {
@@ -76,19 +162,18 @@ tasks.register<Exec>("generateUniffi") {
         "--language",
         "kotlin",
         "--out-dir",
-        "apps/compose/src/main/kotlin",
+        "apps/compose/src/sharedJvm/kotlin",
         "--no-format",
     )
 }
 
-tasks.test {
-    useJUnitPlatform()
-    dependsOn("cargoBuildFfi")
-    systemProperty("jna.library.path", ffiLibDir.absolutePath)
-    environment("jna.library.path", ffiLibDir.absolutePath)
-}
-
 afterEvaluate {
-    tasks.named("run") { dependsOn("cargoBuildFfi") }
+    tasks.named<Test>("desktopTest") {
+        dependsOn("cargoBuildFfi")
+        systemProperty("jna.library.path", ffiLibDir.absolutePath)
+        environment("jna.library.path", ffiLibDir.absolutePath)
+    }
+    tasks.findByName("run")?.dependsOn("cargoBuildFfi")
     tasks.matching { it.name.startsWith("package") }.configureEach { dependsOn("cargoBuildFfi") }
+    tasks.findByName("preBuild")?.dependsOn("cargoNdkFfi")
 }

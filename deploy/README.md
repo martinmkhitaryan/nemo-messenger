@@ -62,6 +62,30 @@ cd apps/compose
 
 `deploy/`, `nemo-wire`, and `nemo-server` are MIT. The desktop binary is AGPL-3.0-only. See [LICENSE.md](../LICENSE.md).
 
+## Android debug APK
+
+The Compose module is one Gradle project for desktop JVM and Android (ADR-0028). Desktop: `cd apps/compose && ./gradlew run` or `./gradlew desktopTest`. Android needs the SDK + NDK (not a cloud vendor API):
+
+```text
+export ANDROID_HOME=$HOME/Android/Sdk
+export ANDROID_SDK_ROOT=$ANDROID_HOME
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+  "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" \
+  "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
+rustup target add aarch64-linux-android x86_64-linux-android
+cargo install cargo-ndk
+cd apps/compose
+./gradlew assembleDebug
+# emulator (create identity, show fingerprint):
+"$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n nemo \
+  -k "system-images;android-35;google_apis;x86_64" -d pixel --force
+"$ANDROID_HOME/emulator/emulator" -avd nemo
+./gradlew installDebug
+```
+
+CI on GitHub Actions runs `assembleDebug` with `nttld/setup-ndk` (r27c) and uploads the APK. The native library is `libnemo_ffi.so` via JNA (`arm64-v8a` and `x86_64`).
+
 ## Rate limits (v1 defaults)
 
 These are capability- and peer-scoped. Excess is a generic failure, never "rate limited for Alice" ([docs/protocol/04-delivery-protocol.md](../docs/protocol/04-delivery-protocol.md), [05-federation.md](../docs/protocol/05-federation.md)).

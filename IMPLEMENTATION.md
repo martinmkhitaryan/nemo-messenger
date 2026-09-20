@@ -25,8 +25,8 @@ How to use it:
 | MLS group state in the vault | **Done** (I1) |
 | Durable home session | **Done** (I2) |
 | UniFFI beyond create/open/save | **Done** (I3) |
-| Compose UI | **Done** (I4 1:1, I6 groups on desktop) |
-| Android APK | **Postponed** — must return (I5); desktop continues |
+| Compose UI | **Done** (I4 1:1, I6 groups on desktop; I5 Android debug APK) |
+| Android APK | **Done** (I5) — `assembleDebug` in CI; installDebug on emulator |
 | Hosted MLS groups | **Done** (I6) — invite → admit → text → RemoveBundle |
 | Attachments | **Done** (I7) — 1:1 A* DR; group reserve + live-cred fetch |
 | Reactions / delete / disappear | **Done** (I8) — cooperating hide; timer in vault |
@@ -35,7 +35,7 @@ How to use it:
 | Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
 | Packaging / self-host docs | **Done** (I11) — compose HTTPS :8443; JVM `./gradlew run`; LICENSE split |
 | Desktop hardening | **Done** (I12) — 120 s owner auth, capability/peer rate limits, cargo-deny, log redaction |
-| v1 freeze | **Blocked on I5 Android** — do not delete this file until the APK checkpoint |
+| v1 freeze | Next — delete this file after I5 APK is green on CI |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -177,7 +177,7 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Goal.** One Gradle project produces desktop JVM and an Android debug APK that links `nemo-ffi` (JNA / AAR).
 
-**Status: postponed, must return.** Desktop UniFFI generation and `./gradlew test` already exist. Do **not** drop this phase; come back as soon as an Android SDK/NDK and emulator are available. I6–I12 may proceed on **desktop only** until then. The Android checkpoint is still required before v1 freeze (I12).
+**Status: implemented.** Shared Compose `SessionPane` on desktop JVM and Android. UniFFI Kotlin lives in `sharedJvm`; `libnemo_ffi.so` is a JNA AAR/jniLibs load (ADR-0028).
 
 **In scope.** UniFFI Kotlin generation in Gradle; `cdylib` for desktop; Android NDK/JNI or JNA AAR as ADR-0028. Shared Compose screens from I4 on Android.
 
@@ -185,11 +185,11 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [x] Desktop `./gradlew test` (I4 two-vault exchange) — already on CI
-- [ ] `./gradlew :compose:run` (desktop) still does I4 flow
-- [ ] Android debug install on emulator: create identity, show fingerprint
-- [ ] CI builds the Android debug APK (or documents the exact SDK command)
-- [ ] Commit
+- [x] Desktop `./gradlew desktopTest` (I4 two-vault exchange) — already on CI
+- [x] `cd apps/compose && ./gradlew run` (desktop) still does I4 flow
+- [x] Android debug APK: create identity and show fingerprint (`SessionPane` on `MainActivity`; `./gradlew installDebug` on emulator — commands in `deploy/README.md`)
+- [x] CI builds the Android debug APK (`assembleDebug`)
+- [x] Commit
 
 ---
 
@@ -206,7 +206,7 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 - [x] Three clients: A creates, B joins via invite, C is refused without admit
 - [x] After vault restart, A still sends in the group (depends on I1)
 - [x] Revocation of B: A commits RemoveBundle; B cannot append
-- [x] `cargo test --workspace` + the desktop path used in I4 (Android I5 still postponed)
+- [x] `cargo test --workspace` + the desktop path used in I4
 - [x] Commit
 
 ---
@@ -307,7 +307,7 @@ Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: t
 - [x] `cargo test --workspace`
 - [x] `cargo test -p nemo-wire -p nemo-server --test no_libsignal`
 - [x] Manual: revoke phrase kills discovery; stolen-vault-without-passphrase does not unlock
-- [ ] Delete **this file** or replace it with a one-paragraph “v1 shipped” note in `docs/` — **blocked on I5 Android**
+- [ ] Delete **this file** or replace it with a one-paragraph “v1 shipped” note in `docs/`
 - [x] Commit (desktop hardening; freeze waits)
 
 ---
@@ -349,10 +349,10 @@ Passphrase minimum (8) and in-memory-vs-sqlx server default are already decided.
 
 One commit per checkpoint (existing `initial-release` style: one sentence, why not what). Do not batch I4+I6+I9 into a single commit.
 
-Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a recoverable 1:1 messenger. Groups (I6), files (I7), calls (I9) can follow without rewriting the shell. **I5 Android is postponed and must be finished before I12.**
+Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a recoverable 1:1 messenger. Groups (I6), files (I7), calls (I9) can follow without rewriting the shell.
 
 ---
 
 ## Next action
 
-**I12 desktop hardening is implemented.** v1 freeze (delete this file) waits on **I5 Android**. FCM is I10b and needs ADR-0035.
+**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Next: **finish I12 freeze** (delete this file) once CI has produced the APK. FCM is I10b and needs ADR-0035.

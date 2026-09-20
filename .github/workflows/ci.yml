@@ -23,4 +23,33 @@ jobs:
           java-version: "21"
       - name: Compose two-vault exchange
         working-directory: apps/compose
-        run: ./gradlew --no-daemon test
+        run: ./gradlew --no-daemon desktopTest
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - uses: android-actions/setup-android@v3
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Assemble debug APK
+        working-directory: apps/compose
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: ./gradlew --no-daemon assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nemo-debug-apk
+          path: apps/compose/build/outputs/apk/debug/*.apk
