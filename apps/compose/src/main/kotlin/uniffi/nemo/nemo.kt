@@ -782,6 +782,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -858,6 +860,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_start_call(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup(
 ): Short
 fun uniffi_nemo_ffi_checksum_constructor_nemoclient_create(
 ): Short
@@ -986,6 +990,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_start_call(`ptr`: Pointer,`peerIdHex`: 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun ffi_nemo_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_nemo_ffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1203,6 +1209,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic() != 40697.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup() != 8888.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create() != 13485.toShort()) {
@@ -1647,6 +1656,8 @@ public interface NemoClientInterface {
      * Shown once at identity creation. Never stored in the vault.
      */
     fun `takeRevocationMnemonic`(): kotlin.String?
+    
+    fun `waitWakeup`()
     
     companion object
 }
@@ -2137,6 +2148,18 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     }
     )
     }
+    
+
+    
+    @Throws(FfiException::class)override fun `waitWakeup`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(
+        it, _status)
+}
+    }
+    
     
 
     

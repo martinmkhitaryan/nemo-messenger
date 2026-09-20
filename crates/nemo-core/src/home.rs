@@ -832,6 +832,18 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 }
 
+impl HomeSession<HttpHome> {
+    pub fn wakeup_handle(&self) -> Result<(HttpHome, String)> {
+        Ok((self.transport.clone(), self.owner_header(self.cursor, 1)?))
+    }
+
+    /// Block until the home sends one wakeup frame. Payload MUST be empty (ADR-0020).
+    pub async fn wait_wakeup(&self) -> Result<Vec<u8>> {
+        let (home, auth) = self.wakeup_handle()?;
+        home.wait_wakeup(&auth).await
+    }
+}
+
 async fn fetch_bundle<T: HomeTransport>(transport: &T) -> Result<ServerBundle> {
     let res = transport
         .call(HttpRequest {
@@ -895,6 +907,55 @@ impl HttpHome {
             .build()
             .map_err(|e| CoreError::Transport(e.to_string()))?;
         Ok(Self { client, base })
+    }
+
+    /// Long-lived `/v1/wakeup`. Returns the next binary frame (must be empty).
+    pub async fn wait_wakeup(&self, owner_header: &str) -> Result<Vec<u8>> {
+        use futures::StreamExt;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+        let ws_url = wakeup_url(&self.base);
+        let mut req = ws_url
+            .into_client_request()
+            .map_err(|e| CoreError::Transport(e.to_string()))?;
+        req.headers_mut().insert(
+            "nemo-owner",
+            owner_header
+                .parse()
+                .map_err(|e| CoreError::Transport(format!("{e}")))?,
+        );
+        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .map_err(|e| CoreError::Transport(e.to_string()))?;
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMsg::Binary(b))) => {
+                    if !b.is_empty() {
+                        return Err(CoreError::Transport("wakeup frame must be empty".into()));
+                    }
+                    return Ok(b.to_vec());
+                }
+                Some(Ok(WsMsg::Ping(_) | WsMsg::Pong(_) | WsMsg::Frame(_))) => {}
+                Some(Ok(WsMsg::Close(_))) | None => {
+                    return Err(CoreError::Transport("wakeup closed".into()));
+                }
+                Some(Err(e)) => return Err(CoreError::Transport(e.to_string())),
+                Some(Ok(WsMsg::Text(_))) => {
+                    return Err(CoreError::Transport("wakeup must be binary".into()));
+                }
+            }
+        }
+    }
+}
+
+fn wakeup_url(base: &str) -> String {
+    if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}/v1/wakeup")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}/v1/wakeup")
+    } else {
+        format!("{base}/v1/wakeup")
     }
 }
 

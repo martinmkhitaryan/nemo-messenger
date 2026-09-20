@@ -32,6 +32,7 @@ How to use it:
 | Reactions / delete / disappear | **Done** (I8) — cooperating hide; timer in vault |
 | 1:1 WebRTC media | **Done** (I9) — webrtc-rs relay-only through coturn; host/srflx refused |
 | FCM | Not started (needs schema amendment) |
+| Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -272,9 +273,9 @@ Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: t
 
 **Checkpoint (I10a).**
 
-- [ ] Mailbox ingest wakes the client WS; client fetch sees the row
-- [ ] Frame payload is empty binary
-- [ ] Commit
+- [x] Mailbox ingest wakes the client WS; client fetch sees the row
+- [x] Frame payload is empty binary
+- [x] Commit
 
 ---
 
@@ -351,4 +352,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I9 is implemented (desktop).** Next: **I10** (client wakeup WebSocket). Return to **I5 Android** before I12.
+**I10a is implemented (desktop).** Next: **I11** (packaging and self-host docs). FCM is I10b and needs ADR-0035. Return to **I5 Android** before I12.

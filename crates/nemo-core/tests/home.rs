@@ -196,6 +196,52 @@ async fn reqwest_talks_to_listening_server() {
         .expect("own discovery");
 }
 
+#[tokio::test]
+async fn wakeup_empty_binary_then_fetch() {
+    use nemo_core::app::encode_text;
+    use nemo_wire::envelope::TtlBucket;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router(AppState::new()))
+            .await
+            .expect("serve");
+    });
+    let now = now_unix();
+    let base = format!("http://{addr}");
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (mut alice, alice_card) =
+        HomeSession::register(HttpHome::new(base.clone()).unwrap(), alice_inst, now)
+            .await
+            .unwrap();
+    let (mut bob, _) = HomeSession::register(HttpHome::new(base).unwrap(), bob_inst, now)
+        .await
+        .unwrap();
+    alice.publish_prekey().await.unwrap();
+    let cap = alice.mint_contact().await.unwrap();
+    bob.add_contact(&alice_card, cap, now).await.unwrap();
+
+    let wake = tokio::spawn({
+        let handle = alice.wakeup_handle().unwrap();
+        async move { handle.0.wait_wakeup(&handle.1).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let ptext = encode_text(1, now, "wake me").unwrap();
+    bob.send_to(&alice.identity_id(), TtlBucket::DEFAULT, &ptext, now)
+        .await
+        .unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(3), wake)
+        .await
+        .expect("wakeup joined")
+        .unwrap()
+        .unwrap();
+    assert!(frame.is_empty());
+    let rows = alice.fetch_mailbox().await.unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
 fn temp_vault() -> std::path::PathBuf {
     let mut n = [0u8; 8];
     rand::rngs::OsRng.fill_bytes(&mut n);
@@ -220,10 +266,7 @@ async fn vault_restart_keeps_1to1_session() {
         .unwrap();
     bob.publish_prekey().await.unwrap();
     let bob_cap = bob.mint_contact().await.unwrap();
-    alice
-        .add_contact(&bob_card, bob_cap, now)
-        .await
-        .unwrap();
+    alice.add_contact(&bob_card, bob_cap, now).await.unwrap();
 
     let ptext = encode_text(1, now, "hello bob").unwrap();
     assert!(matches!(
@@ -294,10 +337,7 @@ async fn revoked_contact_refuses_send() {
         .unwrap();
     bob.publish_prekey().await.unwrap();
     let bob_cap = bob.mint_contact().await.unwrap();
-    alice
-        .add_contact(&bob_card, bob_cap, now)
-        .await
-        .unwrap();
+    alice.add_contact(&bob_card, bob_cap, now).await.unwrap();
 
     let stmt = revocation_from_mnemonic(&bob_export.mnemonic, bob.identity_id(), now).unwrap();
     alice.submit_revocation(&stmt).await.unwrap();

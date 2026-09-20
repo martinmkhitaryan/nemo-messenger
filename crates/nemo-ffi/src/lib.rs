@@ -1363,6 +1363,22 @@ impl NemoClient {
         Ok(expired)
     }
 
+    pub fn wait_wakeup(&self) -> Result<(), FfiError> {
+        let (home, auth) = {
+            let inner = self.inner.lock().map_err(|_| lock_err())?;
+            match inner.state.as_ref() {
+                Some(ClientState::Registered(session)) => session.wakeup_handle()?,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            }
+        };
+        let frame = block_on(home.wait_wakeup(&auth))?;
+        if !frame.is_empty() {
+            return Err(FfiError::Core("wakeup frame must be empty".into()));
+        }
+        Ok(())
+    }
+
     pub fn start_call(&self, peer_id_hex: String) -> Result<DisplayRow, FfiError> {
         {
             let inner = self.inner.lock().map_err(|_| lock_err())?;
@@ -2069,5 +2085,31 @@ mod tests {
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
         let _ = alice_id;
+    }
+
+    #[test]
+    fn wakeup_then_fetch_sees_row() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-wake-a");
+        let bob_dir = temp_dir("nemo-ffi-wake-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        std::thread::scope(|s| {
+            let h = s.spawn(|| alice.wait_wakeup());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            bob.send_text(alice_id, "ping".into()).unwrap();
+            h.join().unwrap().unwrap();
+        });
+        let rows = alice.fetch_now().unwrap();
+        assert!(rows.iter().any(|r| r.text == "ping"));
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
     }
 }

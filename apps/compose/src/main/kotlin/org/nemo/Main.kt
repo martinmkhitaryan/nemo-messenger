@@ -157,6 +157,20 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
         }
     }
 
+    LaunchedEffect(client, phase) {
+        val c = client ?: return@LaunchedEffect
+        if (phase != Phase.Home) return@LaunchedEffect
+        while (true) {
+            try {
+                withContext(Dispatchers.IO) { c.waitWakeup() }
+                val rows = withContext(Dispatchers.IO) { c.fetchNow() }
+                applyIncoming(messages, rows)
+            } catch (_: Throwable) {
+                delay(2_000)
+            }
+        }
+    }
+
     Surface(modifier) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             Text("$label · ${vaultDir.name}", style = MaterialTheme.typography.titleMedium)
