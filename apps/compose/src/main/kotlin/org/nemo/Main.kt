@@ -106,6 +106,14 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
     var nickname by remember { mutableStateOf(label) }
     var peerId by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf("") }
+    var groupName by remember { mutableStateOf(label) }
+    var groupId by remember { mutableStateOf("") }
+    var inviteUri by remember { mutableStateOf("") }
+    var invitePaste by remember { mutableStateOf("") }
+    var joinUri by remember { mutableStateOf("") }
+    var joinPaste by remember { mutableStateOf("") }
+    var groupDraft by remember { mutableStateOf("") }
+    var memberCred by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     val messages = remember { mutableStateListOf<DisplayRow>() }
     var busy by remember { mutableStateOf(false) }
@@ -134,6 +142,12 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                 val rows = withContext(Dispatchers.IO) { c.fetchNow() }
                 if (rows.isNotEmpty()) {
                     messages.addAll(rows)
+                }
+                if (groupId.isEmpty()) {
+                    val groups = withContext(Dispatchers.IO) { c.listGroups() }
+                    if (groups.isNotEmpty()) {
+                        groupId = groups[0].groupId
+                    }
                 }
             } catch (_: Throwable) {
             }
@@ -190,6 +204,10 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                 client = c
                                 fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                 identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
+                                val groups = withContext(Dispatchers.IO) { c.listGroups() }
+                                if (groups.isNotEmpty()) {
+                                    groupId = groups[0].groupId
+                                }
                                 phase = Phase.Home
                             }
                         },
@@ -279,11 +297,121 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                 Text("Peer $peerId", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                             }
                             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                            Text("Group", style = MaterialTheme.typography.titleSmall)
+                            OutlinedTextField(
+                                value = groupName,
+                                onValueChange = { groupName = it },
+                                label = { Text("Group nickname") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                            Button(
+                                enabled = !busy,
+                                onClick = {
+                                    runIo {
+                                        groupId = withContext(Dispatchers.IO) {
+                                            client?.createGroup(groupName.ifBlank { label }).orEmpty()
+                                        }
+                                        status = "Created group $groupId"
+                                    }
+                                },
+                            ) { Text("Create group") }
+                            if (groupId.isNotEmpty()) {
+                                Text("Group $groupId", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Button(
+                                enabled = !busy && groupId.isNotEmpty(),
+                                onClick = {
+                                    runIo {
+                                        inviteUri = withContext(Dispatchers.IO) {
+                                            client?.mintGroupInvite(groupId).orEmpty()
+                                        }
+                                    }
+                                },
+                            ) { Text("Mint group invite") }
+                            if (inviteUri.isNotEmpty()) {
+                                Text(inviteUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                            }
+                            OutlinedTextField(
+                                value = invitePaste,
+                                onValueChange = { invitePaste = it },
+                                label = { Text("Paste group invite (nemo-g:1:…)") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Button(
+                                enabled = !busy && invitePaste.isNotBlank(),
+                                onClick = {
+                                    runIo {
+                                        joinUri = withContext(Dispatchers.IO) {
+                                            client?.acceptGroupInvite(invitePaste.trim()).orEmpty()
+                                        }
+                                        status = "Accepted invite; give this join request to an existing member"
+                                    }
+                                },
+                            ) { Text("Accept invite") }
+                            if (joinUri.isNotEmpty()) {
+                                Text(joinUri, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                            }
+                            OutlinedTextField(
+                                value = joinPaste,
+                                onValueChange = { joinPaste = it },
+                                label = { Text("Paste join request (nemo-j:1:…)") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Button(
+                                enabled = !busy && joinPaste.isNotBlank(),
+                                onClick = {
+                                    runIo {
+                                        memberCred = withContext(Dispatchers.IO) {
+                                            client?.admitJoin(joinPaste.trim()).orEmpty()
+                                        }
+                                        status = "Admitted $memberCred"
+                                    }
+                                },
+                            ) { Text("Admit join") }
+                            OutlinedTextField(
+                                value = groupDraft,
+                                onValueChange = { groupDraft = it },
+                                label = { Text("Group message") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row {
+                                Button(
+                                    enabled = !busy && groupId.isNotEmpty() && groupDraft.isNotBlank(),
+                                    onClick = {
+                                        val text = groupDraft
+                                        groupDraft = ""
+                                        runIo {
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.sendGroupText(groupId, text)
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                        }
+                                    },
+                                ) { Text("Send group") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = !busy && groupId.isNotEmpty() && memberCred.isNotEmpty(),
+                                    onClick = {
+                                        runIo {
+                                            withContext(Dispatchers.IO) {
+                                                client?.removeGroupMember(groupId, memberCred)
+                                            }
+                                            status = "Removed $memberCred"
+                                        }
+                                    },
+                                ) { Text("Remove member") }
+                            }
+                            HorizontalDivider(Modifier.padding(vertical = 8.dp))
                             Text("Thread", style = MaterialTheme.typography.titleSmall)
                             messages.forEach { row ->
-                                val mine = peerId.isNotEmpty() && row.convId == peerId
+                                val who = when {
+                                    peerId.isNotEmpty() && row.convId == peerId -> "You"
+                                    groupId.isNotEmpty() && row.convId == groupId -> "Group"
+                                    else -> "Them"
+                                }
                                 Text(
-                                    "${if (mine) "You" else "Them"}: ${row.text}",
+                                    "$who: ${row.text}",
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                             }

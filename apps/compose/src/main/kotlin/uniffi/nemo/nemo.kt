@@ -740,6 +740,22 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -755,21 +771,37 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_nemo_ffi_checksum_method_nemoclient_add_contact(
+    fun uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_add_contact(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_admit_join(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_create_group(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_inbox(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_list_groups(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_register(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_save(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_send_text(
 ): Short
@@ -840,22 +872,38 @@ fun uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(`dir`: RustBuffer.ByValu
 ): Pointer
 fun uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
+fun uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(`ptr`: Pointer,`inviteUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_add_contact(`ptr`: Pointer,`cardOrUri`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_admit_join(`ptr`: Pointer,`joinRequestUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_create_group(`ptr`: Pointer,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_inbox(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_list_groups(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_register(`ptr`: Pointer,`homeHttpsBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`credentialIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_save(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -986,7 +1034,16 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite() != 58462.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_add_contact() != 35738.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_admit_join() != 8209.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_create_group() != 37877.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now() != 43341.toShort()) {
@@ -995,10 +1052,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint() != 51303.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids() != 62415.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex() != 45632.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_inbox() != 58219.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() != 46878.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite() != 996.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri() != 36588.toShort()) {
@@ -1007,7 +1073,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_register() != 63416.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member() != 22502.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_save() != 52281.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text() != 28860.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_text() != 55458.toShort()) {
@@ -1352,21 +1424,37 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
  */
 public interface NemoClientInterface {
     
+    fun `acceptGroupInvite`(`inviteUri`: kotlin.String): kotlin.String
+    
     fun `addContact`(`cardOrUri`: kotlin.String, `nickname`: kotlin.String): kotlin.String
+    
+    fun `admitJoin`(`joinRequestUri`: kotlin.String): kotlin.String
+    
+    fun `createGroup`(`nickname`: kotlin.String): kotlin.String
     
     fun `fetchNow`(): List<DisplayRow>
     
     fun `fingerprint`(): kotlin.String
     
+    fun `groupMemberIds`(`groupIdHex`: kotlin.String): List<kotlin.String>
+    
     fun `identityIdHex`(): kotlin.String
     
     fun `inbox`(): List<DisplayRow>
+    
+    fun `listGroups`(): List<GroupRow>
+    
+    fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String
     
     fun `mintShareUri`(): kotlin.String
     
     fun `register`(`homeHttpsBase`: kotlin.String)
     
+    fun `removeGroupMember`(`groupIdHex`: kotlin.String, `credentialIdHex`: kotlin.String)
+    
     fun `save`()
+    
+    fun `sendGroupText`(`groupIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
     
     fun `sendText`(`peerIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
     
@@ -1464,12 +1552,51 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     }
 
     
+    @Throws(FfiException::class)override fun `acceptGroupInvite`(`inviteUri`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(
+        it, FfiConverterString.lower(`inviteUri`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `addContact`(`cardOrUri`: kotlin.String, `nickname`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_add_contact(
         it, FfiConverterString.lower(`cardOrUri`),FfiConverterString.lower(`nickname`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `admitJoin`(`joinRequestUri`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_admit_join(
+        it, FfiConverterString.lower(`joinRequestUri`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `createGroup`(`nickname`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_create_group(
+        it, FfiConverterString.lower(`nickname`),_status)
 }
     }
     )
@@ -1503,6 +1630,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `groupMemberIds`(`groupIdHex`: kotlin.String): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(
+        it, FfiConverterString.lower(`groupIdHex`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `identityIdHex`(): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
@@ -1522,6 +1662,32 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_inbox(
         it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `listGroups`(): List<GroupRow> {
+            return FfiConverterSequenceTypeGroupRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_list_groups(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(
+        it, FfiConverterString.lower(`groupIdHex`),_status)
 }
     }
     )
@@ -1554,6 +1720,18 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `removeGroupMember`(`groupIdHex`: kotlin.String, `credentialIdHex`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(
+        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`credentialIdHex`),_status)
+}
+    }
+    
+    
+
+    
     @Throws(FfiException::class)override fun `save`()
         = 
     callWithPointer {
@@ -1563,6 +1741,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
 }
     }
     
+    
+
+    
+    @Throws(FfiException::class)override fun `sendGroupText`(`groupIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(
+        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`text`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -1670,7 +1861,7 @@ public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Pointer> {
 
 
 /**
- * Decrypted 1:1 text for the shell. Never includes ratchet or MLS keys.
+ * Decrypted 1:1 or group text for the shell. Never includes ratchet or MLS keys.
  */
 data class DisplayRow (
     var `convId`: kotlin.String, 
@@ -1707,6 +1898,45 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterULong.write(value.`convSeq`, buf)
             FfiConverterString.write(value.`text`, buf)
             FfiConverterULong.write(value.`sentAt`, buf)
+    }
+}
+
+
+
+/**
+ * Hosted MLS group the shell can list. No signing keys.
+ */
+data class GroupRow (
+    var `groupId`: kotlin.String, 
+    var `nickname`: kotlin.String, 
+    var `memberCount`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeGroupRow: FfiConverterRustBuffer<GroupRow> {
+    override fun read(buf: ByteBuffer): GroupRow {
+        return GroupRow(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: GroupRow) = (
+            FfiConverterString.allocationSize(value.`groupId`) +
+            FfiConverterString.allocationSize(value.`nickname`) +
+            FfiConverterULong.allocationSize(value.`memberCount`)
+    )
+
+    override fun write(value: GroupRow, buf: ByteBuffer) {
+            FfiConverterString.write(value.`groupId`, buf)
+            FfiConverterString.write(value.`nickname`, buf)
+            FfiConverterULong.write(value.`memberCount`, buf)
     }
 }
 
@@ -1790,6 +2020,34 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
 /**
  * @suppress
  */
+public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
+    override fun read(buf: ByteBuffer): List<kotlin.String> {
+        val len = buf.getInt()
+        return List<kotlin.String>(len) {
+            FfiConverterString.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.String>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeDisplayRow: FfiConverterRustBuffer<List<DisplayRow>> {
     override fun read(buf: ByteBuffer): List<DisplayRow> {
         val len = buf.getInt()
@@ -1808,6 +2066,34 @@ public object FfiConverterSequenceTypeDisplayRow: FfiConverterRustBuffer<List<Di
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeDisplayRow.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeGroupRow: FfiConverterRustBuffer<List<GroupRow>> {
+    override fun read(buf: ByteBuffer): List<GroupRow> {
+        val len = buf.getInt()
+        return List<GroupRow>(len) {
+            FfiConverterTypeGroupRow.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<GroupRow>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeGroupRow.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<GroupRow>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeGroupRow.write(it, buf)
         }
     }
 }

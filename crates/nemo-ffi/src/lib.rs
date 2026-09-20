@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_core::{
-    decode, encode, encode_text, AppBody, AppHeader, AppMessage, CoreError, HomeSession, HttpHome,
-    Installation, Vault,
+    decode, encode, encode_text, mailbox, AppBody, AppHeader, AppMessage, CoreError, Group,
+    HomeSession, HostAccept, HostGroup, HttpHome, Installation, PendingJoin, Vault,
 };
-use nemo_wire::envelope::TtlBucket;
-use nemo_wire::{ids, parse_identity_id, ContactCard};
+use nemo_wire::cbor::{self, Value};
+use nemo_wire::envelope::{MessageType, TtlBucket};
+use nemo_wire::ids::{self, KEY_LEN};
+use nemo_wire::{parse_identity_id, ContactCard, GroupInvite};
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 #[uniffi(flat_error)]
@@ -33,13 +35,35 @@ impl From<nemo_wire::WireError> for FfiError {
     }
 }
 
-/// Decrypted 1:1 text for the shell. Never includes ratchet or MLS keys.
+/// Decrypted 1:1 or group text for the shell. Never includes ratchet or MLS keys.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct DisplayRow {
     pub conv_id: String,
     pub conv_seq: u64,
     pub text: String,
     pub sent_at: u64,
+}
+
+/// Hosted MLS group the shell can list. No signing keys.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct GroupRow {
+    pub group_id: String,
+    pub nickname: String,
+    pub member_count: u64,
+}
+
+const GROUP_INVITE_PREFIX: &str = "nemo-g:1:";
+const JOIN_REQUEST_PREFIX: &str = "nemo-j:1:";
+
+struct LiveGroup {
+    host: HostGroup,
+    mls: Group,
+    nickname: String,
+}
+
+struct PendingEntry {
+    pending: PendingJoin,
+    host: HostAccept,
 }
 
 enum ClientState {
@@ -54,6 +78,8 @@ struct Inner {
     inbox: Vec<DisplayRow>,
     nicknames: HashMap<String, String>,
     next_seq: HashMap<String, u64>,
+    groups: Vec<LiveGroup>,
+    pending: HashMap<[u8; KEY_LEN], PendingEntry>,
 }
 
 /// One installation. The shell must not persist ratchet or MLS keys.
@@ -126,11 +152,113 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
     match inner.state.as_ref() {
         Some(ClientState::Local(install)) => vault.save(install)?,
         Some(ClientState::Registered(session)) => {
-            vault.save_home(&session.install, &session.snapshot())?
+            vault.save_home(&session.install, &session.snapshot())?;
+            vault.save_groups(&session.install, inner.groups.iter().map(|g| &g.mls))?;
         }
         None => return Err(FfiError::Core("busy".into())),
     }
     Ok(())
+}
+
+fn empty_inner(
+    state: Option<ClientState>,
+    vault: Option<Vault>,
+    mnemonic: Option<String>,
+) -> Inner {
+    Inner {
+        state,
+        vault,
+        revocation_mnemonic: mnemonic,
+        inbox: Vec::new(),
+        nicknames: HashMap::new(),
+        next_seq: HashMap::new(),
+        groups: Vec::new(),
+        pending: HashMap::new(),
+    }
+}
+
+fn load_live_groups(vault: &Vault, install: &Installation, hosts: &[HostGroup]) -> Vec<LiveGroup> {
+    let mls = vault.load_groups(install).unwrap_or_default();
+    hosts
+        .iter()
+        .copied()
+        .zip(mls)
+        .map(|(host, mls)| LiveGroup {
+            host,
+            mls,
+            nickname: String::new(),
+        })
+        .collect()
+}
+
+fn find_group_mut<'a>(
+    groups: &'a mut [LiveGroup],
+    group_id_hex: &str,
+) -> Result<&'a mut LiveGroup, FfiError> {
+    let id = parse_identity_id(group_id_hex)?;
+    groups
+        .iter_mut()
+        .find(|g| g.host.group_id == id)
+        .ok_or_else(|| FfiError::Core("unknown group".into()))
+}
+
+fn join_request_uri(
+    group_id: [u8; KEY_LEN],
+    pending_id: [u8; KEY_LEN],
+    key_package: &[u8],
+    signing_pk: [u8; KEY_LEN],
+    cap: [u8; KEY_LEN],
+    hpke: [u8; KEY_LEN],
+    credential_id: [u8; KEY_LEN],
+) -> String {
+    let bytes = cbor::encode(&Value::Map(vec![
+        (0, Value::Bytes(group_id.to_vec())),
+        (1, Value::Bytes(pending_id.to_vec())),
+        (2, Value::Bytes(key_package.to_vec())),
+        (3, Value::Bytes(signing_pk.to_vec())),
+        (4, Value::Bytes(cap.to_vec())),
+        (5, Value::Bytes(hpke.to_vec())),
+        (6, Value::Bytes(credential_id.to_vec())),
+    ]));
+    format!("{JOIN_REQUEST_PREFIX}{}", ids::to_hex(&bytes))
+}
+
+struct JoinRequest {
+    group_id: [u8; KEY_LEN],
+    pending_id: [u8; KEY_LEN],
+    key_package: Vec<u8>,
+    signing_pk: [u8; KEY_LEN],
+    cap: [u8; KEY_LEN],
+    hpke: [u8; KEY_LEN],
+    credential_id: [u8; KEY_LEN],
+}
+
+fn parse_join_request(uri: &str) -> Result<JoinRequest, FfiError> {
+    let hex = uri
+        .strip_prefix(JOIN_REQUEST_PREFIX)
+        .ok_or_else(|| FfiError::Core("join request must start with nemo-j:1:".into()))?;
+    let Value::Map(m) = cbor::decode(&ids::from_hex(hex)?)? else {
+        return Err(FfiError::Core("join request".into()));
+    };
+    let read = |k: u64| -> Result<[u8; KEY_LEN], FfiError> {
+        Ok(ids::copy_fixed(cbor::expect_bytes(cbor::map_get(&m, k)?)?)?)
+    };
+    Ok(JoinRequest {
+        group_id: read(0)?,
+        pending_id: read(1)?,
+        key_package: cbor::expect_bytes(cbor::map_get(&m, 2)?)?.to_vec(),
+        signing_pk: read(3)?,
+        cap: read(4)?,
+        hpke: read(5)?,
+        credential_id: read(6)?,
+    })
+}
+
+fn parse_group_invite(uri: &str) -> Result<GroupInvite, FfiError> {
+    let hex = uri
+        .strip_prefix(GROUP_INVITE_PREFIX)
+        .ok_or_else(|| FfiError::Core("group invite must start with nemo-g:1:".into()))?;
+    Ok(GroupInvite::decode(&ids::from_hex(hex)?)?)
 }
 
 impl Inner {
@@ -157,14 +285,11 @@ impl NemoClient {
     pub fn create() -> Result<Arc<Self>, FfiError> {
         let (install, export) = Installation::create()?;
         Ok(Arc::new(Self {
-            inner: Mutex::new(Inner {
-                state: Some(ClientState::Local(install)),
-                vault: None,
-                revocation_mnemonic: Some(export.mnemonic),
-                inbox: Vec::new(),
-                nicknames: HashMap::new(),
-                next_seq: HashMap::new(),
-            }),
+            inner: Mutex::new(empty_inner(
+                Some(ClientState::Local(install)),
+                None,
+                Some(export.mnemonic),
+            )),
         }))
     }
 
@@ -174,36 +299,33 @@ impl NemoClient {
         let (install, export) = Installation::create()?;
         let vault = Vault::create(&dir, &passphrase, &install)?;
         Ok(Arc::new(Self {
-            inner: Mutex::new(Inner {
-                state: Some(ClientState::Local(install)),
-                vault: Some(vault),
-                revocation_mnemonic: Some(export.mnemonic),
-                inbox: Vec::new(),
-                nicknames: HashMap::new(),
-                next_seq: HashMap::new(),
-            }),
+            inner: Mutex::new(empty_inner(
+                Some(ClientState::Local(install)),
+                Some(vault),
+                Some(export.mnemonic),
+            )),
         }))
     }
 
     #[uniffi::constructor]
     pub fn open_at(dir: String, passphrase: String) -> Result<Arc<Self>, FfiError> {
         let (vault, install) = Vault::open(&dir, &passphrase)?;
-        let state = match vault.load_home()? {
+        let (state, groups) = match vault.load_home()? {
             Some(home) if !home.home_base.is_empty() => {
+                let hosts = home.groups.clone();
+                let groups = load_live_groups(&vault, &install, &hosts);
                 let transport = HttpHome::new(home.home_base.clone())?;
-                ClientState::Registered(HomeSession::resume(transport, install, home))
+                (
+                    ClientState::Registered(HomeSession::resume(transport, install, home)),
+                    groups,
+                )
             }
-            _ => ClientState::Local(install),
+            _ => (ClientState::Local(install), Vec::new()),
         };
+        let mut inner = empty_inner(Some(state), Some(vault), None);
+        inner.groups = groups;
         Ok(Arc::new(Self {
-            inner: Mutex::new(Inner {
-                state: Some(state),
-                vault: Some(vault),
-                revocation_mnemonic: None,
-                inbox: Vec::new(),
-                nicknames: HashMap::new(),
-                next_seq: HashMap::new(),
-            }),
+            inner: Mutex::new(inner),
         }))
     }
 
@@ -306,70 +428,374 @@ impl NemoClient {
 
     pub fn fetch_now(&self) -> Result<Vec<DisplayRow>, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-        let opened = {
-            let session = inner.registered()?;
-            block_on(session.ingest_mailbox())?
-        };
-        let mut new_rows = Vec::new();
-        let mut gossip = Vec::new();
-        for (peer, plaintext) in opened {
-            let conv_id = ids::to_hex(&peer);
-            match decode(&plaintext) {
-                Ok(AppMessage {
-                    header,
-                    body: AppBody::Text { text },
-                }) => {
-                    gossip.push(peer);
-                    let seq = *inner.next_seq.get(&conv_id).unwrap_or(&0);
-                    if header.conv_seq > seq {
-                        inner.next_seq.insert(conv_id.clone(), header.conv_seq);
+        let new_rows = {
+            let Inner {
+                state,
+                groups,
+                pending,
+                inbox,
+                next_seq,
+                ..
+            } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let rows = block_on(session.fetch_mailbox())?;
+            if rows.is_empty() {
+                Vec::new()
+            } else {
+                let contacts: Vec<_> = session.contacts.keys().copied().collect();
+                let mut new_rows = Vec::new();
+                let mut gossip = Vec::new();
+                for row in &rows {
+                    match block_on(session.install.decrypt_incoming(&row.inner, &contacts)) {
+                        Ok((peer, plaintext)) => match decode(&plaintext) {
+                            Ok(AppMessage {
+                                header,
+                                body: AppBody::Text { text },
+                            }) => {
+                                gossip.push(peer);
+                                new_rows.push(push_text(
+                                    inbox,
+                                    next_seq,
+                                    ids::to_hex(&peer),
+                                    header.conv_seq,
+                                    text,
+                                    header.sent_at,
+                                ));
+                            }
+                            Ok(AppMessage {
+                                body: AppBody::Capability { contact_capability },
+                                ..
+                            }) => {
+                                if let Some(contact) = session.contacts.get_mut(&peer) {
+                                    contact.delivery_capability = contact_capability;
+                                }
+                            }
+                            _ => {}
+                        },
+                        Err(CoreError::WrongMailboxType) => {}
+                        Err(_) => {}
                     }
-                    let row = DisplayRow {
-                        conv_id,
-                        conv_seq: header.conv_seq,
-                        text,
-                        sent_at: header.sent_at,
-                    };
-                    inner.inbox.push(row.clone());
-                    new_rows.push(row);
                 }
-                Ok(AppMessage {
-                    body: AppBody::Capability { contact_capability },
-                    ..
-                }) => {
-                    if let Some(ClientState::Registered(session)) = &mut inner.state {
-                        if let Some(contact) = session.contacts.get_mut(&peer) {
-                            contact.delivery_capability = contact_capability;
+
+                let mut joined = Vec::new();
+                for row in &rows {
+                    let Ok(body) = mailbox::expect_type(&row.inner, MessageType::MlsHandshake)
+                    else {
+                        continue;
+                    };
+                    if !PendingJoin::is_welcome(body) {
+                        continue;
+                    }
+                    let keys: Vec<_> = pending.keys().copied().collect();
+                    for gid in keys {
+                        let Some(entry) = pending.remove(&gid) else {
+                            continue;
+                        };
+                        match entry.pending.join(session.install.mls_provider(), body) {
+                            Ok(mls) => {
+                                joined.push((gid, mls, entry.host));
+                                break;
+                            }
+                            Err(_) => {}
                         }
                     }
                 }
-                _ => {}
-            }
-        }
-        let now = now_unix();
-        if let Some(ClientState::Registered(session)) = &mut inner.state {
-            for peer in gossip {
-                if !session.contacts.contains_key(&peer) {
-                    continue;
+                for (gid, mls, host) in joined {
+                    let live = HostGroup {
+                        group_id: gid,
+                        cred: host.cred,
+                    };
+                    session.remember_group(live);
+                    groups.push(LiveGroup {
+                        host: live,
+                        mls,
+                        nickname: String::new(),
+                    });
                 }
-                if let Ok(cap) = block_on(session.mint_contact()) {
-                    if let Ok(bytes) = encode(&AppMessage {
-                        header: AppHeader {
-                            conv_seq: 0,
-                            sent_at: now,
-                            reply_to: None,
-                        },
-                        body: AppBody::Capability {
-                            contact_capability: cap,
-                        },
-                    }) {
-                        let _ = block_on(session.send_to(&peer, TtlBucket::DEFAULT, &bytes, now));
+
+                let provider = session.install.mls_provider();
+                for row in &rows {
+                    match row.inner.padded_message.type_ {
+                        MessageType::MlsHandshake => {
+                            for g in groups.iter_mut() {
+                                let _ = g.mls.apply_handshake_from_mailbox(provider, &row.inner);
+                            }
+                        }
+                        MessageType::MlsApp => {
+                            for g in groups.iter_mut() {
+                                if let Ok(plaintext) =
+                                    g.mls.decrypt_from_mailbox(provider, &row.inner)
+                                {
+                                    if let Ok(AppMessage {
+                                        header,
+                                        body: AppBody::Text { text },
+                                    }) = decode(&plaintext)
+                                    {
+                                        new_rows.push(push_text(
+                                            inbox,
+                                            next_seq,
+                                            ids::to_hex(&g.host.group_id),
+                                            header.conv_seq,
+                                            text,
+                                            header.sent_at,
+                                        ));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        MessageType::RemoveBundle => {
+                            for g in groups.iter_mut() {
+                                let _ = g.mls.apply_remove_from_mailbox(provider, &row.inner);
+                            }
+                        }
+                        _ => {}
                     }
                 }
+
+                block_on(session.ack())?;
+                let now = now_unix();
+                for peer in gossip {
+                    if !session.contacts.contains_key(&peer) {
+                        continue;
+                    }
+                    if let Ok(cap) = block_on(session.mint_contact()) {
+                        if let Ok(bytes) = encode(&AppMessage {
+                            header: AppHeader {
+                                conv_seq: 0,
+                                sent_at: now,
+                                reply_to: None,
+                            },
+                            body: AppBody::Capability {
+                                contact_capability: cap,
+                            },
+                        }) {
+                            let _ =
+                                block_on(session.send_to(&peer, TtlBucket::DEFAULT, &bytes, now));
+                        }
+                    }
+                }
+                new_rows
             }
-        }
+        };
         persist(&inner)?;
         Ok(new_rows)
+    }
+
+    pub fn create_group(&self, nickname: String) -> Result<String, FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let group_id = {
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let mls = session.install.create_group()?;
+            let cap = block_on(session.mint_contact())?;
+            let host = block_on(session.create_group(mls.group_signing_public(), cap))?;
+            session.remember_group(host);
+            let id = ids::to_hex(&host.group_id);
+            groups.push(LiveGroup {
+                host,
+                mls,
+                nickname,
+            });
+            id
+        };
+        persist(&inner)?;
+        Ok(group_id)
+    }
+
+    pub fn mint_group_invite(&self, group_id_hex: String) -> Result<String, FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let uri = {
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let g = find_group_mut(groups, &group_id_hex)?;
+            let invite = g
+                .mls
+                .sign_invite(g.host.group_id, Group::default_invite_ttl(), None)?;
+            block_on(session.store_invite(g.host.group_id, &g.host.cred, &invite))?;
+            format!("{GROUP_INVITE_PREFIX}{}", ids::to_hex(&invite.encode()))
+        };
+        persist(&inner)?;
+        Ok(uri)
+    }
+
+    pub fn accept_group_invite(&self, invite_uri: String) -> Result<String, FfiError> {
+        let invite = parse_group_invite(&invite_uri)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let uri = {
+            let Inner { state, pending, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let acc = block_on(session.accept_invite(invite.group_id, invite.nonce))?;
+            let pending_join = session.install.prepare_join(acc.cred.credential_id)?;
+            let cap = block_on(session.mint_contact())?;
+            let hpke = session.hpke_public();
+            let signing_pk = pending_join.group_signing_public();
+            let uri = join_request_uri(
+                invite.group_id,
+                acc.pending_id,
+                &pending_join.key_package,
+                signing_pk,
+                cap,
+                hpke,
+                acc.cred.credential_id,
+            );
+            pending.insert(
+                invite.group_id,
+                PendingEntry {
+                    pending: pending_join,
+                    host: acc,
+                },
+            );
+            uri
+        };
+        persist(&inner)?;
+        Ok(uri)
+    }
+
+    pub fn admit_join(&self, join_request_uri: String) -> Result<String, FfiError> {
+        let req = parse_join_request(&join_request_uri)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        {
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let g = groups
+                .iter_mut()
+                .find(|g| g.host.group_id == req.group_id)
+                .ok_or_else(|| FfiError::Core("unknown group".into()))?;
+            let admit = g.mls.sign_admit(req.group_id, req.pending_id)?;
+            let (commit, welcome) = g
+                .mls
+                .admit(session.install.mls_provider(), &req.key_package)?;
+            block_on(session.admit(
+                req.group_id,
+                &g.host.cred,
+                &admit,
+                req.signing_pk,
+                req.cap,
+                req.hpke,
+            ))?;
+            block_on(session.group_append(
+                req.group_id,
+                &g.host.cred,
+                MessageType::MlsHandshake,
+                commit,
+            ))?;
+            let outer = Group::wrap_handshake(&req.hpke, req.cap, TtlBucket::DEFAULT, welcome)?;
+            block_on(session.post_envelope(&outer))?;
+        }
+        persist(&inner)?;
+        Ok(ids::to_hex(&req.credential_id))
+    }
+
+    pub fn send_group_text(
+        &self,
+        group_id_hex: String,
+        text: String,
+    ) -> Result<DisplayRow, FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let now = now_unix();
+        let row = {
+            let seq = bump_seq(&mut inner.next_seq, &group_id_hex);
+            let ptext = encode_text(seq, now, &text)?;
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let g = find_group_mut(groups, &group_id_hex)?;
+            let body = g.mls.encrypt(session.install.mls_provider(), &ptext)?;
+            block_on(session.group_append(
+                g.host.group_id,
+                &g.host.cred,
+                MessageType::MlsApp,
+                body,
+            ))?;
+            DisplayRow {
+                conv_id: group_id_hex,
+                conv_seq: seq,
+                text,
+                sent_at: now,
+            }
+        };
+        inner.inbox.push(row.clone());
+        persist(&inner)?;
+        Ok(row)
+    }
+
+    pub fn remove_group_member(
+        &self,
+        group_id_hex: String,
+        credential_id_hex: String,
+    ) -> Result<(), FfiError> {
+        let cred = parse_identity_id(&credential_id_hex)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        {
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let g = find_group_mut(groups, &group_id_hex)?;
+            let bundle = g.mls.remove(session.install.mls_provider(), cred)?;
+            block_on(session.group_append(
+                g.host.group_id,
+                &g.host.cred,
+                MessageType::RemoveBundle,
+                bundle.encode()?,
+            ))?;
+        }
+        persist(&inner)?;
+        Ok(())
+    }
+
+    pub fn list_groups(&self) -> Result<Vec<GroupRow>, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        Ok(inner
+            .groups
+            .iter()
+            .map(|g| GroupRow {
+                group_id: ids::to_hex(&g.host.group_id),
+                nickname: g.nickname.clone(),
+                member_count: g.mls.member_count() as u64,
+            })
+            .collect())
+    }
+
+    pub fn group_member_ids(&self, group_id_hex: String) -> Result<Vec<String>, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        let id = parse_identity_id(&group_id_hex)?;
+        let g = inner
+            .groups
+            .iter()
+            .find(|g| g.host.group_id == id)
+            .ok_or_else(|| FfiError::Core("unknown group".into()))?;
+        Ok(g.mls
+            .member_credential_ids()
+            .into_iter()
+            .map(|c| ids::to_hex(&c))
+            .collect())
     }
 
     pub fn inbox(&self) -> Result<Vec<DisplayRow>, FfiError> {
@@ -378,12 +804,35 @@ impl NemoClient {
     }
 }
 
+fn push_text(
+    inbox: &mut Vec<DisplayRow>,
+    next_seq: &mut HashMap<String, u64>,
+    conv_id: String,
+    conv_seq: u64,
+    text: String,
+    sent_at: u64,
+) -> DisplayRow {
+    let seq = *next_seq.get(&conv_id).unwrap_or(&0);
+    if conv_seq > seq {
+        next_seq.insert(conv_id.clone(), conv_seq);
+    }
+    let row = DisplayRow {
+        conv_id,
+        conv_seq,
+        text,
+        sent_at,
+    };
+    inbox.push(row.clone());
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nemo_server::{router, AppState};
     use rand::RngCore;
     use std::fs;
+    use std::sync::Arc;
 
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
         let mut n = [0u8; 8];
@@ -493,5 +942,72 @@ mod tests {
         };
         assert_eq!(row.conv_id.len(), 64);
         let _ = row.text;
+    }
+
+    fn client_at(dir: &std::path::Path) -> Arc<NemoClient> {
+        NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into()).unwrap()
+    }
+
+    #[test]
+    fn group_invite_admit_restart_and_remove() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-ga");
+        let bob_dir = temp_dir("nemo-ffi-gb");
+        let carol_dir = temp_dir("nemo-ffi-gc");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        let carol = client_at(&carol_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base.clone()).unwrap();
+        carol.register(base).unwrap();
+
+        let gid = alice.create_group("crew".into()).unwrap();
+        let invite = alice.mint_group_invite(gid.clone()).unwrap();
+        assert!(invite.starts_with("nemo-g:1:"));
+        let join = bob.accept_group_invite(invite.clone()).unwrap();
+        assert!(join.starts_with("nemo-j:1:"));
+        let denied = carol.accept_group_invite(invite).unwrap_err();
+        assert!(denied.to_string().to_lowercase().contains("denied"));
+
+        let bob_cred = alice.admit_join(join).unwrap();
+        let _ = bob.fetch_now().unwrap();
+        assert_eq!(bob.list_groups().unwrap().len(), 1);
+        assert_eq!(alice.list_groups().unwrap()[0].member_count, 2);
+
+        let sent = alice
+            .send_group_text(gid.clone(), "hello crew".into())
+            .unwrap();
+        let rows = bob.fetch_now().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "hello crew");
+        assert_eq!(rows[0].conv_id, gid);
+        assert_eq!(rows[0].conv_seq, sent.conv_seq);
+
+        drop(alice);
+        let alice2 = NemoClient::open_at(
+            alice_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+        )
+        .unwrap();
+        let groups = alice2.list_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, gid);
+        alice2
+            .send_group_text(gid.clone(), "after reopen".into())
+            .unwrap();
+        let again = bob.fetch_now().unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].text, "after reopen");
+
+        alice2.remove_group_member(gid.clone(), bob_cred).unwrap();
+        let err = bob.send_group_text(gid, "still here".into()).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("denied"));
+
+        drop(alice2);
+        drop(bob);
+        drop(carol);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+        let _ = fs::remove_dir_all(&carol_dir);
     }
 }

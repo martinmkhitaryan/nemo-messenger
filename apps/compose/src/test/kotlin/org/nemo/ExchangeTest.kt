@@ -69,6 +69,82 @@ class ExchangeTest {
         }
     }
 
+    @Test
+    fun threeClientsGroupJoinRestartAndRemove() {
+        val root = repoRoot()
+        val lib = File(root, "target/debug/libnemo_ffi.so")
+        assertTrue(lib.isFile, "build nemo-ffi first (libnemo_ffi.so)")
+        System.setProperty("jna.library.path", lib.parentFile.absolutePath)
+
+        val server = File(root, "target/debug/nemo-server")
+        assertTrue(server.isFile, "build nemo-server first")
+        val listen = "127.0.0.1:18788"
+        val proc = ProcessBuilder(server.absolutePath)
+            .directory(root)
+            .redirectErrorStream(true)
+            .apply {
+                environment()["NEMO_LISTEN"] = listen
+                environment()["NEMO_S2S_LISTEN"] = "127.0.0.1:19444"
+                environment().remove("DATABASE_URL")
+            }
+            .start()
+        try {
+            waitForBundle("http://$listen/v1/bundle")
+            val aliceDir = Files.createTempDirectory("nemo-ga-").toFile()
+            val bobDir = Files.createTempDirectory("nemo-gb-").toFile()
+            val carolDir = Files.createTempDirectory("nemo-gc-").toFile()
+            val pass = "correct horse"
+            val home = "http://$listen"
+
+            val alice = NemoClient.createAt(aliceDir.absolutePath, pass)
+            val bob = NemoClient.createAt(bobDir.absolutePath, pass)
+            val carol = NemoClient.createAt(carolDir.absolutePath, pass)
+            alice.takeRevocationMnemonic()
+            bob.takeRevocationMnemonic()
+            carol.takeRevocationMnemonic()
+            alice.register(home)
+            bob.register(home)
+            carol.register(home)
+
+            val gid = alice.createGroup("crew")
+            val invite = alice.mintGroupInvite(gid)
+            assertTrue(invite.startsWith("nemo-g:1:"))
+            val join = bob.acceptGroupInvite(invite)
+            assertTrue(join.startsWith("nemo-j:1:"))
+            val carolDenied = runCatching { carol.acceptGroupInvite(invite) }.exceptionOrNull()
+            assertTrue(carolDenied?.message.orEmpty().lowercase().contains("denied"))
+
+            val bobCred = alice.admitJoin(join)
+            bob.fetchNow()
+            alice.sendGroupText(gid, "hello crew")
+            val first = bob.fetchNow()
+            assertEquals(1, first.size)
+            assertEquals("hello crew", first[0].text)
+            assertEquals(gid, first[0].convId)
+
+            alice.close()
+            val alice2 = NemoClient.openAt(aliceDir.absolutePath, pass)
+            alice2.sendGroupText(gid, "after reopen")
+            val second = bob.fetchNow()
+            assertEquals(1, second.size)
+            assertEquals("after reopen", second[0].text)
+
+            alice2.removeGroupMember(gid, bobCred)
+            val bobDenied = runCatching { bob.sendGroupText(gid, "still here") }.exceptionOrNull()
+            assertTrue(bobDenied?.message.orEmpty().lowercase().contains("denied"))
+
+            alice2.close()
+            bob.close()
+            carol.close()
+            aliceDir.deleteRecursively()
+            bobDir.deleteRecursively()
+            carolDir.deleteRecursively()
+        } finally {
+            proc.destroy()
+            proc.waitFor()
+        }
+    }
+
     private fun repoRoot(): File {
         var dir = File(System.getProperty("user.dir")).absoluteFile
         repeat(8) {

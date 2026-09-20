@@ -25,7 +25,9 @@ How to use it:
 | MLS group state in the vault | **Done** (I1) |
 | Durable home session | **Done** (I2) |
 | UniFFI beyond create/open/save | **Done** (I3) |
-| Compose UI | **Done** (I4) — dual-pane desktop + vault exchange test | |
+| Compose UI | **Done** (I4 1:1, I6 groups on desktop) |
+| Android APK | **Postponed** — must return (I5); desktop continues |
+| Hosted MLS groups | **Done** (I6) — invite → admit → text → RemoveBundle |
 | 1:1 WebRTC media | Signaling types exist; media engine not wired |
 | FCM | Not started (needs schema amendment) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
@@ -169,15 +171,18 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Goal.** One Gradle project produces desktop JVM and an Android debug APK that links `nemo-ffi` (JNA / AAR).
 
+**Status: postponed, must return.** Desktop UniFFI generation and `./gradlew test` already exist. Do **not** drop this phase; come back as soon as an Android SDK/NDK and emulator are available. I6–I12 may proceed on **desktop only** until then. The Android checkpoint is still required before v1 freeze (I12).
+
 **In scope.** UniFFI Kotlin generation in Gradle; `cdylib` for desktop; Android NDK/JNI or JNA AAR as ADR-0028. Shared Compose screens from I4 on Android.
 
 **Out of scope.** Play Store, iOS, push.
 
 **Checkpoint.**
 
+- [x] Desktop `./gradlew test` (I4 two-vault exchange) — already on CI
 - [ ] `./gradlew :compose:run` (desktop) still does I4 flow
 - [ ] Android debug install on emulator: create identity, show fingerprint
-- [ ] CI builds the Gradle project or documents the exact command
+- [ ] CI builds the Android debug APK (or documents the exact SDK command)
 - [ ] Commit
 
 ---
@@ -192,11 +197,11 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] Three clients: A creates, B joins via invite, C is refused without admit
-- [ ] After vault restart, A still sends in the group (depends on I1)
-- [ ] Revocation of B: A commits RemoveBundle; B cannot append
-- [ ] `cargo test --workspace` + the desktop/Android path used in I4/I5
-- [ ] Commit
+- [x] Three clients: A creates, B joins via invite, C is refused without admit
+- [x] After vault restart, A still sends in the group (depends on I1)
+- [x] Revocation of B: A commits RemoveBundle; B cannot append
+- [x] `cargo test --workspace` + the desktop path used in I4 (Android I5 still postponed)
+- [x] Commit
 
 ---
 
@@ -334,10 +339,10 @@ Passphrase minimum (8) and in-memory-vs-sqlx server default are already decided.
 
 One commit per checkpoint (existing `initial-release` style: one sentence, why not what). Do not batch I4+I6+I9 into a single commit.
 
-Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a recoverable 1:1 messenger. Groups (I6), files (I7), calls (I9) can follow without rewriting the shell.
+Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a recoverable 1:1 messenger. Groups (I6), files (I7), calls (I9) can follow without rewriting the shell. **I5 Android is postponed and must be finished before I12.**
 
 ---
 
 ## Next action
 
-**I4 is implemented.** Start **I5** (Gradle UniFFI generation + Android skeleton).
+**I6 is implemented (desktop).** Next: **I7** (attachments). Return to **I5 Android** before I12.

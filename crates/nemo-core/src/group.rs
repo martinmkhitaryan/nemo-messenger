@@ -71,6 +71,13 @@ impl Group {
         self.mls.members().count()
     }
 
+    pub fn member_credential_ids(&self) -> Vec<[u8; KEY_LEN]> {
+        let mut ids: Vec<_> = self.credential_ids.values().copied().collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn mls_group_id(&self) -> Vec<u8> {
         self.mls.group_id().as_slice().to_vec()
     }
@@ -143,11 +150,9 @@ impl Group {
                 .map_err(|_| CoreError::VaultCorrupt)?;
             credential_ids.insert(leaf, id);
         }
-        let updated =
-            cbor::expect_uint(cbor::map_get(&m, 5).map_err(|_| CoreError::VaultCorrupt)?)
-                .map_err(|_| CoreError::VaultCorrupt)?;
-        let last_own_update =
-            std::time::UNIX_EPOCH + Duration::from_millis(updated);
+        let updated = cbor::expect_uint(cbor::map_get(&m, 5).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        let last_own_update = std::time::UNIX_EPOCH + Duration::from_millis(updated);
         let mls_signer = SignatureKeyPair::from_raw(
             CIPHERSUITE.signature_algorithm(),
             group_signing.to_bytes().to_vec(),
@@ -541,9 +546,7 @@ impl Installation {
         pairs.sort_by(|a, b| a.0.cmp(b.0));
         let items = pairs
             .into_iter()
-            .map(|(k, v)| {
-                Value::Array(vec![Value::Bytes(k.clone()), Value::Bytes(v.clone())])
-            })
+            .map(|(k, v)| Value::Array(vec![Value::Bytes(k.clone()), Value::Bytes(v.clone())]))
             .collect();
         Ok(cbor::encode(&Value::Array(items)))
     }
@@ -627,6 +630,17 @@ impl Installation {
 }
 
 impl PendingJoin {
+    pub fn group_signing_public(&self) -> [u8; KEY_LEN] {
+        self.group_signing.verifying_key().to_bytes()
+    }
+
+    pub fn is_welcome(bytes: &[u8]) -> bool {
+        matches!(
+            decode_mls(bytes).map(|m| m.extract()),
+            Ok(MlsMessageBodyIn::Welcome(_))
+        )
+    }
+
     pub fn join(self, provider: &MlsProvider, welcome_bytes: &[u8]) -> Result<Group> {
         let welcome = match decode_mls(welcome_bytes)?.extract() {
             MlsMessageBodyIn::Welcome(w) => w,

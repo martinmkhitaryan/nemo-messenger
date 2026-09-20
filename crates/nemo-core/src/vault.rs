@@ -53,10 +53,8 @@ impl Vault {
         let mut key = derive(passphrase, &salt, M_COST_KIB, T_COST, P_COST)?;
         let conn = open_cipher(&db_path, &key)?;
         zero(&mut key);
-        conn.execute_batch(
-            "CREATE TABLE kv (k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL);",
-        )
-        .map_err(map_sql)?;
+        conn.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL);")
+            .map_err(map_sql)?;
         let vault = Self {
             dir: dir.to_path_buf(),
             conn,
@@ -98,9 +96,13 @@ impl Vault {
         Ok(())
     }
 
-    pub fn save_groups(&self, install: &Installation, groups: &[Group]) -> Result<()> {
+    pub fn save_groups<'a>(
+        &self,
+        install: &Installation,
+        groups: impl IntoIterator<Item = &'a Group>,
+    ) -> Result<()> {
         self.save(install)?;
-        let mut items = Vec::with_capacity(groups.len());
+        let mut items = Vec::new();
         for g in groups {
             items.push(Value::Bytes(g.encode_sidecar()?));
         }
@@ -231,8 +233,15 @@ fn read_kdf(path: &Path) -> Result<Kdf> {
     })
 }
 
-fn derive(passphrase: &str, salt: &[u8], m_cost: u32, t_cost: u32, p_cost: u32) -> Result<[u8; KEY_LEN]> {
-    let params = Params::new(m_cost, t_cost, p_cost, Some(KEY_LEN)).map_err(|_| CoreError::VaultCorrupt)?;
+fn derive(
+    passphrase: &str,
+    salt: &[u8],
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+) -> Result<[u8; KEY_LEN]> {
+    let params =
+        Params::new(m_cost, t_cost, p_cost, Some(KEY_LEN)).map_err(|_| CoreError::VaultCorrupt)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; KEY_LEN];
     argon
@@ -254,7 +263,9 @@ fn open_cipher(path: &Path, key: &[u8; KEY_LEN]) -> Result<Connection> {
 
 fn map_sql(err: rusqlite::Error) -> CoreError {
     let s = err.to_string();
-    if s.contains("not a database") || s.contains("file is encrypted") || s.contains("file is not a database")
+    if s.contains("not a database")
+        || s.contains("file is encrypted")
+        || s.contains("file is not a database")
     {
         CoreError::VaultLocked
     } else {
