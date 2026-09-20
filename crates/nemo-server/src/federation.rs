@@ -1,4 +1,4 @@
-//! In-process S2S hop (phase 5). Client HTTP is `http.rs`; mTLS sockets remain a follow-on.
+//! S2S hop (phase 5). In-process `pump` is for tests; the mTLS listener is `s2s.rs`.
 
 use std::collections::HashMap;
 
@@ -91,9 +91,14 @@ pub fn pin(home: &mut HomeServer, bundle: ServerBundle) -> Result<()> {
     if home.server_id() == bundle.server_id {
         return Ok(());
     }
-    home.peers
-        .entry(bundle.server_id)
-        .or_insert_with(|| PeerState::new(bundle));
+    match home.peers.entry(bundle.server_id) {
+        std::collections::hash_map::Entry::Occupied(mut e) => {
+            e.get_mut().bundle = bundle;
+        }
+        std::collections::hash_map::Entry::Vacant(e) => {
+            e.insert(PeerState::new(bundle));
+        }
+    }
     Ok(())
 }
 
@@ -182,7 +187,7 @@ pub fn pump(from: &mut HomeServer, to: &mut HomeServer) -> Result<PumpStats> {
     Ok(stats)
 }
 
-fn reset_link(home: &mut HomeServer, peer: ServerId) {
+pub(crate) fn reset_link(home: &mut HomeServer, peer: ServerId) {
     if let Some(p) = home.peers.get_mut(&peer) {
         p.last_rx = 0;
         p.next_tx = 1;
@@ -226,7 +231,7 @@ fn matches_fail(bytes: &[u8]) -> bool {
     matches!(parse_payload(bytes), Ok(S2sPayload::Fail))
 }
 
-fn take_frame(home: &mut HomeServer, peer: ServerId, payload: Vec<u8>) -> Result<S2sFrame> {
+pub(crate) fn take_frame(home: &mut HomeServer, peer: ServerId, payload: Vec<u8>) -> Result<S2sFrame> {
     let p = home.peers.get_mut(&peer).ok_or(ServerError::NotPinned)?;
     if p.refused {
         return Err(ServerError::PeerRefused);
@@ -236,7 +241,7 @@ fn take_frame(home: &mut HomeServer, peer: ServerId, payload: Vec<u8>) -> Result
     Ok(S2sFrame { counter, payload })
 }
 
-fn accept_frame(home: &mut HomeServer, from: ServerId, frame: &S2sFrame) -> Result<Vec<u8>> {
+pub(crate) fn accept_frame(home: &mut HomeServer, from: ServerId, frame: &S2sFrame) -> Result<Vec<u8>> {
     let incoming = frame.counter;
     {
         let p = home.peers.get_mut(&from).ok_or(ServerError::NotPinned)?;

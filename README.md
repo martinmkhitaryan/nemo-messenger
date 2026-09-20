@@ -2376,7 +2376,7 @@ Defines:
 * outbound queue as specified in phase 5;
 * no Redis;
 * WebSocket wakeup reserved; poll fetch is required;
-* S2S TCP and FCM remain operational follow-ons that MUST NOT add columns.
+* S2S mTLS on `s2s_port` (ALPN `nemo-s2s/1`); FCM remains an operator follow-on.
 
 ---
 

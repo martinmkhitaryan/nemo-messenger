@@ -96,4 +96,6 @@ Privacy transport MUST NOT change envelope bytes. It may batch, delay, or send d
 
 ## 8. Phase completion
 
+This implementation binds TLS 1.3 mTLS on `NEMO_S2S_LISTEN` (default `127.0.0.1:{s2s_port}`), ALPN `nemo-s2s/1`. Peers are pinned from `NEMO_PEERS_DIR` (`*.cbor` ServerBundle files) and the `peers` table. Caddy is not on this port.
+
 Phase 5 is complete. Phase 6 may start (and may run conceptually in parallel with 2–5; those phases are already written).

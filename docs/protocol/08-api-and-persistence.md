@@ -151,7 +151,7 @@ Retention defaults remain 14 days / 500 MiB for mailboxes ([ADR-0031](../decisio
 
 ## 5. Queues, caches, operations
 
-- **Outbound queue:** `outbound` rows; backoff 1 s … 300 s; drop after 14 days. In-process `pump` is the v1 forwarder until the mTLS listener is bound.
+- **Outbound queue:** `outbound` rows; backoff 1 s … 300 s; drop after 14 days. The S2S mTLS listener on `s2s_port` (ALPN `nemo-s2s/1`, pinned Ed25519) forwards due rows; in-process `pump` remains for tests. Operator pin files: `NEMO_PEERS_DIR` of ServerBundle CBOR.
 - **Caches:** none required. No Redis ([ADR-0028](../decisions/0028-implementation-languages-and-libraries.md)).
 - **Push:** opaque FCM wake is operator-optional ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)); not a table of message metadata.
 - **TURN:** coturn sidecar; this API does not issue long-lived credentials in v1.
@@ -160,4 +160,4 @@ Retention defaults remain 14 days / 500 MiB for mailboxes ([ADR-0031](../decisio
 
 ## 6. Phase completion
 
-v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: S2S TCP listener, optional `/wakeup` WebSocket, FCM. Those MUST keep the tables and routes above.
+v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: optional `/wakeup` WebSocket, FCM. Those MUST keep the tables and routes above.

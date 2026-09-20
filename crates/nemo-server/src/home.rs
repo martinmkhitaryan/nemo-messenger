@@ -217,6 +217,16 @@ impl HomeServer {
         self.sign.verifying_key().to_bytes()
     }
 
+    pub(crate) fn signing_key(&self) -> &SigningKey {
+        &self.sign
+    }
+
+    pub fn peer_id_for_sign_key(&self, pk: &[u8; KEY_LEN]) -> Option<ServerId> {
+        self.peers.iter().find_map(|(id, p)| {
+            (p.bundle.server_sign_public_key == *pk).then_some(*id)
+        })
+    }
+
     pub fn peer_refused(&self, id: ServerId) -> bool {
         self.peers.get(&id).is_some_and(|p| p.refused)
     }

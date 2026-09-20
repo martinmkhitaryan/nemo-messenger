@@ -1,30 +1,57 @@
 //! Listen on localhost. Caddy (or another reverse proxy) terminates TLS.
+//! S2S mTLS is a separate port (ADR-0032).
+
+use std::path::Path;
 
 #[tokio::main]
 async fn main() {
+    nemo_server::tls_install();
     let addr = std::env::var("NEMO_LISTEN").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let host = std::env::var("NEMO_HOST").unwrap_or_else(|_| "local".into());
     let s2s_port: u16 = std::env::var("NEMO_S2S_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8443);
+        .unwrap_or(9443);
+    let s2s_addr = std::env::var("NEMO_S2S_LISTEN")
+        .unwrap_or_else(|_| format!("127.0.0.1:{s2s_port}"));
 
     let state = if let Ok(url) = std::env::var("DATABASE_URL") {
         let pool = nemo_server::pg::connect(&url).await.expect("postgres");
-        let (home, groups) = nemo_server::pg::load_or_init(&pool, &host, s2s_port)
+        let (mut home, groups) = nemo_server::pg::load_or_init(&pool, &host, s2s_port)
             .await
             .expect("load");
+        pin_dir(&mut home);
+        nemo_server::pg::flush(&pool, &home, &groups)
+            .await
+            .expect("persist pins");
         eprintln!(
-            "nemo-server http://{addr} host={host} s2s_port={s2s_port} db=postgres"
+            "nemo-server http://{addr} s2s={s2s_addr} host={host} db=postgres"
         );
         nemo_server::AppState::from_parts(home, groups).with_db(pool)
     } else {
-        eprintln!("nemo-server http://{addr} host={host} (in-memory; set DATABASE_URL to persist)");
-        nemo_server::AppState::from_parts(
-            nemo_server::HomeServer::advertise(host, s2s_port),
-            nemo_server::GroupHost::new(),
-        )
+        let mut home = nemo_server::HomeServer::advertise(host.clone(), s2s_port);
+        pin_dir(&mut home);
+        eprintln!("nemo-server http://{addr} s2s={s2s_addr} host={host} (in-memory)");
+        nemo_server::AppState::from_parts(home, nemo_server::GroupHost::new())
     };
 
+    let st = state.clone();
+    let s2s_bind = s2s_addr.clone();
+    tokio::spawn(async move {
+        if let Err(e) = nemo_server::s2s::listen(&s2s_bind, st).await {
+            eprintln!("s2s listen: {e}");
+        }
+    });
+    tokio::spawn(nemo_server::s2s::pump_loop(state.clone()));
+
     nemo_server::serve(&addr, state).await.expect("listen");
+}
+
+fn pin_dir(home: &mut nemo_server::HomeServer) {
+    if let Ok(dir) = std::env::var("NEMO_PEERS_DIR") {
+        match nemo_server::s2s::load_peers_dir(home, Path::new(&dir)) {
+            Ok(n) => eprintln!("nemo-server pinned {n} peer bundles from {dir}"),
+            Err(e) => eprintln!("nemo-server NEMO_PEERS_DIR: {e}"),
+        }
+    }
 }
