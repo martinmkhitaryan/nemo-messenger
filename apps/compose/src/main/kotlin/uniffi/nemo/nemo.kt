@@ -756,6 +756,12 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -779,6 +785,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_admit_join(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_create_group(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint(
@@ -800,6 +808,10 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_register(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_save(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_send_file(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
 ): Short
@@ -880,6 +892,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_admit_join(`ptr`: Pointer,`joinRequestU
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_create_group(`ptr`: Pointer,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`tokenHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -902,6 +916,10 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(`ptr`: Pointer,`gro
 ): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_save(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_nemo_ffi_fn_method_nemoclient_send_file(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1046,6 +1064,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_create_group() != 37877.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file() != 52061.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now() != 43341.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1077,6 +1098,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_save() != 52281.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_file() != 61094.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file() != 6194.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text() != 28860.toShort()) {
@@ -1320,6 +1347,25 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     }
 }
 
+/**
+ * @suppress
+ */
+public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
+    override fun read(buf: ByteBuffer): ByteArray {
+        val len = buf.getInt()
+        val byteArr = ByteArray(len)
+        buf.get(byteArr)
+        return byteArr
+    }
+    override fun allocationSize(value: ByteArray): ULong {
+        return 4UL + value.size.toULong()
+    }
+    override fun write(value: ByteArray, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        buf.put(value)
+    }
+}
+
 
 // This template implements a class for working with a Rust struct via a Pointer/Arc<T>
 // to the live Rust struct on the other side of the FFI.
@@ -1432,6 +1478,8 @@ public interface NemoClientInterface {
     
     fun `createGroup`(`nickname`: kotlin.String): kotlin.String
     
+    fun `fetchGroupFile`(`groupIdHex`: kotlin.String, `tokenHex`: kotlin.String): kotlin.ByteArray
+    
     fun `fetchNow`(): List<DisplayRow>
     
     fun `fingerprint`(): kotlin.String
@@ -1453,6 +1501,10 @@ public interface NemoClientInterface {
     fun `removeGroupMember`(`groupIdHex`: kotlin.String, `credentialIdHex`: kotlin.String)
     
     fun `save`()
+    
+    fun `sendFile`(`peerIdHex`: kotlin.String, `name`: kotlin.String, `mime`: kotlin.String, `bytes`: kotlin.ByteArray): DisplayRow
+    
+    fun `sendGroupFile`(`groupIdHex`: kotlin.String, `name`: kotlin.String, `mime`: kotlin.String, `bytes`: kotlin.ByteArray): DisplayRow
     
     fun `sendGroupText`(`groupIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
     
@@ -1604,6 +1656,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `fetchGroupFile`(`groupIdHex`: kotlin.String, `tokenHex`: kotlin.String): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(
+        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`tokenHex`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `fetchNow`(): List<DisplayRow> {
             return FfiConverterSequenceTypeDisplayRow.lift(
     callWithPointer {
@@ -1744,6 +1809,32 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `sendFile`(`peerIdHex`: kotlin.String, `name`: kotlin.String, `mime`: kotlin.String, `bytes`: kotlin.ByteArray): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_file(
+        it, FfiConverterString.lower(`peerIdHex`),FfiConverterString.lower(`name`),FfiConverterString.lower(`mime`),FfiConverterByteArray.lower(`bytes`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `sendGroupFile`(`groupIdHex`: kotlin.String, `name`: kotlin.String, `mime`: kotlin.String, `bytes`: kotlin.ByteArray): DisplayRow {
+            return FfiConverterTypeDisplayRow.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(
+        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`name`),FfiConverterString.lower(`mime`),FfiConverterByteArray.lower(`bytes`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `sendGroupText`(`groupIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
     callWithPointer {
@@ -1861,13 +1952,17 @@ public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Pointer> {
 
 
 /**
- * Decrypted 1:1 or group text for the shell. Never includes ratchet or MLS keys.
+ * Decrypted 1:1 or group text/file for the shell. Never includes ratchet or MLS keys.
  */
 data class DisplayRow (
     var `convId`: kotlin.String, 
     var `convSeq`: kotlin.ULong, 
     var `text`: kotlin.String, 
-    var `sentAt`: kotlin.ULong
+    var `sentAt`: kotlin.ULong, 
+    var `fileName`: kotlin.String, 
+    var `fileMime`: kotlin.String, 
+    var `fileBytes`: kotlin.ByteArray, 
+    var `fetchToken`: kotlin.String
 ) {
     
     companion object
@@ -1883,6 +1978,10 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterULong.read(buf),
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
@@ -1890,7 +1989,11 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterString.allocationSize(value.`convId`) +
             FfiConverterULong.allocationSize(value.`convSeq`) +
             FfiConverterString.allocationSize(value.`text`) +
-            FfiConverterULong.allocationSize(value.`sentAt`)
+            FfiConverterULong.allocationSize(value.`sentAt`) +
+            FfiConverterString.allocationSize(value.`fileName`) +
+            FfiConverterString.allocationSize(value.`fileMime`) +
+            FfiConverterByteArray.allocationSize(value.`fileBytes`) +
+            FfiConverterString.allocationSize(value.`fetchToken`)
     )
 
     override fun write(value: DisplayRow, buf: ByteBuffer) {
@@ -1898,6 +2001,10 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterULong.write(value.`convSeq`, buf)
             FfiConverterString.write(value.`text`, buf)
             FfiConverterULong.write(value.`sentAt`, buf)
+            FfiConverterString.write(value.`fileName`, buf)
+            FfiConverterString.write(value.`fileMime`, buf)
+            FfiConverterByteArray.write(value.`fileBytes`, buf)
+            FfiConverterString.write(value.`fetchToken`, buf)
     }
 }
 

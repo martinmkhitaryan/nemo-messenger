@@ -38,6 +38,15 @@ impl AttachmentSizeBucket {
             Self::A4 => crate::envelope::A4,
         }
     }
+
+    pub fn for_len(n: usize) -> Result<Self> {
+        for b in [Self::A1, Self::A2, Self::A3, Self::A4] {
+            if n <= b.inner_len() {
+                return Ok(b);
+            }
+        }
+        Err(WireError::NoBucket)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

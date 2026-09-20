@@ -3,6 +3,7 @@
 //! AGPL-3.0-only. This crate MUST NOT be a dependency of `nemo-wire` or `nemo-server`.
 
 pub mod app;
+pub mod attachment;
 pub mod bundle;
 pub mod discovery;
 pub mod error;
@@ -14,7 +15,8 @@ pub mod privacy;
 mod store;
 pub mod vault;
 
-pub use app::{decode, decode_text, encode, encode_text, AppBody, AppHeader, AppMessage};
+pub use app::{decode, decode_text, encode, encode_text, AppBody, AppHeader, AppMessage, FileMeta};
+pub use attachment::{open_group_file, seal_group_file};
 pub use discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
 pub use error::{CoreError, Result};
 pub use group::{

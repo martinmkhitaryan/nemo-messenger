@@ -371,6 +371,35 @@ impl<T: HomeTransport> HomeSession<T> {
         self.post_envelope(&outer).await
     }
 
+    /// 1:1 file: same contact path as [`send_to`], padded to an A* DR envelope.
+    pub async fn send_attachment(
+        &mut self,
+        peer: &IdentityId,
+        ttl_bucket: TtlBucket,
+        plaintext: &[u8],
+        now_unix: u64,
+    ) -> Result<EnqueueResult> {
+        let stale = match self.contacts.get(peer) {
+            None => return Err(CoreError::UnknownContact),
+            Some(c) if c.revoked => return Err(CoreError::Revoked),
+            Some(c) => now_unix.saturating_sub(c.last_discovery_unix) >= DISCOVERY_REFRESH_SECS,
+        };
+        if stale {
+            self.refresh_contact(peer, now_unix).await?;
+        }
+        let contact = self.contacts.get(peer).ok_or(CoreError::UnknownContact)?;
+        if contact.revoked {
+            return Err(CoreError::Revoked);
+        }
+        let dest_hpke = contact.dest_hpke;
+        let cap = contact.delivery_capability;
+        let outer = self
+            .install
+            .encrypt_attachment_to_mailbox(peer, &dest_hpke, cap, ttl_bucket, plaintext)
+            .await?;
+        self.post_envelope(&outer).await
+    }
+
     /// Publish one-time prekeys until the stock is above the restock floor.
     pub async fn restock_publish(&mut self) -> Result<usize> {
         let mut n = 0;

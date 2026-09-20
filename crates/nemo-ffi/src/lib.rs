@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_core::{
-    decode, encode, encode_text, mailbox, AppBody, AppHeader, AppMessage, CoreError, Group,
-    HomeSession, HostAccept, HostGroup, HttpHome, Installation, PendingJoin, Vault,
+    decode, encode, encode_text, mailbox, open_group_file, seal_group_file, AppBody, AppHeader,
+    AppMessage, CoreError, FileMeta, Group, HomeSession, HostAccept, HostGroup, HttpHome,
+    Installation, PendingJoin, Vault,
 };
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, TtlBucket};
+use nemo_wire::hostframe::AttachmentReserve;
 use nemo_wire::ids::{self, KEY_LEN};
 use nemo_wire::{parse_identity_id, ContactCard, GroupInvite};
 
@@ -35,13 +37,17 @@ impl From<nemo_wire::WireError> for FfiError {
     }
 }
 
-/// Decrypted 1:1 or group text for the shell. Never includes ratchet or MLS keys.
+/// Decrypted 1:1 or group text/file for the shell. Never includes ratchet or MLS keys.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct DisplayRow {
     pub conv_id: String,
     pub conv_seq: u64,
     pub text: String,
     pub sent_at: u64,
+    pub file_name: String,
+    pub file_mime: String,
+    pub file_bytes: Vec<u8>,
+    pub fetch_token: String,
 }
 
 /// Hosted MLS group the shell can list. No signing keys.
@@ -420,6 +426,10 @@ impl NemoClient {
             conv_seq: seq,
             text,
             sent_at: now,
+            file_name: String::new(),
+            file_mime: String::new(),
+            file_bytes: Vec::new(),
+            fetch_token: String::new(),
         };
         inner.inbox.push(row.clone());
         persist(&inner)?;
@@ -464,6 +474,26 @@ impl NemoClient {
                                     header.conv_seq,
                                     text,
                                     header.sent_at,
+                                ));
+                            }
+                            Ok(AppMessage {
+                                header,
+                                body:
+                                    AppBody::Attachment {
+                                        enc_file,
+                                        meta,
+                                        fetch_token: None,
+                                    },
+                            }) => {
+                                new_rows.push(push_file(
+                                    inbox,
+                                    next_seq,
+                                    ids::to_hex(&peer),
+                                    header.conv_seq,
+                                    header.sent_at,
+                                    meta,
+                                    enc_file,
+                                    String::new(),
                                 ));
                             }
                             Ok(AppMessage {
@@ -517,40 +547,80 @@ impl NemoClient {
                     });
                 }
 
-                let provider = session.install.mls_provider();
                 for row in &rows {
                     match row.inner.padded_message.type_ {
                         MessageType::MlsHandshake => {
                             for g in groups.iter_mut() {
-                                let _ = g.mls.apply_handshake_from_mailbox(provider, &row.inner);
+                                let _ = g.mls.apply_handshake_from_mailbox(
+                                    session.install.mls_provider(),
+                                    &row.inner,
+                                );
                             }
                         }
                         MessageType::MlsApp => {
+                            let mut opened = None;
                             for g in groups.iter_mut() {
-                                if let Ok(plaintext) =
-                                    g.mls.decrypt_from_mailbox(provider, &row.inner)
-                                {
-                                    if let Ok(AppMessage {
+                                if let Ok(plaintext) = g.mls.decrypt_from_mailbox(
+                                    session.install.mls_provider(),
+                                    &row.inner,
+                                ) {
+                                    opened = Some((g.host, plaintext));
+                                    break;
+                                }
+                            }
+                            if let Some((host, plaintext)) = opened {
+                                match decode(&plaintext) {
+                                    Ok(AppMessage {
                                         header,
                                         body: AppBody::Text { text },
-                                    }) = decode(&plaintext)
-                                    {
+                                    }) => {
                                         new_rows.push(push_text(
                                             inbox,
                                             next_seq,
-                                            ids::to_hex(&g.host.group_id),
+                                            ids::to_hex(&host.group_id),
                                             header.conv_seq,
                                             text,
                                             header.sent_at,
                                         ));
                                     }
-                                    break;
+                                    Ok(AppMessage {
+                                        header,
+                                        body:
+                                            AppBody::Attachment {
+                                                enc_file,
+                                                meta,
+                                                fetch_token: Some(token),
+                                            },
+                                    }) => {
+                                        if let Ok(blob) = block_on(session.fetch_file(
+                                            host.group_id,
+                                            &host.cred,
+                                            token,
+                                        )) {
+                                            if let Ok(bytes) = open_group_file(&enc_file, &blob) {
+                                                new_rows.push(push_file(
+                                                    inbox,
+                                                    next_seq,
+                                                    ids::to_hex(&host.group_id),
+                                                    header.conv_seq,
+                                                    header.sent_at,
+                                                    meta,
+                                                    bytes,
+                                                    ids::to_hex(&token),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
                         MessageType::RemoveBundle => {
                             for g in groups.iter_mut() {
-                                let _ = g.mls.apply_remove_from_mailbox(provider, &row.inner);
+                                let _ = g.mls.apply_remove_from_mailbox(
+                                    session.install.mls_provider(),
+                                    &row.inner,
+                                );
                             }
                         }
                         _ => {}
@@ -736,6 +806,10 @@ impl NemoClient {
                 conv_seq: seq,
                 text,
                 sent_at: now,
+                file_name: String::new(),
+                file_mime: String::new(),
+                file_bytes: Vec::new(),
+                fetch_token: String::new(),
             }
         };
         inner.inbox.push(row.clone());
@@ -768,6 +842,150 @@ impl NemoClient {
         }
         persist(&inner)?;
         Ok(())
+    }
+
+    pub fn send_file(
+        &self,
+        peer_id_hex: String,
+        name: String,
+        mime: String,
+        bytes: Vec<u8>,
+    ) -> Result<DisplayRow, FfiError> {
+        let peer = parse_identity_id(&peer_id_hex)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let now = now_unix();
+        let seq = bump_seq(&mut inner.next_seq, &peer_id_hex);
+        let meta = FileMeta {
+            name: name.clone(),
+            mime: mime.clone(),
+            size: bytes.len() as u64,
+        };
+        let ptext = encode(&AppMessage {
+            header: AppHeader {
+                conv_seq: seq,
+                sent_at: now,
+                reply_to: None,
+            },
+            body: AppBody::Attachment {
+                enc_file: bytes.clone(),
+                meta: meta.clone(),
+                fetch_token: None,
+            },
+        })?;
+        {
+            let session = inner.registered()?;
+            block_on(session.send_attachment(&peer, TtlBucket::DEFAULT, &ptext, now))?;
+        }
+        let Inner {
+            inbox, next_seq, ..
+        } = &mut *inner;
+        let row = push_file(
+            inbox,
+            next_seq,
+            peer_id_hex,
+            seq,
+            now,
+            meta,
+            bytes,
+            String::new(),
+        );
+        persist(&inner)?;
+        Ok(row)
+    }
+
+    pub fn send_group_file(
+        &self,
+        group_id_hex: String,
+        name: String,
+        mime: String,
+        bytes: Vec<u8>,
+    ) -> Result<DisplayRow, FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let now = now_unix();
+        let token = mailbox::random_token();
+        let (key, bucket, blob) = seal_group_file(&bytes)?;
+        let meta = FileMeta {
+            name: name.clone(),
+            mime: mime.clone(),
+            size: bytes.len() as u64,
+        };
+        let row = {
+            let seq = bump_seq(&mut inner.next_seq, &group_id_hex);
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            let g = find_group_mut(groups, &group_id_hex)?;
+            let reserve = AttachmentReserve {
+                fetch_token: token,
+                size_bucket: bucket,
+                ttl_bucket: TtlBucket::DEFAULT,
+            };
+            block_on(session.group_append(
+                g.host.group_id,
+                &g.host.cred,
+                MessageType::AttachmentReserve,
+                reserve.encode(),
+            ))?;
+            block_on(session.upload_file(g.host.group_id, &g.host.cred, token, blob))?;
+            let ptext = encode(&AppMessage {
+                header: AppHeader {
+                    conv_seq: seq,
+                    sent_at: now,
+                    reply_to: None,
+                },
+                body: AppBody::Attachment {
+                    enc_file: key,
+                    meta: meta.clone(),
+                    fetch_token: Some(token),
+                },
+            })?;
+            let body = g.mls.encrypt(session.install.mls_provider(), &ptext)?;
+            block_on(session.group_append(
+                g.host.group_id,
+                &g.host.cred,
+                MessageType::MlsApp,
+                body,
+            ))?;
+            DisplayRow {
+                conv_id: group_id_hex,
+                conv_seq: seq,
+                text: name.clone(),
+                sent_at: now,
+                file_name: name,
+                file_mime: mime,
+                file_bytes: bytes,
+                fetch_token: ids::to_hex(&token),
+            }
+        };
+        inner.inbox.push(row.clone());
+        persist(&inner)?;
+        Ok(row)
+    }
+
+    pub fn fetch_group_file(
+        &self,
+        group_id_hex: String,
+        token_hex: String,
+    ) -> Result<Vec<u8>, FfiError> {
+        let gid = parse_identity_id(&group_id_hex)?;
+        let token = ids::copy_fixed(&ids::from_hex(&token_hex)?)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let Inner { state, groups, .. } = &mut *inner;
+        let session = match state {
+            Some(ClientState::Registered(session)) => session,
+            Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+            None => return Err(FfiError::Core("busy".into())),
+        };
+        let cred = groups
+            .iter()
+            .find(|g| g.host.group_id == gid)
+            .ok_or_else(|| FfiError::Core("unknown group".into()))?
+            .host
+            .cred;
+        Ok(block_on(session.fetch_file(gid, &cred, token))?)
     }
 
     pub fn list_groups(&self) -> Result<Vec<GroupRow>, FfiError> {
@@ -821,6 +1039,38 @@ fn push_text(
         conv_seq,
         text,
         sent_at,
+        file_name: String::new(),
+        file_mime: String::new(),
+        file_bytes: Vec::new(),
+        fetch_token: String::new(),
+    };
+    inbox.push(row.clone());
+    row
+}
+
+fn push_file(
+    inbox: &mut Vec<DisplayRow>,
+    next_seq: &mut HashMap<String, u64>,
+    conv_id: String,
+    conv_seq: u64,
+    sent_at: u64,
+    meta: FileMeta,
+    file_bytes: Vec<u8>,
+    fetch_token: String,
+) -> DisplayRow {
+    let seq = *next_seq.get(&conv_id).unwrap_or(&0);
+    if conv_seq > seq {
+        next_seq.insert(conv_id.clone(), conv_seq);
+    }
+    let row = DisplayRow {
+        conv_id,
+        conv_seq,
+        text: meta.name.clone(),
+        sent_at,
+        file_name: meta.name,
+        file_mime: meta.mime,
+        file_bytes,
+        fetch_token,
     };
     inbox.push(row.clone());
     row
@@ -939,6 +1189,10 @@ mod tests {
             conv_seq: 1,
             text: "hi".into(),
             sent_at: 1,
+            file_name: String::new(),
+            file_mime: String::new(),
+            file_bytes: Vec::new(),
+            fetch_token: String::new(),
         };
         assert_eq!(row.conv_id.len(), 64);
         let _ = row.text;
@@ -1009,5 +1263,70 @@ mod tests {
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
         let _ = fs::remove_dir_all(&carol_dir);
+    }
+
+    #[test]
+    fn one_to_one_and_group_attachments() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-fa");
+        let bob_dir = temp_dir("nemo-ffi-fb");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+
+        let uri = alice.mint_share_uri().unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        bob.add_contact(uri, "Alice".into()).unwrap();
+        bob.send_file(
+            alice_id.clone(),
+            "note.txt".into(),
+            "text/plain".into(),
+            b"hello file".to_vec(),
+        )
+        .unwrap();
+        let dm = alice.fetch_now().unwrap();
+        assert_eq!(dm.len(), 1);
+        assert_eq!(dm[0].file_name, "note.txt");
+        assert_eq!(dm[0].file_bytes, b"hello file");
+
+        let gid = alice.create_group("files".into()).unwrap();
+        let invite = alice.mint_group_invite(gid.clone()).unwrap();
+        let join = bob.accept_group_invite(invite).unwrap();
+        let bob_cred = alice.admit_join(join).unwrap();
+        let _ = bob.fetch_now().unwrap();
+
+        let sent = alice
+            .send_group_file(
+                gid.clone(),
+                "crew.bin".into(),
+                "application/octet-stream".into(),
+                b"group-bytes".to_vec(),
+            )
+            .unwrap();
+        assert!(!sent.fetch_token.is_empty());
+        let rows = bob.fetch_now().unwrap();
+        let file = rows
+            .iter()
+            .find(|r| r.file_name == "crew.bin")
+            .expect("group file");
+        assert_eq!(file.file_bytes, b"group-bytes");
+        let token = file.fetch_token.clone();
+        assert_eq!(
+            alice
+                .fetch_group_file(gid.clone(), token.clone())
+                .unwrap()
+                .len(),
+            262_144
+        );
+
+        alice.remove_group_member(gid.clone(), bob_cred).unwrap();
+        let err = bob.fetch_group_file(gid, token).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("denied"));
+
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
     }
 }

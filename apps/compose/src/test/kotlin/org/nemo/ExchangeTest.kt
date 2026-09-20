@@ -49,6 +49,11 @@ class ExchangeTest {
             val first = left.fetchNow()
             assertEquals(1, first.size)
             assertEquals("hello from right", first[0].text)
+            right.sendFile(leftId, "note.txt", "text/plain", "hello file".toByteArray())
+            val file = left.fetchNow()
+            assertEquals(1, file.size)
+            assertEquals("note.txt", file[0].fileName)
+            assertEquals("hello file", file[0].fileBytes.decodeToString())
 
             left.close()
             right.close()
@@ -122,6 +127,10 @@ class ExchangeTest {
             assertEquals("hello crew", first[0].text)
             assertEquals(gid, first[0].convId)
 
+            val sentFile = alice.sendGroupFile(gid, "crew.bin", "application/octet-stream", "group-bytes".toByteArray())
+            val groupFile = bob.fetchNow().first { it.fileName == "crew.bin" }
+            assertEquals("group-bytes", groupFile.fileBytes.decodeToString())
+
             alice.close()
             val alice2 = NemoClient.openAt(aliceDir.absolutePath, pass)
             alice2.sendGroupText(gid, "after reopen")
@@ -132,6 +141,8 @@ class ExchangeTest {
             alice2.removeGroupMember(gid, bobCred)
             val bobDenied = runCatching { bob.sendGroupText(gid, "still here") }.exceptionOrNull()
             assertTrue(bobDenied?.message.orEmpty().lowercase().contains("denied"))
+            val bobDeniedFile = runCatching { bob.fetchGroupFile(gid, sentFile.fetchToken) }.exceptionOrNull()
+            assertTrue(bobDeniedFile?.message.orEmpty().lowercase().contains("denied"))
 
             alice2.close()
             bob.close()

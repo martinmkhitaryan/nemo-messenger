@@ -28,6 +28,7 @@ How to use it:
 | Compose UI | **Done** (I4 1:1, I6 groups on desktop) |
 | Android APK | **Postponed** — must return (I5); desktop continues |
 | Hosted MLS groups | **Done** (I6) — invite → admit → text → RemoveBundle |
+| Attachments | **Done** (I7) — 1:1 A* DR; group reserve + live-cred fetch |
 | 1:1 WebRTC media | Signaling types exist; media engine not wired |
 | FCM | Not started (needs schema amendment) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
@@ -213,9 +214,9 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Checkpoint.**
 
-- [ ] 1:1: send a small file, recipient opens after fetch
-- [ ] Group: one upload, two members fetch with live credentials; dead credential 403
-- [ ] Commit
+- [x] 1:1: send a small file, recipient opens after fetch
+- [x] Group: one upload, two members fetch with live credentials; dead credential 403
+- [x] Commit
 
 ---
 
@@ -345,4 +346,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I6 is implemented (desktop).** Next: **I7** (attachments). Return to **I5 Android** before I12.
+**I7 is implemented (desktop).** Next: **I8** (reactions, delete-for-everyone, disappearing). Return to **I5 Android** before I12.

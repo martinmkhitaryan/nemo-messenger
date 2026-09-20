@@ -114,6 +114,7 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
     var joinPaste by remember { mutableStateOf("") }
     var groupDraft by remember { mutableStateOf("") }
     var memberCred by remember { mutableStateOf("") }
+    var filePath by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     val messages = remember { mutableStateListOf<DisplayRow>() }
     var busy by remember { mutableStateOf(false) }
@@ -410,10 +411,17 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                     groupId.isNotEmpty() && row.convId == groupId -> "Group"
                                     else -> "Them"
                                 }
-                                Text(
-                                    "$who: ${row.text}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
+                                if (row.fileName.isNotEmpty()) {
+                                    Text(
+                                        "$who file: ${row.fileName} (${row.fileBytes.size} bytes)",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                } else {
+                                    Text(
+                                        "$who: ${row.text}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
                             }
                             OutlinedTextField(
                                 value = draft,
@@ -447,6 +455,67 @@ private fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modi
                                         }
                                     },
                                 ) { Text("Fetch") }
+                            }
+                            OutlinedTextField(
+                                value = filePath,
+                                onValueChange = { filePath = it },
+                                label = { Text("File path") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                            )
+                            Row {
+                                Button(
+                                    enabled = !busy,
+                                    onClick = {
+                                        val dlg = java.awt.FileDialog(null as java.awt.Frame?, "Send file", java.awt.FileDialog.LOAD)
+                                        dlg.isVisible = true
+                                        val dir = dlg.directory
+                                        val name = dlg.file
+                                        if (!dir.isNullOrEmpty() && !name.isNullOrEmpty()) {
+                                            filePath = java.io.File(dir, name).absolutePath
+                                        }
+                                    },
+                                ) { Text("Browse") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = !busy && peerId.isNotEmpty() && filePath.isNotBlank(),
+                                    onClick = {
+                                        runIo {
+                                            val f = File(filePath.trim())
+                                            if (!f.isFile) throw IllegalArgumentException("File not found")
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.sendFile(
+                                                    peerId,
+                                                    f.name,
+                                                    "application/octet-stream",
+                                                    f.readBytes(),
+                                                )
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                            status = "Sent ${f.name}"
+                                        }
+                                    },
+                                ) { Text("Send file") }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = !busy && groupId.isNotEmpty() && filePath.isNotBlank(),
+                                    onClick = {
+                                        runIo {
+                                            val f = File(filePath.trim())
+                                            if (!f.isFile) throw IllegalArgumentException("File not found")
+                                            val row = withContext(Dispatchers.IO) {
+                                                client?.sendGroupFile(
+                                                    groupId,
+                                                    f.name,
+                                                    "application/octet-stream",
+                                                    f.readBytes(),
+                                                )
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                            status = "Sent group file ${f.name}"
+                                        }
+                                    },
+                                ) { Text("Send group file") }
                             }
                         }
                         VerticalScrollbar(
