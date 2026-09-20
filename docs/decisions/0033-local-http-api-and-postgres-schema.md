@@ -58,6 +58,7 @@ This record freezes the v1 client-to-home HTTP surface and the Postgres schema. 
 | POST | `/groups/{group_id}/fanout` | CBOR `{0–1: cred, 2: cap, 3: hpke}` | empty 204 | member credential |
 | POST | `/groups/{group_id}/files/{token}` | opaque padded file | empty 204 | `nemo-cred-id` / `nemo-cred-secret` |
 | GET | `/groups/{group_id}/files/{token}` | — | opaque file | `nemo-cred-id` / `nemo-cred-secret` |
+| GET | `/wakeup` | — | WebSocket; empty binary wakes | `nemo-owner` |
 
 Unknown discovery identities, unknown tokens, and generic delivery failure return **403 with an empty body** (same shape as Denied). Owner-auth failure is **401**. Duplicate register is **409**. Decode errors are **400**.
 
@@ -65,7 +66,7 @@ Body size limit: 18 MiB (A4 outer plus headroom).
 
 ### WebSocket
 
-`GET /v1/wakeup` is reserved: after owner-auth, the server MAY send empty binary frames when the mailbox has new rows. **Poll of `/mailbox/fetch` is required** for v1. Waking is optional and MUST NOT carry size or type ([ADR-0020](0020-opaque-push-wakeup.md)).
+`GET /v1/wakeup` upgrades to WebSocket after `nemo-owner` auth. The server sends empty binary frames when that mailbox's head advances, coalesced to at most one frame per 10 s. **Poll of `/mailbox/fetch` is required** for v1. Waking MUST NOT carry size or type ([ADR-0020](0020-opaque-push-wakeup.md)).
 
 ### Persistence
 
@@ -113,4 +114,4 @@ Rejected in ADR-0028; restated: padded envelopes and self-host reverse proxies.
 
 - 2026-09-20 — Accepted. Local HTTP `/v1` routes; PostgreSQL DDL; Caddy TLS; no JSON protocol objects.
 - 2026-09-20 — Amendment 1: group invite / accept / admit / fan-out / file routes; `nemo-cred-*` headers for opaque file bodies. No new stored fields.
-- 2026-09-20 — Amendment 2: sqlx adapter uses this DDL (`query()`, not compile-time `query!`, so tests need no live database). `DATABASE_URL` loads on start and write-throughs after successful mutating `/v1` requests; unset keeps the in-memory runtime.
+- 2026-09-20 — Amendment 3: `GET /wakeup` WebSocket implemented (empty binary frames, 10 s coalesce). No new stored fields.

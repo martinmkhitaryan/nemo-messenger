@@ -121,7 +121,7 @@ Body: `RevocationStatement`. Home wipes mailbox material and returns hosted grou
 
 ### 3.10 Wakeup (optional)
 
-`GET /v1/wakeup` is reserved for WebSocket. v1 clients MUST poll fetch. A future wakeup frame is an empty binary message (no size, no type).
+`GET /v1/wakeup` is a WebSocket. After `nemo-owner` auth, the server sends **empty binary frames** when that mailbox's head advances, coalesced to at most one frame per 10 s. The frame MUST NOT carry size or type ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)). Poll of `/mailbox/fetch` remains required.
 
 ---
 
@@ -160,4 +160,4 @@ Retention defaults remain 14 days / 500 MiB for mailboxes ([ADR-0031](../decisio
 
 ## 6. Phase completion
 
-v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: optional `/wakeup` WebSocket, FCM. Those MUST keep the tables and routes above.
+v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: FCM. Those MUST keep the tables and routes above.

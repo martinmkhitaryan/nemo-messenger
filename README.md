@@ -2375,7 +2375,7 @@ Defines:
 * Postgres schema from phases 1–5 only; sqlx load-on-start and write-through when `DATABASE_URL` is set;
 * outbound queue as specified in phase 5;
 * no Redis;
-* WebSocket wakeup reserved; poll fetch is required;
+* WebSocket `/v1/wakeup` (empty binary, 10 s coalesce); poll fetch is required;
 * S2S mTLS on `s2s_port` (ALPN `nemo-s2s/1`); FCM remains an operator follow-on.
 
 ---

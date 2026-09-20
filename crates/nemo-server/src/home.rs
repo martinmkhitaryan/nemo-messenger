@@ -425,6 +425,14 @@ impl HomeServer {
         self.mailboxes.get(&owner).is_some_and(|m| m.disabled)
     }
 
+    /// Highest assigned seq, or 0 if the mailbox is empty / missing.
+    pub fn mailbox_head(&self, owner: IdentityId) -> u64 {
+        self.mailboxes
+            .get(&owner)
+            .map(|m| m.next_seq.saturating_sub(1))
+            .unwrap_or(0)
+    }
+
     pub fn mint_share_token(
         &mut self,
         owner: IdentityId,

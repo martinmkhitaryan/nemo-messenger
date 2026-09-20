@@ -89,6 +89,7 @@ async fn handle_inbound(
         if let Some(reply) = reply {
             write_frame(&mut stream, &reply).await?;
         }
+        state.wakes.notify_waiters();
         state.persist().await;
     }
 }

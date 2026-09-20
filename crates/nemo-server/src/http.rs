@@ -1,11 +1,13 @@
 //! Local HTTP (phase 8). Caddy terminates TLS; this process listens on localhost.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path, Request, State};
+use axum::http::{header, HeaderMap, Method, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -15,11 +17,8 @@ use nemo_wire::ids::{self, IdentityId, KEY_LEN};
 use nemo_wire::{
     ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, MailboxOwnerAuth, RevocationStatement,
 };
-
-use axum::extract::Request;
-use axum::http::Method;
-use axum::middleware::{self, Next};
 use sqlx::PgPool;
+use tokio::sync::Notify;
 
 use crate::error::ServerError;
 use crate::federation::Enqueue;
@@ -28,12 +27,15 @@ use crate::home::{DiscoveryRow, HomeServer};
 
 /// A4 outer plus a little headroom.
 const BODY_LIMIT: usize = 18_000_000;
+/// At most one empty wake frame per mailbox connection (ADR-0020 / phase 6).
+const WAKE_COALESCE: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct AppState {
     pub home: Arc<tokio::sync::Mutex<HomeServer>>,
     pub groups: Arc<tokio::sync::Mutex<GroupHost>>,
     pub db: Option<PgPool>,
+    pub wakes: Arc<Notify>,
 }
 
 impl AppState {
@@ -46,6 +48,7 @@ impl AppState {
             home: Arc::new(tokio::sync::Mutex::new(home)),
             groups: Arc::new(tokio::sync::Mutex::new(groups)),
             db: None,
+            wakes: Arc::new(Notify::new()),
         }
     }
 
@@ -85,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/tokens/share", post(mint_share))
         .route("/v1/tokens/contact", post(mint_contact))
         .route("/v1/revocation", post(revocation))
+        .route("/v1/wakeup", get(wakeup))
         .route("/v1/groups", post(create_group))
         .route("/v1/groups/{id}/append", post(group_append))
         .route("/v1/groups/{id}/invites", post(group_invite))
@@ -104,12 +108,12 @@ async fn persist_after(State(st): State<AppState>, req: Request, next: Next) -> 
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
     let res = next.run(req).await;
-    if st.db.is_none() {
-        return res;
-    }
     let mutating = method != Method::GET || path == "/v1/prekeys";
     if mutating && res.status().is_success() {
-        st.persist().await;
+        st.wakes.notify_waiters();
+        if st.db.is_some() {
+            st.persist().await;
+        }
     }
     res
 }
@@ -323,6 +327,58 @@ async fn revocation(State(st): State<AppState>, body: Bytes) -> Response {
         let _ = host.append_host_revocation(gid, &stmt);
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn wakeup(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let (owner, auth) = match require_owner(&headers) {
+        Ok(v) => v,
+        Err(s) => return s.into_response(),
+    };
+    {
+        let home = st.home.lock().await;
+        if let Err(e) = home.check_owner(owner, &auth, unix_now()) {
+            return map_err(e).into_response();
+        }
+    }
+    ws.on_upgrade(move |socket| run_wakeup(st, owner, auth.cursor, socket))
+}
+
+async fn run_wakeup(st: AppState, owner: IdentityId, cursor: u64, mut ws: WebSocket) {
+    let mut last_seen = cursor;
+    let mut last_wake = Instant::now() - WAKE_COALESCE;
+    loop {
+        let wait = st.wakes.notified();
+        tokio::pin!(wait);
+        wait.as_mut().enable();
+        let head = {
+            let home = st.home.lock().await;
+            home.mailbox_head(owner)
+        };
+        if head > last_seen && last_wake.elapsed() >= WAKE_COALESCE {
+            if ws.send(Message::Binary(Bytes::new())).await.is_err() {
+                return;
+            }
+            last_seen = head;
+            last_wake = Instant::now();
+        }
+        tokio::select! {
+            msg = ws.recv() => match msg {
+                Some(Ok(Message::Close(_))) | None => return,
+                Some(Ok(Message::Ping(p))) => {
+                    if ws.send(Message::Pong(p)).await.is_err() {
+                        return;
+                    }
+                }
+                Some(Err(_)) => return,
+                _ => {}
+            },
+            _ = wait => {}
+        }
+    }
 }
 
 async fn create_group(State(st): State<AppState>, body: Bytes) -> Response {

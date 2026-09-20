@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -622,4 +622,76 @@ async fn group_file_upload_and_fetch() {
     );
     assert_eq!(body, file);
     let _ = sk;
+}
+
+#[tokio::test]
+async fn wakeup_sends_empty_binary_on_ingest() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = AppState::new();
+    let home = state.home.lock().await;
+    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let card = signed_card(home.server_id(), home.hpke_public(), &sk);
+    let id = identity_id(&sk.verifying_key().to_bytes());
+    let hpke = home.hpke_public();
+    drop(home);
+    let serve_state = state.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, router(serve_state)).await.ok();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let res = client
+        .post(format!("{base}/v1/register"))
+        .body(card.encode().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let share_auth = owner_auth(&sk, id, 0, 1);
+    let res = client
+        .post(format!("{base}/v1/tokens/share"))
+        .header("nemo-owner", owner_header(&share_auth))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let Value::Map(m) = cbor::decode(&res.bytes().await.unwrap()).unwrap() else {
+        panic!("token map");
+    };
+    let token = ids::copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 0).unwrap()).unwrap()).unwrap();
+
+    let mut ws_req = format!("ws://{addr}/v1/wakeup")
+        .into_client_request()
+        .unwrap();
+    let wake_auth = owner_auth(&sk, id, 0, 1);
+    ws_req.headers_mut().insert(
+        "nemo-owner",
+        owner_header(&wake_auth).parse().unwrap(),
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
+
+    let env_auth = owner_auth(&sk, id, 0, 1);
+    let res = client
+        .post(format!("{base}/v1/envelopes"))
+        .header("nemo-owner", owner_header(&env_auth))
+        .body(wrap(&hpke, token).encode())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("wake")
+        .unwrap()
+        .unwrap();
+    assert_eq!(msg, WsMsg::Binary(Vec::new().into()));
+    let _ = ws.close(None).await;
 }
