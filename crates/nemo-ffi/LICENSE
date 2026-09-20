@@ -1,0 +1,8 @@
+This crate is licensed under the GNU Affero General Public License v3.0 only
+(AGPL-3.0-only) because it links libsignal.
+
+SPDX-License-Identifier: AGPL-3.0-only
+https://www.gnu.org/licenses/agpl-3.0.html
+
+The rest of this repository is licensed as described in ../../LICENSE.md.
+The MIT `nemo-wire` and `nemo-server` crates MUST NOT depend on this crate or on libsignal.
