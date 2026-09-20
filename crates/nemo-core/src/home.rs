@@ -13,9 +13,11 @@ use nemo_wire::{
     ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, RevocationStatement, ServerBundle,
 };
 
+use crate::call::TurnConfig;
 use crate::discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
 use crate::error::{CoreError, Result};
 use crate::identity::Installation;
+use crate::privacy::{private_send_delay_ms, PrivacyMode};
 
 pub const FETCH_LIMIT: u64 = 64;
 const CARD_TTL_SECS: u64 = 30 * 24 * 3600;
@@ -57,6 +59,48 @@ pub struct HostAccept {
     pub invitee_binding: Option<[u8; KEY_LEN]>,
 }
 
+impl HostAccept {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut pairs = vec![
+            (0, Value::Bytes(self.pending_id.to_vec())),
+            (1, Value::Bytes(self.cred.credential_id.to_vec())),
+            (2, Value::Bytes(self.cred.credential_secret.to_vec())),
+        ];
+        if let Some(b) = self.invitee_binding {
+            pairs.push((3, Value::Bytes(b.to_vec())));
+        }
+        cbor::encode(&Value::Map(pairs))
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let Value::Map(m) = cbor::decode(bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        Ok(Self {
+            pending_id: ids::copy_fixed(
+                cbor::expect_bytes(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?,
+            )?,
+            cred: HostCred {
+                credential_id: ids::copy_fixed(
+                    cbor::expect_bytes(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+                        .map_err(|_| CoreError::VaultCorrupt)?,
+                )?,
+                credential_secret: ids::copy_fixed(
+                    cbor::expect_bytes(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+                        .map_err(|_| CoreError::VaultCorrupt)?,
+                )?,
+            },
+            invitee_binding: match cbor::map_get_opt(&m, 3) {
+                Some(v) => Some(ids::copy_fixed(
+                    cbor::expect_bytes(v).map_err(|_| CoreError::VaultCorrupt)?,
+                )?),
+                None => None,
+            },
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnqueueResult {
     Local(u64),
@@ -88,6 +132,7 @@ pub struct HomeState {
     pub groups: Vec<HostGroup>,
     /// HTTP origin for [`HttpHome`]; empty when the transport is in-process.
     pub home_base: String,
+    pub privacy: PrivacyMode,
 }
 
 impl HomeState {
@@ -126,6 +171,7 @@ impl HomeState {
             (3, Value::Array(contacts)),
             (4, Value::Array(groups)),
             (5, Value::Text(self.home_base.clone())),
+            (6, Value::Uint(privacy_to_u64(self.privacy))),
         ])))
     }
 
@@ -225,6 +271,12 @@ impl HomeState {
                     .to_owned(),
                 None => String::new(),
             },
+            privacy: match cbor::map_get_opt(&m, 6) {
+                Some(v) => {
+                    privacy_from_u64(cbor::expect_uint(v).map_err(|_| CoreError::VaultCorrupt)?)?
+                }
+                None => PrivacyMode::Normal,
+            },
         })
     }
 }
@@ -237,6 +289,7 @@ pub struct HomeSession<T> {
     pub contacts: HashMap<IdentityId, StoredContact>,
     pub groups: Vec<HostGroup>,
     pub home_base: String,
+    pub privacy: PrivacyMode,
 }
 
 impl<T: HomeTransport> HomeSession<T> {
@@ -270,6 +323,7 @@ impl<T: HomeTransport> HomeSession<T> {
                 contacts: HashMap::new(),
                 groups: Vec::new(),
                 home_base: String::new(),
+                privacy: PrivacyMode::Normal,
             },
             card,
         ))
@@ -284,6 +338,7 @@ impl<T: HomeTransport> HomeSession<T> {
             contacts: state.contacts,
             groups: state.groups,
             home_base: state.home_base,
+            privacy: state.privacy,
         }
     }
 
@@ -294,6 +349,17 @@ impl<T: HomeTransport> HomeSession<T> {
             contacts: self.contacts.clone(),
             groups: self.groups.clone(),
             home_base: self.home_base.clone(),
+            privacy: self.privacy,
+        }
+    }
+
+    pub fn set_privacy(&mut self, mode: PrivacyMode) -> Result<()> {
+        match mode {
+            PrivacyMode::Normal | PrivacyMode::Private => {
+                self.privacy = mode;
+                Ok(())
+            }
+            PrivacyMode::High => Err(CoreError::MaximumNotShipped),
         }
     }
 
@@ -342,6 +408,69 @@ impl<T: HomeTransport> HomeSession<T> {
         contact.dest_hpke = binding.server_hpke_public_key;
         contact.last_discovery_unix = now_unix;
         Ok(())
+    }
+
+    /// Fetch discovery and refuse a valid revocation. Unknown-to-this-home is not revocation.
+    pub async fn check_discovery_not_revoked(
+        &self,
+        identity_id: IdentityId,
+        now_unix: u64,
+    ) -> Result<()> {
+        match self.discovery(identity_id).await {
+            Ok(disc) => {
+                disc.verify(now_unix)?;
+                disc.check_not_revoked()
+            }
+            Err(CoreError::Denied) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Same stale window as 1:1 `send_to`. Contacts that are revoked fail closed.
+    pub async fn refresh_mls_identities(
+        &mut self,
+        ids: &[IdentityId],
+        now_unix: u64,
+    ) -> Result<()> {
+        let own = self.identity_id();
+        for id in ids {
+            if *id == own {
+                continue;
+            }
+            if let Some(c) = self.contacts.get(id) {
+                if c.revoked {
+                    return Err(CoreError::Revoked);
+                }
+                let stale =
+                    now_unix.saturating_sub(c.last_discovery_unix) >= DISCOVERY_REFRESH_SECS;
+                if stale {
+                    self.refresh_contact(id, now_unix).await?;
+                }
+            } else {
+                self.check_discovery_not_revoked(*id, now_unix).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn issue_turn(&self) -> Result<TurnConfig> {
+        let auth = self.owner_header(0, 1)?;
+        let res = self
+            .transport
+            .call(HttpRequest {
+                method: "POST",
+                path: "/v1/turn".into(),
+                headers: vec![("nemo-owner".into(), auth)],
+                body: vec![],
+            })
+            .await?;
+        let m = expect_map(check_body(&res)?)?;
+        Ok(TurnConfig {
+            url: cbor::expect_text(cbor::map_get(&m, 0)?)?.to_owned(),
+            username: cbor::expect_text(cbor::map_get(&m, 1)?)?.to_owned(),
+            credential: cbor::expect_text(cbor::map_get(&m, 2)?)?.to_owned(),
+            bind: std::env::var("NEMO_ICE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into()),
+        })
     }
 
     pub async fn send_to(
@@ -534,6 +663,13 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn post_envelope(&self, outer: &OuterEnvelope) -> Result<EnqueueResult> {
+        if self.privacy == PrivacyMode::Private {
+            let delay = std::time::Duration::from_millis(private_send_delay_ms());
+            tokio::time::sleep(delay).await;
+        }
+        if self.privacy == PrivacyMode::High {
+            return Err(CoreError::MaximumNotShipped);
+        }
         let auth = self.owner_header(0, 1)?;
         let res = self
             .transport
@@ -1064,6 +1200,23 @@ impl HomeTransport for HttpHome {
             .map_err(|e| CoreError::Transport(e.to_string()))?
             .to_vec();
         Ok(HttpResponse { status, body })
+    }
+}
+
+fn privacy_to_u64(mode: PrivacyMode) -> u64 {
+    match mode {
+        PrivacyMode::Normal => 0,
+        PrivacyMode::Private => 1,
+        PrivacyMode::High => 2,
+    }
+}
+
+fn privacy_from_u64(v: u64) -> Result<PrivacyMode> {
+    match v {
+        0 => Ok(PrivacyMode::Normal),
+        1 => Ok(PrivacyMode::Private),
+        2 => Ok(PrivacyMode::High),
+        _ => Err(CoreError::VaultCorrupt),
     }
 }
 

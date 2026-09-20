@@ -1,5 +1,6 @@
 package org.nemo
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -57,6 +58,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
@@ -75,6 +77,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -89,6 +93,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,9 +107,19 @@ private const val CANNOT_RECOVER =
 
 expect fun pickLocalFile(): String?
 
+@Composable
+expect fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit
+
 expect fun defaultHomeUrl(): String
 
 expect fun copyToClipboard(text: String)
+
+expect fun startCallAudio(client: NemoClient)
+
+expect fun stopCallAudio()
+
+@Composable
+expect fun rememberEnsureMic(onReady: () -> Unit): () -> Unit
 
 private enum class Phase { Locked, Create, Mnemonic, Home }
 
@@ -141,6 +159,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var homeUrl by remember { mutableStateOf(defaultHomeUrl()) }
     var registered by remember { mutableStateOf(false) }
     var shareUri by remember { mutableStateOf("") }
+    var privacyPrivate by remember { mutableStateOf(false) }
     var cardPaste by remember { mutableStateOf("") }
     var nickname by remember { mutableStateOf("") }
     var groupName by remember { mutableStateOf("") }
@@ -291,6 +310,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
                                 withContext(Dispatchers.IO) { reloadRoster(c) }
                                 applyIncoming(messages, withContext(Dispatchers.IO) { c.inbox() })
+                                privacyPrivate = withContext(Dispatchers.IO) { c.privacyMode() } == "private"
                                 registered = true
                                 phase = Phase.Home
                             }
@@ -330,11 +350,25 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                 }
                 Phase.Home -> {
                     val c = client
+                    val pickFile = rememberPickFile { path ->
+                        val chat = selected ?: return@rememberPickFile
+                        attachFilePath(c, chat, path, messages, outgoing, snackbar, runIo = { runIo(it) })
+                    }
+                    var micAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+                    val requestMic = rememberEnsureMic { micAction?.invoke() }
                     BoxWithConstraints(Modifier.fillMaxSize()) {
                         val split = maxWidth >= 720.dp
                         val chat = selected
                         when {
-                            showSettings -> SettingsScreen(
+                            showSettings -> {
+                                LaunchedEffect(Unit) {
+                                    runIo {
+                                        shareUri = withContext(Dispatchers.IO) {
+                                            c?.mintShareUri().orEmpty()
+                                        }
+                                    }
+                                }
+                                SettingsScreen(
                                 fingerprint = fingerprint,
                                 identityHex = identityHex,
                                 homeUrl = homeUrl,
@@ -394,7 +428,17 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         markOutgoing(row)
                                     }
                                 },
+                                privacyPrivate = privacyPrivate,
+                                onPrivacyPrivate = { enabled ->
+                                    runIo {
+                                        withContext(Dispatchers.IO) {
+                                            c?.setPrivacyMode(if (enabled) "private" else "normal")
+                                        }
+                                        privacyPrivate = enabled
+                                    }
+                                },
                             )
+                            }
                             split -> Row(Modifier.fillMaxSize()) {
                                 ChatListPane(
                                     label = label,
@@ -429,28 +473,37 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             chatMenu = chatMenu,
                                             onChatMenu = { chatMenu = it },
                                             onSend = { sendChat(c, chat, draft, messages, outgoing, runIo = { runIo(it) }) { draft = "" } },
-                                            onAttach = { attachFile(c, chat, messages, outgoing, snackbar, runIo = { runIo(it) }) },
+                                            onAttach = { pickFile() },
                                             onCall = {
-                                                runIo {
-                                                    val row = withContext(Dispatchers.IO) {
-                                                        c?.startCall(chat.id)
-                                                    } ?: return@runIo
-                                                    messages.add(row)
-                                                    markOutgoing(row)
+                                                micAction = {
+                                                    runIo {
+                                                        val row = withContext(Dispatchers.IO) {
+                                                            c?.startCall(chat.id)
+                                                        } ?: return@runIo
+                                                        messages.add(row)
+                                                        markOutgoing(row)
+                                                        c?.let { startCallAudio(it) }
+                                                    }
                                                 }
+                                                requestMic()
                                             },
                                             onAnswer = {
-                                                runIo {
-                                                    val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                                        ?: return@runIo
-                                                    val row = withContext(Dispatchers.IO) {
-                                                        c?.answerCall(id)
-                                                    } ?: return@runIo
-                                                    messages.add(row)
+                                                micAction = {
+                                                    runIo {
+                                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                            ?: return@runIo
+                                                        val row = withContext(Dispatchers.IO) {
+                                                            c?.answerCall(id)
+                                                        } ?: return@runIo
+                                                        messages.add(row)
+                                                        c?.let { startCallAudio(it) }
+                                                    }
                                                 }
+                                                requestMic()
                                             },
                                             onHangup = {
                                                 runIo {
+                                                    stopCallAudio()
                                                     val row = withContext(Dispatchers.IO) { c?.endCall() }
                                                         ?: return@runIo
                                                     messages.add(row)
@@ -490,28 +543,37 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 chatMenu = chatMenu,
                                 onChatMenu = { chatMenu = it },
                                 onSend = { sendChat(c, chat, draft, messages, outgoing, runIo = { runIo(it) }) { draft = "" } },
-                                onAttach = { attachFile(c, chat, messages, outgoing, snackbar, runIo = { runIo(it) }) },
+                                onAttach = { pickFile() },
                                 onCall = {
-                                    runIo {
-                                        val row = withContext(Dispatchers.IO) {
-                                            c?.startCall(chat.id)
-                                        } ?: return@runIo
-                                        messages.add(row)
-                                        markOutgoing(row)
+                                    micAction = {
+                                        runIo {
+                                            val row = withContext(Dispatchers.IO) {
+                                                c?.startCall(chat.id)
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                            markOutgoing(row)
+                                            c?.let { startCallAudio(it) }
+                                        }
                                     }
+                                    requestMic()
                                 },
                                 onAnswer = {
-                                    runIo {
-                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                            ?: return@runIo
-                                        val row = withContext(Dispatchers.IO) {
-                                            c?.answerCall(id)
-                                        } ?: return@runIo
-                                        messages.add(row)
+                                    micAction = {
+                                        runIo {
+                                            val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                ?: return@runIo
+                                            val row = withContext(Dispatchers.IO) {
+                                                c?.answerCall(id)
+                                            } ?: return@runIo
+                                            messages.add(row)
+                                            c?.let { startCallAudio(it) }
+                                        }
                                     }
+                                    requestMic()
                                 },
                                 onHangup = {
                                     runIo {
+                                        stopCallAudio()
                                         val row = withContext(Dispatchers.IO) { c?.endCall() }
                                             ?: return@runIo
                                         messages.add(row)
@@ -673,19 +735,15 @@ private fun sendChat(
     }
 }
 
-private fun attachFile(
+private fun attachFilePath(
     client: NemoClient?,
     chat: ChatTarget,
+    path: String,
     messages: MutableList<DisplayRow>,
     outgoing: MutableMap<String, Boolean>,
     snackbar: SnackbarHostState,
     runIo: (suspend () -> Unit) -> Unit,
 ) {
-    val path = pickLocalFile()
-    if (path == null) {
-        runIo { snackbar.showSnackbar("File picker is not available on this device yet") }
-        return
-    }
     runIo {
         val f = File(path)
         if (!f.isFile) throw IllegalArgumentException("File not found")
@@ -698,6 +756,7 @@ private fun attachFile(
         } ?: return@runIo
         messages.add(row)
         outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
+        snackbar.showSnackbar("Sent ${f.name}")
     }
 }
 
@@ -1057,6 +1116,8 @@ private fun SettingsScreen(
     onAdmit: () -> Unit,
     onInviteGroup: () -> Unit,
     onDisappear: () -> Unit,
+    privacyPrivate: Boolean,
+    onPrivacyPrivate: (Boolean) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -1100,11 +1161,34 @@ private fun SettingsScreen(
                 }
             }
             item {
+                Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("Private mode")
+                        Text(
+                            "Batch and jitter client→home envelopes. Envelope bytes stay the same.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = privacyPrivate, onCheckedChange = onPrivacyPrivate)
+                }
+            }
+            item {
                 Text("Share contact", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Button(enabled = !busy, onClick = onShare, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Copy my contact card")
+                }
+                shareCardBytes(shareUri)?.let { bytes ->
+                    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                        ContactQr(bytes, Modifier.padding(top = 12.dp).size(200.dp))
+                    }
                 }
                 if (shareUri.isNotEmpty()) {
                     SelectionContainer {
@@ -1227,6 +1311,7 @@ private fun previewLine(row: DisplayRow): String = when {
     row.kind == "call_invite" -> "Incoming call"
     row.kind == "call_answer" -> "Call answered"
     row.kind == "call_end" -> "Call ended"
+    row.kind == "lost" -> "Messages lost"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
     else -> row.text
 }
@@ -1239,6 +1324,7 @@ private fun bubbleText(row: DisplayRow): String = when {
     row.kind == "call_invite" -> "Incoming call"
     row.kind == "call_answer" -> "Answered"
     row.kind == "call_end" -> "Call ended"
+    row.kind == "lost" -> "Messages lost"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
     else -> row.text
 }
@@ -1254,6 +1340,9 @@ private fun formatTime(sentAt: ULong): String {
 
 private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {
     for (row in rows) {
+        if (row.kind == "call_end") {
+            stopCallAudio()
+        }
         if (row.kind == "deleted" || row.kind == "expired") {
             val idx = messages.indexOfFirst {
                 it.convId == row.convId && it.convSeq == row.target && it.kind != "reaction"
@@ -1265,6 +1354,52 @@ private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayR
         }
         if (messages.none { it.convId == row.convId && it.convSeq == row.convSeq && it.kind == row.kind }) {
             messages.add(row)
+        }
+    }
+}
+
+private fun shareCardBytes(uri: String): ByteArray? {
+    if (!uri.startsWith("nemo:1:")) return null
+    val hex = uri.removePrefix("nemo:1:").substringBefore('#')
+    if (hex.length < 2 || hex.length % 2 != 0) return null
+    return try {
+        hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+@Composable
+private fun ContactQr(bytes: ByteArray, modifier: Modifier = Modifier) {
+    val matrix = remember(bytes) {
+        val hints = mapOf(
+            EncodeHintType.CHARACTER_SET to "ISO-8859-1",
+            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+            EncodeHintType.MARGIN to 1,
+        )
+        QRCodeWriter().encode(
+            String(bytes, Charsets.ISO_8859_1),
+            BarcodeFormat.QR_CODE,
+            0,
+            0,
+            hints,
+        )
+    }
+    Canvas(modifier) {
+        val n = matrix.width
+        if (n == 0) return@Canvas
+        val cell = size.minDimension / n
+        drawRect(Color.White)
+        for (y in 0 until n) {
+            for (x in 0 until n) {
+                if (matrix.get(x, y)) {
+                    drawRect(
+                        color = Color.Black,
+                        topLeft = Offset(x * cell, y * cell),
+                        size = Size(cell, cell),
+                    )
+                }
+            }
         }
     }
 }

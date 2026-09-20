@@ -13,8 +13,8 @@ use rand::RngCore;
 use rusqlite::{params, Connection};
 
 use crate::error::{CoreError, Result};
-use crate::group::Group;
-use crate::home::HomeState;
+use crate::group::{Group, PendingJoin};
+use crate::home::{HomeState, HostAccept};
 use crate::identity::Installation;
 
 pub const KDF_VERSION: u64 = 1;
@@ -32,6 +32,8 @@ const MLS_KEY: &str = "mls_storage";
 const GROUPS_KEY: &str = "groups";
 const HOME_KEY: &str = "home";
 const DISPLAY_KEY: &str = "display";
+const PENDING_KEY: &str = "pending_joins";
+const INVITES_KEY: &str = "minted_invites";
 
 pub struct Vault {
     dir: PathBuf,
@@ -221,6 +223,74 @@ impl Vault {
             disappear.insert(k, secs);
         }
         Ok((nicknames, disappear))
+    }
+
+    pub fn save_pending(
+        &self,
+        entries: &[([u8; nemo_wire::ids::KEY_LEN], &PendingJoin, &HostAccept)],
+    ) -> Result<()> {
+        let mut items = Vec::new();
+        for (gid, pending, host) in entries {
+            items.push(Value::Array(vec![
+                Value::Bytes(gid.to_vec()),
+                Value::Bytes(pending.encode()?),
+                Value::Bytes(host.encode()),
+            ]));
+        }
+        self.put(PENDING_KEY, &cbor::encode(&Value::Array(items)))
+    }
+
+    pub fn load_pending(
+        &self,
+        install: &Installation,
+    ) -> Result<Vec<([u8; nemo_wire::ids::KEY_LEN], PendingJoin, HostAccept)>> {
+        let Some(bytes) = self.get_opt(PENDING_KEY)? else {
+            return Ok(Vec::new());
+        };
+        let Value::Array(items) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 3 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            let gid =
+                ids::copy_fixed(cbor::expect_bytes(&row[0]).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?;
+            let pending = PendingJoin::decode(
+                install.mls_provider(),
+                cbor::expect_bytes(&row[1]).map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            let host = HostAccept::decode(
+                cbor::expect_bytes(&row[2]).map_err(|_| CoreError::VaultCorrupt)?,
+            )?;
+            out.push((gid, pending, host));
+        }
+        Ok(out)
+    }
+
+    pub fn save_invites(&self, invites: &[nemo_wire::GroupInvite]) -> Result<()> {
+        let items: Vec<_> = invites.iter().map(|i| Value::Bytes(i.encode())).collect();
+        self.put(INVITES_KEY, &cbor::encode(&Value::Array(items)))
+    }
+
+    pub fn load_invites(&self) -> Result<Vec<nemo_wire::GroupInvite>> {
+        let Some(bytes) = self.get_opt(INVITES_KEY)? else {
+            return Ok(Vec::new());
+        };
+        let Value::Array(items) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let raw = cbor::expect_bytes(&item).map_err(|_| CoreError::VaultCorrupt)?;
+            out.push(nemo_wire::GroupInvite::decode(raw)?);
+        }
+        Ok(out)
     }
 
     fn put(&self, k: &str, v: &[u8]) -> Result<()> {

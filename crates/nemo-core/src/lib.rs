@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod attachment;
+mod audio;
 pub mod bundle;
 pub mod call;
 pub mod discovery;
@@ -37,4 +38,9 @@ pub use identity::{
     PREKEY_STOCK_TARGET,
 };
 pub use mailbox::messages_lost;
+pub use privacy::{
+    hop_for, reject_maximum, EnvelopeSink, Hop, MemSink, PrivacyMode, PrivacyTransport,
+    WakeCoalesce, PRIVATE_BATCH_MAX_MS, PRIVATE_EXTRA_MAX_MS, PRIVATE_EXTRA_MIN_MS,
+    WAKE_COALESCE_MS,
+};
 pub use vault::Vault;

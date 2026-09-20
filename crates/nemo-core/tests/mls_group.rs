@@ -63,6 +63,21 @@ fn refuse_send_if_update_older_than_72h() {
 }
 
 #[test]
+fn seven_day_stale_commits_update_before_app() {
+    let (alice, _bob, mut alice_group, _bob_group) = two_member_group();
+    alice_group.set_last_own_update_for_test(
+        SystemTime::now() - nemo_core::UPDATE_INTERVAL - Duration::from_secs(1),
+    );
+    let handshake = alice_group
+        .maybe_self_update(alice.mls_provider(), SystemTime::now())
+        .unwrap();
+    assert!(handshake.is_some());
+    alice_group
+        .encrypt(alice.mls_provider(), b"after weekly update")
+        .unwrap();
+}
+
+#[test]
 fn remove_bundle_ejects_named_credential() {
     let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
     let bob_id = bob_group.credential_id();
@@ -95,10 +110,7 @@ fn vault_reopen_keeps_mls_epoch() {
 
     let mut n = [0u8; 8];
     rand::rngs::OsRng.fill_bytes(&mut n);
-    let dir = std::env::temp_dir().join(format!(
-        "nemo-mls-vault-{}",
-        nemo_wire::ids::to_hex(&n)
-    ));
+    let dir = std::env::temp_dir().join(format!("nemo-mls-vault-{}", nemo_wire::ids::to_hex(&n)));
     std::fs::create_dir_all(&dir).unwrap();
     let vault = Vault::create(&dir, "correct horse", &alice).unwrap();
     vault.save_groups(&alice, &[alice_group]).unwrap();
@@ -112,16 +124,12 @@ fn vault_reopen_keeps_mls_epoch() {
 
     let reply = encode_text(2, 1_700_000_001, "after reload").unwrap();
     let reply_ct = bob_group.encrypt(bob.mls_provider(), &reply).unwrap();
-    let reply_pt = restored
-        .decrypt(loaded.mls_provider(), &reply_ct)
-        .unwrap();
+    let reply_pt = restored.decrypt(loaded.mls_provider(), &reply_ct).unwrap();
     assert_eq!(decode_text(&reply_pt).unwrap(), (2, "after reload".into()));
 
     let ping = encode_text(3, 1_700_000_002, "from restored").unwrap();
     let ping_ct = restored.encrypt(loaded.mls_provider(), &ping).unwrap();
-    let ping_pt = bob_group
-        .decrypt(bob.mls_provider(), &ping_ct)
-        .unwrap();
+    let ping_pt = bob_group.decrypt(bob.mls_provider(), &ping_ct).unwrap();
     assert_eq!(decode_text(&ping_pt).unwrap(), (3, "from restored".into()));
     let _ = std::fs::remove_dir_all(&dir);
 }

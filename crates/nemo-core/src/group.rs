@@ -13,8 +13,8 @@ use std::time::{Duration, SystemTime};
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::hostframe::RemoveBundle;
-use nemo_wire::ids::{copy_fixed, KEY_LEN};
-use nemo_wire::{GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_MIN};
+use nemo_wire::ids::{copy_fixed, IdentityId, KEY_LEN};
+use nemo_wire::{identity_id, GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_MIN};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -76,6 +76,44 @@ impl Group {
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    /// MLS BasicCredential identities hashed to `identity_id` (ADR-0004 / 0018).
+    pub fn member_identity_ids(&self) -> Vec<IdentityId> {
+        let mut ids: Vec<_> = self
+            .mls
+            .members()
+            .filter_map(|m| identity_pk_from_credential(&m.credential).ok())
+            .map(|pk| identity_id(&pk))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Invitee identity public key from a KeyPackage (not the group signing key).
+    pub fn key_package_identity_pk(
+        provider: &MlsProvider,
+        key_package_bytes: &[u8],
+    ) -> Result<[u8; KEY_LEN]> {
+        let kp = KeyPackageIn::tls_deserialize_exact(key_package_bytes)
+            .map_err(mls_err)?
+            .validate(provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(mls_err)?;
+        identity_pk_from_credential(kp.leaf_node().credential())
+    }
+
+    /// Commit an Update when the last own Update is at least 7 days old.
+    pub fn maybe_self_update(
+        &mut self,
+        provider: &MlsProvider,
+        now: SystemTime,
+    ) -> Result<Option<Vec<u8>>> {
+        if self.needs_scheduled_update(now) {
+            Ok(Some(self.self_update(provider)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn mls_group_id(&self) -> Vec<u8> {
@@ -634,6 +672,56 @@ impl PendingJoin {
         self.group_signing.verifying_key().to_bytes()
     }
 
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        Ok(cbor::encode(&Value::Map(vec![
+            (0, Value::Uint(1)),
+            (1, Value::Bytes(self.credential_id.to_vec())),
+            (2, Value::Bytes(self.group_signing.to_bytes().to_vec())),
+            (3, Value::Bytes(self.key_package.clone())),
+            (
+                4,
+                Value::Bytes(self.mls_signer.tls_serialize_detached().map_err(mls_err)?),
+            ),
+        ])))
+    }
+
+    pub fn decode(provider: &MlsProvider, bytes: &[u8]) -> Result<Self> {
+        let Value::Map(m) = cbor::decode(bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if version != 1 {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let credential_id = copy_fixed(
+            cbor::expect_bytes(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?,
+        )
+        .map_err(|_| CoreError::VaultCorrupt)?;
+        let seed = copy_fixed(
+            cbor::expect_bytes(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?,
+        )
+        .map_err(|_| CoreError::VaultCorrupt)?;
+        let group_signing = SigningKey::from_bytes(&seed);
+        let key_package =
+            cbor::expect_bytes(cbor::map_get(&m, 3).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_vec();
+        let signer_bytes =
+            cbor::expect_bytes(cbor::map_get(&m, 4).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?;
+        let mls_signer = SignatureKeyPair::tls_deserialize_exact(signer_bytes).map_err(mls_err)?;
+        mls_signer.store(provider.storage()).map_err(mls_err)?;
+        Ok(Self {
+            credential_id,
+            mls_signer,
+            group_signing,
+            key_package,
+        })
+    }
+
     pub fn is_welcome(bytes: &[u8]) -> bool {
         matches!(
             decode_mls(bytes).map(|m| m.extract()),
@@ -713,6 +801,12 @@ fn leaf_extensions(
         ),
     ])
     .map_err(mls_err)
+}
+
+fn identity_pk_from_credential(cred: &Credential) -> Result<[u8; KEY_LEN]> {
+    let basic = BasicCredential::try_from(cred.clone())
+        .map_err(|_| CoreError::Mls("basic credential".into()))?;
+    copy_fixed(basic.identity()).map_err(|_| CoreError::Mls("identity must be 32 bytes".into()))
 }
 
 fn credential_with_key(identity_pk: [u8; KEY_LEN], signer: &SignatureKeyPair) -> CredentialWithKey {

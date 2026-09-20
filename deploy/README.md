@@ -26,7 +26,7 @@ Optional 1:1 media relay:
 docker compose -f deploy/compose.yml --profile calls up --build
 ```
 
-TURN credentials `nemo:nemo` and ports `3478` / `49152–49200` are a **reference** default, not identity. Point the desktop client at them with `NEMO_TURN_URL` / `NEMO_TURN_USER` / `NEMO_TURN_PASS` if you enable the profile.
+TURN credentials `nemo:nemo` and ports `3478` / `49152–49200` are a **reference** default, not identity. The product path is `POST /v1/turn` (ADR-0035): set the same `NEMO_TURN_SECRET` on `nemo-server` and coturn `--use-auth-secret`. Static `NEMO_TURN_USER` / `NEMO_TURN_PASS` remain a fallback when that route is unreachable.
 
 ## Postgres password
 
@@ -50,6 +50,18 @@ cd apps/compose
 ```
 
 `./gradlew run` builds `nemo-ffi` first and sets `jna.library.path` to `target/debug`. Create two vaults (two process windows, or two data directories), set **Home server** to `https://localhost:8443`, and Register. Local cargo without Caddy still uses `http://127.0.0.1:8787`.
+
+### Windows JVM run
+
+CI builds `nemo_ffi.dll` (`windows-ffi` job). On a Windows machine:
+
+```text
+cargo build -p nemo-ffi
+cd apps/compose
+gradlew.bat run
+```
+
+The shell looks for `target/debug/nemo_ffi.dll` on `jna.library.path`. A `.msi` installer is optional; JVM run is the v1 path (ADR-0026 / I11).
 
 Optional native installer (needs a JDK with `jpackage`, and still needs `libnemo_ffi.so` on `jna.library.path`):
 

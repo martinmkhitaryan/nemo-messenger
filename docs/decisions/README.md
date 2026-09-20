@@ -13,7 +13,7 @@ Each decision lives in its own file and is never edited to say something differe
 
 ## Decision log
 
-IDs match reading order (foundations first). New records take the next free number (0034 is next) and are listed where a reader should encounter the decision.
+IDs match reading order (foundations first). New records take the next free number (0036 is next) and are listed where a reader should encounter the decision.
 
 ### Foundations
 
@@ -88,10 +88,11 @@ IDs match reading order (foundations first). New records take the next free numb
 | ID | Date | Title | Status |
 | --- | --- | --- | --- |
 | [ADR-0033](0033-local-http-api-and-postgres-schema.md) | 2026-09-20 | Local HTTP API and PostgreSQL schema | Accepted |
+| [ADR-0035](0035-ephemeral-turn-credentials.md) | 2026-09-20 | Ephemeral TURN credentials from the home server | Accepted |
 
 ## Adding a decision
 
-1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0035 is next).
+1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0036 is next).
 2. Fill in every section. "Alternatives considered" and "Cons" are mandatory; a decision without a stated cost has not been thought through.
 3. Add a row to the log above under the fitting heading.
 4. Update the affected sections of `../../README.md` so the specification and the record agree, and add the record to the summary table in README section 0.

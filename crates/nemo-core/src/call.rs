@@ -26,6 +26,7 @@ use webrtc::peer_connection::{
 };
 
 use crate::app::{random_call_id, reject_direct_ice, CALL_ID_LEN};
+use crate::audio::AudioEngine;
 use crate::error::{CoreError, Result};
 
 const OPUS_PT: u8 = 111;
@@ -67,6 +68,7 @@ struct CallEvents {
     connected_done: AtomicBool,
     received: AtomicU64,
     closed: AtomicBool,
+    audio: Arc<AudioEngine>,
 }
 
 #[derive(Clone)]
@@ -122,11 +124,13 @@ impl PeerConnectionEventHandler for Handler {
         let events = Arc::clone(&self.events);
         tokio::spawn(async move {
             while let Some(ev) = track.poll().await {
-                if matches!(ev, TrackRemoteEvent::OnRtpPacket(_)) {
-                    events.received.fetch_add(1, Ordering::Relaxed);
-                }
-                if matches!(ev, TrackRemoteEvent::OnEnded) {
-                    break;
+                match ev {
+                    TrackRemoteEvent::OnRtpPacket(pkt) => {
+                        events.received.fetch_add(1, Ordering::Relaxed);
+                        events.audio.decode_rtp(&pkt.payload);
+                    }
+                    TrackRemoteEvent::OnEnded => break,
+                    _ => {}
                 }
             }
         });
@@ -141,6 +145,7 @@ pub struct Call {
     ssrc: u32,
     call_id: [u8; CALL_ID_LEN],
     local: LocalSignal,
+    audio: Arc<AudioEngine>,
 }
 
 impl Call {
@@ -172,6 +177,7 @@ impl Call {
             }])
             .with_ice_transport_policy(RTCIceTransportPolicy::Relay)
             .build();
+        let audio = AudioEngine::new()?;
         let events = Arc::new(CallEvents {
             ice: std::sync::Mutex::new(Vec::new()),
             forbidden: AtomicBool::new(false),
@@ -179,6 +185,7 @@ impl Call {
             connected_done: AtomicBool::new(false),
             received: AtomicU64::new(0),
             closed: AtomicBool::new(false),
+            audio: Arc::clone(&audio),
         });
         let handler = Arc::new(Handler {
             events: Arc::clone(&events),
@@ -278,6 +285,7 @@ impl Call {
                 dtls_fp,
                 ice,
             },
+            audio,
         })
     }
 
@@ -342,8 +350,47 @@ impl Call {
         Ok(())
     }
 
+    /// Start desktop cpal capture/playback when a device exists.
+    pub fn start_audio_io(&self) -> bool {
+        self.audio.start_local_io()
+    }
+
+    pub fn push_capture_pcm(&self, samples: &[i16], sample_rate: u32, channels: u32) {
+        self.audio.push_capture(samples, sample_rate, channels);
+    }
+
+    pub fn pull_playback_pcm(&self, max_samples: u32) -> Vec<i16> {
+        self.audio.pull_playback(max_samples as usize)
+    }
+
+    /// Encode mic PCM (or zeros) to Opus and write RTP. Used when a capture path is live.
+    pub async fn send_capture_frames(&self, n: usize) -> Result<()> {
+        for _ in 0..n {
+            if self.events.closed.load(Ordering::SeqCst) {
+                break;
+            }
+            let pcm = self.audio.take_capture_frame();
+            let payload = match self.audio.encode_frame(&pcm) {
+                Ok(bytes) if !bytes.is_empty() => Bytes::from(bytes),
+                _ => Bytes::from_static(OPUS_SILENCE),
+            };
+            let sample = Sample {
+                data: payload,
+                duration: Duration::from_millis(20),
+                ..Default::default()
+            };
+            self.track
+                .write_sample(self.ssrc, OPUS_PT, &sample, &[])
+                .await
+                .map_err(call_err)?;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok(())
+    }
+
     pub async fn close(&self) -> Result<()> {
         self.events.closed.store(true, Ordering::SeqCst);
+        self.audio.stop();
         self.pc.close().await.map_err(call_err)
     }
 }

@@ -48,6 +48,8 @@ pub enum CoreError {
     CoverNotShipped,
     #[error("contact is revoked")]
     Revoked,
+    #[error("bound invite requires the inviter and a valid invitee proof")]
+    BoundInvite,
     #[error("home-server binding seq went backwards")]
     BindingDowngrade,
     #[error("home server denied the request")]

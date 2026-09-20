@@ -15,6 +15,8 @@ use crate::error::{Result, ServerError};
 use crate::home::random_token;
 
 pub const STREAM_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Live group file blobs (reserved or uploaded, unexpired). Distinct from the stream cap.
+pub const FILE_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const STREAM_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -96,6 +98,7 @@ pub struct GroupHost {
     pub now: u64,
     pub(crate) groups: HashMap<GroupId, GroupState>,
     pub(crate) files: HashMap<[u8; KEY_LEN], FileSlot>,
+    pub file_budget: u64,
 }
 
 impl GroupHost {
@@ -104,6 +107,7 @@ impl GroupHost {
             now: 1_700_000_000,
             groups: HashMap::new(),
             files: HashMap::new(),
+            file_budget: FILE_BUDGET_BYTES,
         }
     }
 
@@ -369,6 +373,10 @@ impl GroupHost {
         if self.files.contains_key(&reserve.fetch_token) {
             return Err(ServerError::Denied);
         }
+        let size = reserve.size_bucket.inner_len() as u64;
+        if self.live_file_bytes(group_id).saturating_add(size) > self.file_budget {
+            return Err(ServerError::Denied);
+        }
         let expires_at = match reserve.ttl_bucket.ttl_secs() {
             Some(s) => self.now.saturating_add(s),
             None => self.now.saturating_add(STREAM_MAX_AGE_SECS),
@@ -385,6 +393,14 @@ impl GroupHost {
             },
         );
         Ok(out)
+    }
+
+    fn live_file_bytes(&self, group_id: GroupId) -> u64 {
+        self.files
+            .values()
+            .filter(|s| s.group_id == group_id && self.now < s.expires_at)
+            .map(|s| s.size as u64)
+            .sum()
     }
 
     fn gc_pending(&mut self, group_id: GroupId) {

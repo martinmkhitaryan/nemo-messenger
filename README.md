@@ -48,6 +48,7 @@ The choices below are binding for the current design. Each one has a full record
 | Federation hop | Server Ed25519 + HPKE X25519; TLS 1.3 with pinned keys; not Web PKI. | [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md) |
 | HTTP and schema | Client-to-home `/v1` on localhost HTTP; Caddy terminates TLS; CBOR/octet-stream, never JSON; Postgres DDL from phases 1–5 only. | [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md) |
 | Local vault | App passphrase (min 8); Argon2id; SQLCipher in `nemo-core`; revocation mnemonic never stored; lost passphrase is a lost identity. | [ADR-0034](docs/decisions/0034-local-vault-passphrase.md) |
+| TURN credentials | Per-call HMAC-SHA1 REST creds from `POST /v1/turn`; username is not identity; no credentials table. | [ADR-0035](docs/decisions/0035-ephemeral-turn-credentials.md) |
 
 ## 0.1 Non-goals
 
@@ -2750,7 +2751,7 @@ call_end
 
 WebRTC with DTLS-SRTP, **always relayed through TURN**. There is no peer-to-peer ICE. Clients MUST set `iceTransportPolicy=relay` and MUST NOT gather host or srflx candidates. The DTLS fingerprints are exchanged inside `call_invite` / `call_answer`, which are already authenticated by the Double Ratchet, so the media path inherits contact verification. No separate short authentication string is needed; one may be derived and shown as an option.
 
-Signaling and fingerprint binding live in the Rust core. The media engine (capture, AEC/AGC/NS, RTP) may live in the platform shell (ADR-0028, amending ADR-0026): Android may use `org.webrtc`; desktop may use webrtc-rs plus a WebRTC audio-processing module. webrtc-rs without AEC is not sufficient.
+Signaling and fingerprint binding live in the Rust core. Capture and AEC/AGC/NS may live in the platform shell (ADR-0028, amending ADR-0026): Android uses `org.webrtc` `JavaAudioDeviceModule`; desktop Compose uses `javax.sound.sampled` and feeds PCM into `webrtc-audio-processing` plus Opus in `nemo-core`. webrtc-rs without AEC is not sufficient.
 
 ## 64.3 Media transport
 
@@ -2761,7 +2762,7 @@ TURN     relays encrypted RTP; sees IP addresses and traffic shape, not content
 SFU      forwards SFrame ciphertext for group calls; sees stream metadata, not content
 ```
 
-* TURN credentials are ephemeral and issued per call by the caller's home server, not tied to an identity.
+* TURN credentials are ephemeral and issued per call by the caller's home server (`POST /v1/turn`, [ADR-0035](docs/decisions/0035-ephemeral-turn-credentials.md)), not tied to an identity.
 * Always-relay is mandatory in every call-capable mode: media never goes peer to peer, so the peer never learns the user's IP.
 * Discovery advertises TURN and SFU endpoints as server capabilities.
 

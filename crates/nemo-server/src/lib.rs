@@ -10,6 +10,7 @@ pub mod http;
 pub mod pg;
 pub mod s2s;
 mod tls;
+pub mod turn;
 
 pub use error::{Result, ServerError};
 pub use federation::{apply_sign_rotate, pin, pin_each_other, pump, refuse, Enqueue, PumpStats};

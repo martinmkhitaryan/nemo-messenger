@@ -721,3 +721,61 @@ async fn wakeup_sends_empty_binary_on_ingest() {
     assert_eq!(msg, WsMsg::Binary(Vec::new().into()));
     let _ = ws.close(None).await;
 }
+
+#[tokio::test]
+async fn turn_creds_are_ephemeral_and_not_identity() {
+    let state = AppState::new();
+    let home = state.home.lock().await;
+    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let card = signed_card(home.server_id(), home.hpke_public(), &sk);
+    let id = identity_id(&sk.verifying_key().to_bytes());
+    drop(home);
+    let app = router(state);
+    let (status, _, _) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/register")
+            .body(Body::from(card.encode().unwrap()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let auth = owner_auth(&sk, id, 0, 1);
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/turn")
+            .header("nemo-owner", owner_header(&auth))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let Value::Map(m) = cbor::decode(&body).unwrap() else {
+        panic!("turn map");
+    };
+    let user = cbor::expect_text(cbor::map_get(&m, 1).unwrap()).unwrap();
+    let pass = cbor::expect_text(cbor::map_get(&m, 2).unwrap()).unwrap();
+    assert!(!user.contains(&ids::to_hex(&id)));
+    assert!(user.contains(':'));
+    assert!(!pass.is_empty());
+    let auth2 = owner_auth(&sk, id, 0, 1);
+    let (status, _, body2) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/turn")
+            .header("nemo-owner", owner_header(&auth2))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let Value::Map(m2) = cbor::decode(&body2).unwrap() else {
+        panic!("turn map 2");
+    };
+    let user2 = cbor::expect_text(cbor::map_get(&m2, 1).unwrap()).unwrap();
+    assert_ne!(user, user2);
+}

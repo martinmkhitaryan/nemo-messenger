@@ -786,6 +786,16 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -837,9 +847,17 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_list_groups(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_react(
 ): Short
@@ -860,6 +878,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_send_text(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_start_call(
 ): Short
@@ -968,10 +988,18 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(`ptr`: Pointer,uniffi_out
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_list_groups(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`identityIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_pull_playback_pcm(`ptr`: Pointer,`maxSamples`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(`ptr`: Pointer,`samples`: RustBuffer.ByValue,`sampleRate`: Int,`channels`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_react(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`target`: Long,`emoji`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -992,6 +1020,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Pointer,`peerIdHex`: R
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`seconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(`ptr`: Pointer,`mode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_start_call(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1178,10 +1208,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() != 46878.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite() != 61694.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite() != 996.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri() != 36588.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode() != 38096.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm() != 2636.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm() != 15853.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_react() != 16594.toShort()) {
@@ -1212,6 +1254,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear() != 33112.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode() != 15075.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_start_call() != 26344.toShort()) {
@@ -1373,6 +1418,52 @@ private class JavaLangRefCleanable(
     val cleanable: java.lang.ref.Cleaner.Cleanable
 ) : UniffiCleaner.Cleanable {
     override fun clean() = cleanable.clean()
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterShort: FfiConverter<Short, Short> {
+    override fun lift(value: Short): Short {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Short {
+        return buf.getShort()
+    }
+
+    override fun lower(value: Short): Short {
+        return value
+    }
+
+    override fun allocationSize(value: Short) = 2UL
+
+    override fun write(value: Short, buf: ByteBuffer) {
+        buf.putShort(value)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterUInt: FfiConverter<UInt, Int> {
+    override fun lift(value: Int): UInt {
+        return value.toUInt()
+    }
+
+    override fun read(buf: ByteBuffer): UInt {
+        return lift(buf.getInt())
+    }
+
+    override fun lower(value: UInt): Int {
+        return value.toInt()
+    }
+
+    override fun allocationSize(value: UInt) = 4UL
+
+    override fun write(value: UInt, buf: ByteBuffer) {
+        buf.putInt(value.toInt())
+    }
 }
 
 /**
@@ -1637,9 +1728,20 @@ public interface NemoClientInterface {
     
     fun `listGroups`(): List<GroupRow>
     
+    fun `mintBoundGroupInvite`(`groupIdHex`: kotlin.String, `identityIdHex`: kotlin.String): kotlin.String
+    
     fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String
     
     fun `mintShareUri`(): kotlin.String
+    
+    fun `privacyMode`(): kotlin.String
+    
+    fun `pullPlaybackPcm`(`maxSamples`: kotlin.UInt): List<kotlin.Short>
+    
+    /**
+     * 48 kHz PCM from the Android org.webrtc capture path (or tests).
+     */
+    fun `pushCapturePcm`(`samples`: List<kotlin.Short>, `sampleRate`: kotlin.UInt, `channels`: kotlin.UInt)
     
     fun `react`(`convId`: kotlin.String, `target`: kotlin.ULong, `emoji`: kotlin.String): DisplayRow
     
@@ -1660,6 +1762,8 @@ public interface NemoClientInterface {
     fun `sendText`(`peerIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
     
     fun `setDisappear`(`convId`: kotlin.String, `seconds`: kotlin.ULong): DisplayRow
+    
+    fun `setPrivacyMode`(`mode`: kotlin.String)
     
     fun `startCall`(`peerIdHex`: kotlin.String): DisplayRow
     
@@ -1993,6 +2097,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `mintBoundGroupInvite`(`groupIdHex`: kotlin.String, `identityIdHex`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(
+        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`identityIdHex`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
@@ -2016,6 +2133,47 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     }
     )
     }
+    
+
+    
+    @Throws(FfiException::class)override fun `privacyMode`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(FfiException::class)override fun `pullPlaybackPcm`(`maxSamples`: kotlin.UInt): List<kotlin.Short> {
+            return FfiConverterSequenceShort.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_pull_playback_pcm(
+        it, FfiConverterUInt.lower(`maxSamples`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * 48 kHz PCM from the Android org.webrtc capture path (or tests).
+     */
+    @Throws(FfiException::class)override fun `pushCapturePcm`(`samples`: List<kotlin.Short>, `sampleRate`: kotlin.UInt, `channels`: kotlin.UInt)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(
+        it, FfiConverterSequenceShort.lower(`samples`),FfiConverterUInt.lower(`sampleRate`),FfiConverterUInt.lower(`channels`),_status)
+}
+    }
+    
     
 
     
@@ -2143,6 +2301,18 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     }
     )
     }
+    
+
+    
+    @Throws(FfiException::class)override fun `setPrivacyMode`(`mode`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(
+        it, FfiConverterString.lower(`mode`),_status)
+}
+    }
+    
     
 
     
@@ -2482,6 +2652,34 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
         } else {
             buf.put(1)
             FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceShort: FfiConverterRustBuffer<List<kotlin.Short>> {
+    override fun read(buf: ByteBuffer): List<kotlin.Short> {
+        val len = buf.getInt()
+        return List<kotlin.Short>(len) {
+            FfiConverterShort.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.Short>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterShort.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.Short>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterShort.write(it, buf)
         }
     }
 }

@@ -8,15 +8,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_core::{
-    decode, encode, encode_text, invite_ttl_bucket, mailbox, open_group_file, seal_group_file,
-    AppBody, AppHeader, AppMessage, Call, CoreError, FileMeta, Group, HomeSession, HostAccept,
-    HostGroup, HttpHome, Installation, LocalSignal, PendingJoin, TurnConfig, Vault,
+    decode, encode, encode_text, invite_ttl_bucket, mailbox, messages_lost, open_group_file,
+    seal_group_file, AppBody, AppHeader, AppMessage, Call, CoreError, FileMeta, Group, HomeSession,
+    HostAccept, HostGroup, HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode,
+    TurnConfig, Vault,
 };
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, TtlBucket};
 use nemo_wire::hostframe::AttachmentReserve;
 use nemo_wire::ids::{self, KEY_LEN};
-use nemo_wire::{parse_identity_id, ContactCard, GroupInvite};
+use nemo_wire::{
+    parse_identity_id, verify_bound_invite, ContactCard, GroupInvite, InviteeProof, VerifyingKey,
+};
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 #[uniffi(flat_error)]
@@ -103,6 +106,7 @@ struct Inner {
     next_seq: HashMap<String, u64>,
     groups: Vec<LiveGroup>,
     pending: HashMap<[u8; KEY_LEN], PendingEntry>,
+    minted: HashMap<[u8; KEY_LEN], GroupInvite>,
     disappear: HashMap<String, u64>,
     pending_invites: HashMap<String, PendingInvite>,
     live_call: Option<Arc<Call>>,
@@ -147,8 +151,9 @@ fn lock_err() -> FfiError {
 fn pump_call(call: Arc<Call>) {
     runtime().spawn(async move {
         if call.wait_connected().await.is_ok() {
+            let _ = call.start_audio_io();
             loop {
-                if call.send_silence_frames(5).await.is_err() {
+                if call.send_capture_frames(5).await.is_err() {
                     break;
                 }
             }
@@ -193,6 +198,14 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
             vault.save_home(&session.install, &session.snapshot())?;
             vault.save_groups(&session.install, inner.groups.iter().map(|g| &g.mls))?;
             vault.save_display(&inner.nicknames, &inner.disappear)?;
+            let pending: Vec<_> = inner
+                .pending
+                .iter()
+                .map(|(gid, e)| (*gid, &e.pending, &e.host))
+                .collect();
+            vault.save_pending(&pending)?;
+            let invites: Vec<_> = inner.minted.values().cloned().collect();
+            vault.save_invites(&invites)?;
         }
         Some(ClientState::Local(install)) => {
             vault.save(install)?;
@@ -217,6 +230,7 @@ fn empty_inner(
         next_seq: HashMap::new(),
         groups: Vec::new(),
         pending: HashMap::new(),
+        minted: HashMap::new(),
         disappear: HashMap::new(),
         pending_invites: HashMap::new(),
         live_call: None,
@@ -249,6 +263,82 @@ fn find_group_mut<'a>(
         .ok_or_else(|| FfiError::Core("unknown group".into()))
 }
 
+fn mint_invite(
+    inner: &mut Inner,
+    group_id_hex: String,
+    bind_identity: Option<[u8; KEY_LEN]>,
+) -> Result<String, FfiError> {
+    let Inner {
+        state,
+        groups,
+        minted,
+        ..
+    } = inner;
+    let session = match state {
+        Some(ClientState::Registered(session)) => session,
+        Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+        None => return Err(FfiError::Core("busy".into())),
+    };
+    let bind_pk = match bind_identity {
+        Some(id) => Some(
+            session
+                .contacts
+                .get(&id)
+                .ok_or(CoreError::UnknownContact)?
+                .pin
+                .identity_public_key,
+        ),
+        None => None,
+    };
+    let g = find_group_mut(groups, &group_id_hex)?;
+    let invite = g.mls.sign_invite(
+        g.host.group_id,
+        Group::default_invite_ttl(),
+        bind_pk.as_ref(),
+    )?;
+    block_on(session.store_invite(g.host.group_id, &g.host.cred, &invite))?;
+    if invite.invitee_binding.is_some() {
+        minted.insert(invite.nonce, invite.clone());
+    }
+    Ok(format!(
+        "{GROUP_INVITE_PREFIX}{}",
+        ids::to_hex(&invite.encode())
+    ))
+}
+
+fn flush_mls_update(
+    session: &mut HomeSession<HttpHome>,
+    g: &mut LiveGroup,
+) -> Result<(), FfiError> {
+    if let Some(hs) = g
+        .mls
+        .maybe_self_update(session.install.mls_provider(), SystemTime::now())?
+    {
+        block_on(session.group_append(
+            g.host.group_id,
+            &g.host.cred,
+            MessageType::MlsHandshake,
+            hs,
+        ))?;
+    }
+    Ok(())
+}
+
+fn refresh_group_members(session: &mut HomeSession<HttpHome>, g: &Group) -> Result<(), FfiError> {
+    let ids = g.member_identity_ids();
+    block_on(session.refresh_mls_identities(&ids, now_unix()))?;
+    Ok(())
+}
+
+fn turn_config(inner: &Inner) -> Result<TurnConfig, FfiError> {
+    match inner.state.as_ref() {
+        Some(ClientState::Registered(session)) => {
+            Ok(block_on(session.issue_turn()).unwrap_or_else(|_| TurnConfig::from_env()))
+        }
+        _ => Ok(TurnConfig::from_env()),
+    }
+}
+
 fn join_request_uri(
     group_id: [u8; KEY_LEN],
     pending_id: [u8; KEY_LEN],
@@ -257,8 +347,11 @@ fn join_request_uri(
     cap: [u8; KEY_LEN],
     hpke: [u8; KEY_LEN],
     credential_id: [u8; KEY_LEN],
+    nonce: [u8; KEY_LEN],
+    proof: Option<&InviteeProof>,
+    invitee_binding: Option<[u8; KEY_LEN]>,
 ) -> String {
-    let bytes = cbor::encode(&Value::Map(vec![
+    let mut pairs = vec![
         (0, Value::Bytes(group_id.to_vec())),
         (1, Value::Bytes(pending_id.to_vec())),
         (2, Value::Bytes(key_package.to_vec())),
@@ -266,7 +359,15 @@ fn join_request_uri(
         (4, Value::Bytes(cap.to_vec())),
         (5, Value::Bytes(hpke.to_vec())),
         (6, Value::Bytes(credential_id.to_vec())),
-    ]));
+        (7, Value::Bytes(nonce.to_vec())),
+    ];
+    if let Some(p) = proof {
+        pairs.push((8, Value::Bytes(p.encode())));
+    }
+    if let Some(b) = invitee_binding {
+        pairs.push((9, Value::Bytes(b.to_vec())));
+    }
+    let bytes = cbor::encode(&Value::Map(pairs));
     format!("{JOIN_REQUEST_PREFIX}{}", ids::to_hex(&bytes))
 }
 
@@ -278,6 +379,9 @@ struct JoinRequest {
     cap: [u8; KEY_LEN],
     hpke: [u8; KEY_LEN],
     credential_id: [u8; KEY_LEN],
+    nonce: [u8; KEY_LEN],
+    proof: Option<InviteeProof>,
+    invitee_binding: Option<[u8; KEY_LEN]>,
 }
 
 fn parse_join_request(uri: &str) -> Result<JoinRequest, FfiError> {
@@ -290,6 +394,18 @@ fn parse_join_request(uri: &str) -> Result<JoinRequest, FfiError> {
     let read = |k: u64| -> Result<[u8; KEY_LEN], FfiError> {
         Ok(ids::copy_fixed(cbor::expect_bytes(cbor::map_get(&m, k)?)?)?)
     };
+    let nonce = match cbor::map_get_opt(&m, 7) {
+        Some(v) => ids::copy_fixed(cbor::expect_bytes(v)?)?,
+        None => [0u8; KEY_LEN],
+    };
+    let proof = match cbor::map_get_opt(&m, 8) {
+        Some(v) => Some(InviteeProof::decode(cbor::expect_bytes(v)?)?),
+        None => None,
+    };
+    let invitee_binding = match cbor::map_get_opt(&m, 9) {
+        Some(v) => Some(ids::copy_fixed(cbor::expect_bytes(v)?)?),
+        None => None,
+    };
     Ok(JoinRequest {
         group_id: read(0)?,
         pending_id: read(1)?,
@@ -298,6 +414,9 @@ fn parse_join_request(uri: &str) -> Result<JoinRequest, FfiError> {
         cap: read(4)?,
         hpke: read(5)?,
         credential_id: read(6)?,
+        nonce,
+        proof,
+        invitee_binding,
     })
 }
 
@@ -375,6 +494,26 @@ impl NemoClient {
             inner.nicknames = nicks;
             inner.disappear = timers;
         }
+        let invites = inner
+            .vault
+            .as_ref()
+            .and_then(|v| v.load_invites().ok())
+            .unwrap_or_default();
+        for inv in invites {
+            inner.minted.insert(inv.nonce, inv);
+        }
+        let pending_rows = match (inner.vault.as_ref(), inner.state.as_ref()) {
+            (Some(vault), Some(ClientState::Registered(session))) => {
+                vault.load_pending(&session.install).unwrap_or_default()
+            }
+            (Some(vault), Some(ClientState::Local(install))) => {
+                vault.load_pending(install).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        for (gid, pending, host) in pending_rows {
+            inner.pending.insert(gid, PendingEntry { pending, host });
+        }
         if let Some(ClientState::Registered(session)) = inner.state.as_mut() {
             let _ = block_on(session.restock_publish());
         }
@@ -391,6 +530,33 @@ impl NemoClient {
     pub fn fingerprint(&self) -> Result<String, FfiError> {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         Ok(inner.install()?.fingerprint())
+    }
+
+    pub fn set_privacy_mode(&self, mode: String) -> Result<(), FfiError> {
+        let parsed = match mode.to_ascii_lowercase().as_str() {
+            "normal" => PrivacyMode::Normal,
+            "private" => PrivacyMode::Private,
+            "high" | "maximum" => return Err(CoreError::MaximumNotShipped.into()),
+            _ => return Err(FfiError::Core("privacy mode".into())),
+        };
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        inner.registered()?.set_privacy(parsed)?;
+        persist(&inner)?;
+        Ok(())
+    }
+
+    pub fn privacy_mode(&self) -> Result<String, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        let mode = match inner.state.as_ref() {
+            Some(ClientState::Registered(session)) => session.privacy,
+            Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+            None => return Err(FfiError::Core("busy".into())),
+        };
+        Ok(match mode {
+            PrivacyMode::Normal => "normal".into(),
+            PrivacyMode::Private => "private".into(),
+            PrivacyMode::High => "high".into(),
+        })
     }
 
     /// Shown once at identity creation. Never stored in the vault.
@@ -510,12 +676,27 @@ impl NemoClient {
                 Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
                 None => return Err(FfiError::Core("busy".into())),
             };
+            let last_acked = session.cursor;
             let rows = block_on(session.fetch_mailbox())?;
             if rows.is_empty() {
                 Vec::new()
             } else {
                 let contacts: Vec<_> = session.contacts.keys().copied().collect();
                 let mut new_rows = Vec::new();
+                if let Some(first) = rows.first() {
+                    if messages_lost(last_acked, first.seq) {
+                        new_rows.push(push_control(
+                            inbox,
+                            next_seq,
+                            "system".into(),
+                            0,
+                            now_unix(),
+                            "lost",
+                            String::new(),
+                            0,
+                        ));
+                    }
+                }
                 let mut gossip = Vec::new();
                 let mut acks: HashMap<[u8; KEY_LEN], u64> = HashMap::new();
                 for row in &rows {
@@ -961,20 +1142,19 @@ impl NemoClient {
 
     pub fn mint_group_invite(&self, group_id_hex: String) -> Result<String, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-        let uri = {
-            let Inner { state, groups, .. } = &mut *inner;
-            let session = match state {
-                Some(ClientState::Registered(session)) => session,
-                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
-                None => return Err(FfiError::Core("busy".into())),
-            };
-            let g = find_group_mut(groups, &group_id_hex)?;
-            let invite = g
-                .mls
-                .sign_invite(g.host.group_id, Group::default_invite_ttl(), None)?;
-            block_on(session.store_invite(g.host.group_id, &g.host.cred, &invite))?;
-            format!("{GROUP_INVITE_PREFIX}{}", ids::to_hex(&invite.encode()))
-        };
+        let uri = mint_invite(&mut inner, group_id_hex, None)?;
+        persist(&inner)?;
+        Ok(uri)
+    }
+
+    pub fn mint_bound_group_invite(
+        &self,
+        group_id_hex: String,
+        identity_id_hex: String,
+    ) -> Result<String, FfiError> {
+        let id = parse_identity_id(&identity_id_hex)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let uri = mint_invite(&mut inner, group_id_hex, Some(id))?;
         persist(&inner)?;
         Ok(uri)
     }
@@ -994,6 +1174,15 @@ impl NemoClient {
             let cap = block_on(session.mint_contact())?;
             let hpke = session.hpke_public();
             let signing_pk = pending_join.group_signing_public();
+            let proof = if invite.invitee_binding.is_some() {
+                Some(
+                    session
+                        .install
+                        .sign_invitee_proof(invite.group_id, acc.pending_id)?,
+                )
+            } else {
+                None
+            };
             let uri = join_request_uri(
                 invite.group_id,
                 acc.pending_id,
@@ -1002,6 +1191,9 @@ impl NemoClient {
                 cap,
                 hpke,
                 acc.cred.credential_id,
+                invite.nonce,
+                proof.as_ref(),
+                acc.invitee_binding,
             );
             pending.insert(
                 invite.group_id,
@@ -1020,16 +1212,40 @@ impl NemoClient {
         let req = parse_join_request(&join_request_uri)?;
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         {
-            let Inner { state, groups, .. } = &mut *inner;
+            let Inner {
+                state,
+                groups,
+                minted,
+                ..
+            } = &mut *inner;
             let session = match state {
                 Some(ClientState::Registered(session)) => session,
                 Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
                 None => return Err(FfiError::Core("busy".into())),
             };
+            let invitee_pk =
+                Group::key_package_identity_pk(session.install.mls_provider(), &req.key_package)?;
+            let invitee_id = nemo_wire::identity_id(&invitee_pk);
+            block_on(session.check_discovery_not_revoked(invitee_id, now_unix()))?;
+            let bound = req.invitee_binding.is_some()
+                || minted
+                    .get(&req.nonce)
+                    .is_some_and(|i| i.invitee_binding.is_some());
+            if bound {
+                let invite = minted.get(&req.nonce).ok_or(CoreError::BoundInvite)?;
+                let proof = req.proof.as_ref().ok_or(CoreError::BoundInvite)?;
+                if proof.pending_id != req.pending_id {
+                    return Err(CoreError::BoundInvite.into());
+                }
+                let vk = VerifyingKey::from_bytes(&invitee_pk)
+                    .map_err(|_| FfiError::Core("invitee key".into()))?;
+                verify_bound_invite(invite, proof, &vk)?;
+            }
             let g = groups
                 .iter_mut()
                 .find(|g| g.host.group_id == req.group_id)
                 .ok_or_else(|| FfiError::Core("unknown group".into()))?;
+            flush_mls_update(session, g)?;
             let admit = g.mls.sign_admit(req.group_id, req.pending_id)?;
             let (commit, welcome) = g
                 .mls
@@ -1072,6 +1288,8 @@ impl NemoClient {
                 None => return Err(FfiError::Core("busy".into())),
             };
             let g = find_group_mut(groups, &group_id_hex)?;
+            refresh_group_members(session, &g.mls)?;
+            flush_mls_update(session, g)?;
             let body = g.mls.encrypt(session.install.mls_provider(), &ptext)?;
             block_on(session.group_append(
                 g.host.group_id,
@@ -1201,6 +1419,8 @@ impl NemoClient {
                 None => return Err(FfiError::Core("busy".into())),
             };
             let g = find_group_mut(groups, &group_id_hex)?;
+            refresh_group_members(session, &g.mls)?;
+            flush_mls_update(session, g)?;
             let reserve = AttachmentReserve {
                 fetch_token: token,
                 size_bucket: bucket,
@@ -1399,13 +1619,14 @@ impl NemoClient {
     }
 
     pub fn start_call(&self, peer_id_hex: String) -> Result<DisplayRow, FfiError> {
-        {
+        let turn = {
             let inner = self.inner.lock().map_err(|_| lock_err())?;
             if inner.live_call.is_some() {
                 return Err(FfiError::Core("call already live".into()));
             }
-        }
-        let call = block_on(Call::offer(&TurnConfig::from_env()))?;
+            turn_config(&inner)?
+        };
+        let call = block_on(Call::offer(&turn))?;
         let local = call.local().clone();
         let now = now_unix();
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
@@ -1449,14 +1670,16 @@ impl NemoClient {
     }
 
     pub fn answer_call(&self, call_id_hex: String) -> Result<DisplayRow, FfiError> {
-        let pending = {
+        let (pending, turn) = {
             let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-            inner
+            let pending = inner
                 .pending_invites
                 .remove(&call_id_hex)
-                .ok_or_else(|| FfiError::Core("unknown call".into()))?
+                .ok_or_else(|| FfiError::Core("unknown call".into()))?;
+            let turn = turn_config(&inner)?;
+            (pending, turn)
         };
-        let call = block_on(Call::answer(&TurnConfig::from_env(), &pending.signal))?;
+        let call = block_on(Call::answer(&turn, &pending.signal))?;
         let local = call.local().clone();
         let now = now_unix();
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
@@ -1557,6 +1780,29 @@ impl NemoClient {
             .as_ref()
             .map(|c| c.received_rtp())
             .unwrap_or(0))
+    }
+
+    /// 48 kHz PCM from the Android org.webrtc capture path (or tests).
+    pub fn push_capture_pcm(
+        &self,
+        samples: Vec<i16>,
+        sample_rate: u32,
+        channels: u32,
+    ) -> Result<(), FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        if let Some(call) = inner.live_call.as_ref() {
+            call.push_capture_pcm(&samples, sample_rate, channels);
+        }
+        Ok(())
+    }
+
+    pub fn pull_playback_pcm(&self, max_samples: u32) -> Result<Vec<i16>, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        Ok(inner
+            .live_call
+            .as_ref()
+            .map(|c| c.pull_playback_pcm(max_samples))
+            .unwrap_or_default())
     }
 
     pub fn inbox(&self) -> Result<Vec<DisplayRow>, FfiError> {
@@ -1927,6 +2173,68 @@ mod tests {
         assert!(err.to_string().to_lowercase().contains("denied"));
 
         drop(alice2);
+        drop(bob);
+        drop(carol);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+        let _ = fs::remove_dir_all(&carol_dir);
+    }
+
+    #[test]
+    fn pending_join_survives_unlock() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-pend-a");
+        let bob_dir = temp_dir("nemo-ffi-pend-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let gid = alice.create_group("crew".into()).unwrap();
+        let invite = alice.mint_group_invite(gid.clone()).unwrap();
+        let join = bob.accept_group_invite(invite).unwrap();
+        drop(bob);
+        let bob2 = NemoClient::open_at(
+            bob_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+        )
+        .unwrap();
+        let _ = alice.admit_join(join).unwrap();
+        let _ = bob2.fetch_now().unwrap();
+        assert_eq!(bob2.list_groups().unwrap().len(), 1);
+        drop(alice);
+        drop(bob2);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn bound_invite_requires_inviter_and_proof() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-bnd-a");
+        let bob_dir = temp_dir("nemo-ffi-bnd-b");
+        let carol_dir = temp_dir("nemo-ffi-bnd-c");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        let carol = client_at(&carol_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base.clone()).unwrap();
+        carol.register(base).unwrap();
+        let bob_uri = bob.mint_share_uri().unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        alice.add_contact(bob_uri, "Bob".into()).unwrap();
+        let gid = alice.create_group("crew".into()).unwrap();
+        let carol_invite = alice.mint_group_invite(gid.clone()).unwrap();
+        let carol_join = carol.accept_group_invite(carol_invite).unwrap();
+        alice.admit_join(carol_join).unwrap();
+        let _ = carol.fetch_now().unwrap();
+        let invite = alice.mint_bound_group_invite(gid.clone(), bob_id).unwrap();
+        let join = bob.accept_group_invite(invite).unwrap();
+        let denied = carol.admit_join(join.clone()).unwrap_err();
+        assert!(denied.to_string().to_lowercase().contains("bound"));
+        alice.admit_join(join).unwrap();
+        let _ = bob.fetch_now().unwrap();
+        assert_eq!(bob.list_groups().unwrap().len(), 1);
+        drop(alice);
         drop(bob);
         drop(carol);
         let _ = fs::remove_dir_all(&alice_dir);

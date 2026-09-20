@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -12,11 +14,12 @@ import androidx.compose.ui.window.rememberWindowState
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.io.File
+import uniffi.nemo.NemoClient
 
 fun main() {
     val root = repoRoot()
     val libDir = File(root, "target/debug")
-    if (libDir.resolve("libnemo_ffi.so").isFile) {
+    if (libDir.resolve("libnemo_ffi.so").isFile || libDir.resolve("nemo_ffi.dll").isFile) {
         System.setProperty("jna.library.path", libDir.absolutePath)
     }
     val data = File(System.getProperty("user.home"), ".local/share/nemo")
@@ -63,8 +66,29 @@ actual fun pickLocalFile(): String? {
     return File(dir, name).absolutePath
 }
 
+@Composable
+actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
+    return {
+        pickLocalFile()?.let(onPicked)
+    }
+}
+
 actual fun defaultHomeUrl(): String = "https://localhost:8443"
 
 actual fun copyToClipboard(text: String) {
     Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
+}
+
+actual fun startCallAudio(client: NemoClient) {
+    DesktopCallAudio.start(client)
+}
+
+actual fun stopCallAudio() {
+    DesktopCallAudio.stop()
+}
+
+@Composable
+actual fun rememberEnsureMic(onReady: () -> Unit): () -> Unit {
+    val latest = rememberUpdatedState(onReady)
+    return { latest.value.invoke() }
 }

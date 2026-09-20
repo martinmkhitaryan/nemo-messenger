@@ -489,6 +489,36 @@ fn group_file_reserve_upload_fetch() {
         .is_err());
 }
 
+#[test]
+fn group_file_budget_is_separate_from_stream() {
+    let mut host = GroupHost::new();
+    host.file_budget = 8;
+    let created = host
+        .create_group(
+            [9u8; 32],
+            FanoutTarget {
+                delivery_capability: [1u8; 32],
+                home_hpke_public: [2u8; 32],
+            },
+        )
+        .unwrap();
+    let token = [0x22u8; 32];
+    let reserve = AttachmentReserve {
+        fetch_token: token,
+        size_bucket: AttachmentSizeBucket::A1,
+        ttl_bucket: TtlBucket::DAY,
+    };
+    let err = host
+        .append(
+            created.group_id,
+            &created.cred,
+            MessageType::AttachmentReserve,
+            reserve.encode(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, ServerError::Denied));
+}
+
 fn signed_card(home: &HomeServer, sk: &SigningKey, rev_pk: [u8; 32], seq: u64) -> ContactCard {
     let binding = HomeServerBinding::sign(
         sk,

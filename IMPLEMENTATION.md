@@ -8,7 +8,7 @@ How to use it:
 
 - Finish one phase, hit its **checkpoint**, commit, then start the next.
 - Do not start a later phase until the previous checkpoint is green.
-- Stop only for a product choice that needs a new ADR (next free number is **0035**).
+- Stop only for a product choice that needs a new ADR (next free number is **0036**).
 - Standing constraints: MIT spec + `nemo-wire` + `nemo-server`; AGPL `nemo-core` / `nemo-ffi` / Compose because of libsignal; no custom crypto; server MUST NOT link libsignal or depend on `nemo-core`; no Electron/Flutter; Tor / cover traffic / group calls are **nice-to-have** (Track N), not blockers.
 
 ---
@@ -18,7 +18,7 @@ How to use it:
 | Track | State |
 | --- | --- |
 | Protocol phases 1–8 (ADR-0027) | **Done** — documents under `docs/protocol/` |
-| ADRs 0001–0034 | **Accepted** |
+| ADRs 0001–0035 | **Accepted** |
 | Server HTTP + Postgres + S2S mTLS + wakeup WS | **Done** |
 | Client identity, PQXDH, Double Ratchet, MLS (in RAM) | **Done** |
 | SQLCipher vault for identity + libsignal store (ADR-0034) | **Done** (`701b992`) |
@@ -35,7 +35,7 @@ How to use it:
 | Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
 | Packaging / self-host docs | **Done** (I11) — compose HTTPS :8443; JVM `./gradlew run`; LICENSE split |
 | Desktop hardening | **Done** (I12) — 120 s owner auth, capability/peer rate limits, cargo-deny, log redaction |
-| v1 freeze | Next — delete this file after I5 APK is green on CI |
+| v1 freeze | Next — live audible call + device APK; see [`REMAINING.md`](REMAINING.md) |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -260,7 +260,7 @@ This is the live work. Phases are ordered so a restart never drops crypto, then 
 
 **Stop if.** Desktop AEC is unusable — that is the ADR-0028 cons item; pick libwebrtc vs `webrtc-audio-processing` in a short note, not a new crypto ADR.
 
-Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: the checkpoint path pumps Opus silence through TURN so CI does not need a microphone. Android `org.webrtc` stays with I5.
+**M5 implemented.** Desktop shell capture is `javax.sound.sampled` (not `cpal`: ALSA headers are a distro package). PCM is AEC/AGC/NS-processed with `webrtc-audio-processing` 2.1 and Opus-encoded in `nemo-core`. Android capture/APM is `org.webrtc` in the Kotlin shell; signaling and DTLS stay in Rust. CI jobs install meson/ninja/clang so APM can build; tests do not need a microphone.
 
 **Stop if.** Desktop AEC is unusable — that is the ADR-0028 cons item; pick libwebrtc vs `webrtc-audio-processing` in a short note, not a new crypto ADR.
 
@@ -272,7 +272,7 @@ Desktop capture/AEC (`cpal` + `webrtc-audio-processing`) is not in this slice: t
 
 **In scope.** FFI subscribe; Compose foreground service / desktop keep-alive. Coalesce 10 s.
 
-**FCM (optional sub-slice I10b).** Opaque 32-byte wake token only (ADR-0020). **Needs ADR-0035** (or an amendment to ADR-0033) because `0001_init.sql` has no push-endpoint table. Do not sneak a column in.
+**FCM (optional sub-slice I10b).** Opaque 32-byte wake token only (ADR-0020). **Needs ADR-0036** (or an amendment to ADR-0033) because `0001_init.sql` has no push-endpoint table. Do not sneak a column in.
 
 **Checkpoint (I10a).**
 
@@ -355,4 +355,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Next: **finish I12 freeze** (delete this file) once CI has produced the APK. FCM is I10b and needs ADR-0035.
+**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Do **not** freeze yet. Leftover ADR MUST work is done. What is left is listed in [`REMAINING.md`](REMAINING.md): a live audible 1:1 call, an APK on a device, then delete this file. FCM is I10b and needs ADR-0036.

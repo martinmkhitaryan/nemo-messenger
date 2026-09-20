@@ -354,6 +354,33 @@ async fn revoked_contact_refuses_send() {
     assert!(matches!(err, CoreError::Revoked));
 }
 
+#[tokio::test]
+async fn revoked_identity_fails_discovery_check() {
+    let transport = RouterTransport {
+        app: router(AppState::new()),
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, bob_export) = Installation::create().unwrap();
+    let (alice, _) = HomeSession::register(transport.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let (bob, _) = HomeSession::register(transport, bob_inst, now)
+        .await
+        .unwrap();
+    let stmt = revocation_from_mnemonic(&bob_export.mnemonic, bob.identity_id(), now).unwrap();
+    alice.submit_revocation(&stmt).await.unwrap();
+    let err = alice
+        .check_discovery_not_revoked(bob.identity_id(), now)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::Revoked));
+    alice
+        .check_discovery_not_revoked(alice.identity_id(), now)
+        .await
+        .unwrap();
+}
+
 /// Set `NEMO_TEST_HOME_URL` (e.g. `https://localhost:8443` after compose up).
 #[tokio::test]
 async fn two_installations_register_on_env_home() {

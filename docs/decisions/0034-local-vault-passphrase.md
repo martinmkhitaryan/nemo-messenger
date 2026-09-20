@@ -34,7 +34,7 @@ v1 platforms are Android, Linux, and Windows (ADR-0026). A design that requires 
   <dir>/store.db     SQLCipher database
   ```
 
-  `kdf.cbor` is canonical CBOR. `store.db` holds an opaque installation snapshot (identity secret, revocation **public** key, libsignal store including sessions and PQXDH one-time / used Kyber markers, prekey counters, home-binding `seq`). MLS group state is **not** in this snapshot yet.
+  `kdf.cbor` is canonical CBOR. `store.db` holds an opaque installation snapshot (identity secret, revocation **public** key, libsignal store including sessions and PQXDH one-time / used Kyber markers, prekey counters, home-binding `seq`) plus MLS group sidecars, pending joins, and minted bound invites.
 - **Never stored:** the revocation mnemonic or revocation private key (ADR-0004). Lost passphrase loses the installation; that is the same cost as losing the device (ADR-0003, ADR-0023). The vault is not a backup and is not copied to the home server.
 - **Wrong passphrase:** open fails closed. The client MUST NOT distinguish "wrong passphrase" from "corrupt file" in UX copy beyond a single unlock-failed state.
 - **Compose / UniFFI:** the shell passes the directory path and passphrase across FFI. It MUST NOT write identity, ratchet, or MLS keys of its own.
@@ -85,3 +85,4 @@ Rejected by ADR-0004: the phrase exists to kill a stolen device from outside it.
 ## History
 
 - 2026-09-20 — Accepted. Application passphrase, Argon2id, SQLCipher raw key, mnemonic never stored.
+- 2026-09-20 — Amendment 1: MLS group sidecar is persisted in the same SQLCipher file (`groups` key). Pending joins and minted bound invites are also vault-backed. The identity snapshot still excludes the revocation mnemonic.

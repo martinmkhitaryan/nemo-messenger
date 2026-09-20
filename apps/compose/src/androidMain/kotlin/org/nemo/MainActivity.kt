@@ -1,17 +1,27 @@
 package org.nemo
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import uniffi.nemo.NemoClient
 import java.io.File
 
-private var appContext: Context? = null
+internal var appContext: Context? = null
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,10 +43,54 @@ class MainActivity : ComponentActivity() {
 
 actual fun pickLocalFile(): String? = null
 
+@Composable
+actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
+    val ctx = LocalContext.current
+    val latest = rememberUpdatedState(onPicked)
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "attachment"
+        val out = File(ctx.cacheDir, "nemo-$name")
+        ctx.contentResolver.openInputStream(uri)?.use { input ->
+            out.outputStream().use { input.copyTo(it) }
+        } ?: return@rememberLauncherForActivityResult
+        latest.value.invoke(out.absolutePath)
+    }
+    return remember(launcher) {
+        { launcher.launch("*/*") }
+    }
+}
+
 actual fun defaultHomeUrl(): String = "https://10.0.2.2:8443"
 
 actual fun copyToClipboard(text: String) {
     val ctx = appContext ?: return
     val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("nemo", text))
+}
+
+actual fun startCallAudio(client: NemoClient) {
+    val ctx = appContext ?: return
+    CallAudio.start(ctx, client)
+}
+
+actual fun stopCallAudio() {
+    CallAudio.stop()
+}
+
+@Composable
+actual fun rememberEnsureMic(onReady: () -> Unit): () -> Unit {
+    val ctx = LocalContext.current
+    val latest = rememberUpdatedState(onReady)
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) latest.value.invoke()
+    }
+    return remember(launcher) {
+        {
+            when (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)) {
+                PackageManager.PERMISSION_GRANTED -> latest.value.invoke()
+                else -> launcher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
 }

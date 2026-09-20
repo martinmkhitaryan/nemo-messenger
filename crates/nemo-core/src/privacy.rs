@@ -173,6 +173,11 @@ pub fn dummy_outer(
     )
 }
 
+/// Client→home delay for Private (and High) on the live send path.
+pub fn private_send_delay_ms() -> u64 {
+    extra_delay_ms() + batch_jitter_ms()
+}
+
 fn extra_delay_ms() -> u64 {
     uniform(PRIVATE_EXTRA_MIN_MS, PRIVATE_EXTRA_MAX_MS)
 }

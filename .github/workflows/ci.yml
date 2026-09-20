@@ -10,6 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Native audio build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build cmake pkg-config clang libclang-dev
+          echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib -name 'libclang.so*' | head -n1)")" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion)/include" >> "$GITHUB_ENV"
       - name: Test workspace
         run: cargo test --workspace
       - name: MIT crates must not link libsignal
@@ -24,6 +30,18 @@ jobs:
       - name: Compose two-vault exchange
         working-directory: apps/compose
         run: ./gradlew --no-daemon desktopTest
+
+  windows-ffi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build nemo_ffi.dll
+        run: cargo build -p nemo-ffi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nemo-ffi-windows
+          path: target/debug/nemo_ffi.dll
 
   android:
     runs-on: ubuntu-latest

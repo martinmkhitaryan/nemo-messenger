@@ -89,6 +89,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/tokens/contact", post(mint_contact))
         .route("/v1/revocation", post(revocation))
         .route("/v1/wakeup", get(wakeup))
+        .route("/v1/turn", post(issue_turn))
         .route("/v1/groups", post(create_group))
         .route("/v1/groups/{id}/append", post(group_append))
         .route("/v1/groups/{id}/invites", post(group_invite))
@@ -108,7 +109,7 @@ async fn persist_after(State(st): State<AppState>, req: Request, next: Next) -> 
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
     let res = next.run(req).await;
-    let mutating = method != Method::GET || path == "/v1/prekeys";
+    let mutating = (method != Method::GET || path == "/v1/prekeys") && path != "/v1/turn";
     if mutating && res.status().is_success() {
         st.wakes.notify_waiters();
         if st.db.is_some() {
@@ -285,6 +286,25 @@ async fn mint_share(State(st): State<AppState>, headers: HeaderMap) -> Response 
 
 async fn mint_contact(State(st): State<AppState>, headers: HeaderMap) -> Response {
     mint_token(st, headers, false).await
+}
+
+async fn issue_turn(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    let (owner, auth) = match require_owner(&headers) {
+        Ok(v) => v,
+        Err(s) => return s.into_response(),
+    };
+    let home = st.home.lock().await;
+    if let Err(e) = home.check_owner(owner, &auth, unix_now()) {
+        return map_err(e).into_response();
+    }
+    drop(home);
+    let cred = crate::turn::issue();
+    cbor_ok(cbor::encode(&Value::Map(vec![
+        (0, Value::Text(cred.url)),
+        (1, Value::Text(cred.username)),
+        (2, Value::Text(cred.credential)),
+        (3, Value::Uint(cred.ttl_secs)),
+    ])))
 }
 
 async fn mint_token(st: AppState, headers: HeaderMap, share: bool) -> Response {

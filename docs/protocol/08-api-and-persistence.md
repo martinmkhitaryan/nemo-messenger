@@ -117,11 +117,15 @@ Body: `RevocationStatement`. Home wipes mailbox material and returns hosted grou
 
 `POST /groups/{group_id}/fanout` body `{0: cred_id, 1: secret, 2: delivery_capability, 3: home_hpke_public}`. 204.
 
-`POST /groups/{group_id}/files/{token}` and `GET` of the same path: opaque padded object. Auth is headers `nemo-cred-id` and `nemo-cred-secret` (the body is the file). Upload requires a prior `AttachmentReserve` append naming that token; first upload wins; fetch needs a **live** member credential and the token.
+`POST /groups/{group_id}/files/{token}` and `GET` of the same path: opaque padded object. Auth is headers `nemo-cred-id` and `nemo-cred-secret` (the body is the file). Upload requires a prior `AttachmentReserve` append naming that token; first upload wins; fetch needs a **live** member credential and the token. Reserved and live file bytes count toward a **4 GiB** per-group budget, separate from the 2 GiB stream cap ([ADR-0031](../decisions/0031-mailbox-retention-and-owner-auth.md)).
 
 ### 3.10 Wakeup (optional)
 
 `GET /v1/wakeup` is a WebSocket. After `nemo-owner` auth, the server sends **empty binary frames** when that mailbox's head advances, coalesced to at most one frame per 10 s. The frame MUST NOT carry size or type ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)). Poll of `/mailbox/fetch` remains required.
+
+### 3.11 TURN credentials
+
+`POST /v1/turn`: empty body, `nemo-owner` auth. Response `{0: url, 1: username, 2: credential, 3: ttl_secs}`. Username is `{expiry}:{random hex}` and MUST NOT contain `identity_id`. Credential is coturn REST HMAC-SHA1 ([ADR-0035](../decisions/0035-ephemeral-turn-credentials.md)). No table.
 
 ---
 
