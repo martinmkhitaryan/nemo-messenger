@@ -30,19 +30,46 @@ compose.desktop {
     }
 }
 
-tasks.test {
-    useJUnitPlatform()
-    systemProperty("jna.library.path", ffiLibDir.absolutePath)
-    environment("jna.library.path", ffiLibDir.absolutePath)
-}
-
-compose.desktop {
-    application {
-        mainClass = "org.nemo.MainKt"
-        jvmArgs += "-Djna.library.path=${ffiLibDir.absolutePath}"
-    }
-}
-
 kotlin {
     jvmToolchain(21)
+}
+
+tasks.register<Exec>("cargoBuildFfi") {
+    group = "nemo"
+    workingDir = repoRoot
+    environment("CARGO_TARGET_DIR", repoRoot.resolve("target").absolutePath)
+    commandLine("cargo", "build", "-p", "nemo-ffi", "-p", "nemo-server")
+}
+
+tasks.register<Exec>("generateUniffi") {
+    group = "nemo"
+    dependsOn("cargoBuildFfi")
+    workingDir = repoRoot
+    environment("CARGO_TARGET_DIR", repoRoot.resolve("target").absolutePath)
+    commandLine(
+        "cargo",
+        "run",
+        "-p",
+        "nemo-ffi",
+        "--features",
+        "bindgen",
+        "--bin",
+        "uniffi-bindgen",
+        "--",
+        "generate",
+        "--library",
+        "target/debug/libnemo_ffi.so",
+        "--language",
+        "kotlin",
+        "--out-dir",
+        "apps/compose/src/main/kotlin",
+        "--no-format",
+    )
+}
+
+tasks.test {
+    useJUnitPlatform()
+    dependsOn("cargoBuildFfi")
+    systemProperty("jna.library.path", ffiLibDir.absolutePath)
+    environment("jna.library.path", ffiLibDir.absolutePath)
 }
