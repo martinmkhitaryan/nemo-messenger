@@ -178,8 +178,11 @@ jobs:
           if (-not $perl) { throw "perl not on PATH" }
           if ($perl.Source -match "Git[\\/]usr") { throw "perl is Git MSYS, not Strawberry: $($perl.Source)" }
           # webrtc-audio-processing-sys 2.1.0 hardcodes GCC warning flags; MSVC rejects them.
-          cargo fetch -p nemo-ffi
-          $apmBuild = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\*\webrtc-audio-processing-sys-2.1.0\build.rs" |
+          cargo fetch
+          $registrySrc = Join-Path $env:USERPROFILE ".cargo\registry\src"
+          if (-not (Test-Path $registrySrc)) { throw "cargo registry src missing after fetch" }
+          $apmBuild = Get-ChildItem -Path $registrySrc -Recurse -Filter "build.rs" |
+            Where-Object { $_.Directory.Name -eq "webrtc-audio-processing-sys-2.1.0" } |
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $apmBuild) { throw "webrtc-audio-processing-sys-2.1.0 build.rs not fetched" }
           $apmTxt = [System.IO.File]::ReadAllText($apmBuild)
