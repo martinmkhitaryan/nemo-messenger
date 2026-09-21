@@ -45,10 +45,9 @@ jobs:
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
       # compiles webrtc-audio-processing. MSVC cl + Strawberry perl, no MinGW.
       # Short CARGO_TARGET_DIR (MAX_PATH). Cargo Command::new("meson") runs
-      # meson.exe and skips a meson.cmd wrapper, so APM stays /std:c++17.
-      # A cl.exe shim rewrites that to /std:c++20 (MSVC C7555). The real cl
-      # lives under Program Files; spawnv without quotes made Meson pass
-      # path fragments as .obj files (LNK1181).
+      # meson.exe (not meson.cmd). A meson.exe shim adds -Dcpp_std=c++20 on
+      # setup so APM gets MSVC C++20 (C7555). Do not shim cl.exe: that breaks
+      # openssl-src nmake OPENSSLDIR quoting (SYS$MANAGER / ct_log.c).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -82,14 +81,14 @@ jobs:
           if (Test-Path (Join-Path $gitUsr "cp.exe")) {
             $env:Path = "$env:Path;$gitUsr"
           }
-          $clReal = (Get-Command cl).Source
-          if (-not $clReal) { throw "cl.exe not on PATH before shim" }
-          $env:NEMO_REAL_CL = $clReal
+          $mesonReal = (Get-Command meson).Source
+          if (-not $mesonReal) { throw "meson not on PATH before shim" }
+          $env:NEMO_REAL_MESON = $mesonReal
           $shim = Join-Path $env:RUNNER_TEMP "build-shims"
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
           Set-Content -Path (Join-Path $shim "nm.cmd") -Value "@echo off`r`nexit /b 0"
-          $clShimC = Join-Path $env:RUNNER_TEMP "nemo-cl-shim.c"
-          $clShimLines = @(
+          $mesonShimC = Join-Path $env:RUNNER_TEMP "nemo-meson-shim.c"
+          $mesonShimLines = @(
             '#define _CRT_SECURE_NO_WARNINGS',
             '#define WIN32_LEAN_AND_MEAN',
             '#include <windows.h>',
@@ -106,19 +105,23 @@ jobs:
             '  dst[n] = 0; *pos = n; return 0;',
             '}',
             'int main(int argc, char **argv) {',
-            '  const char *real = getenv("NEMO_REAL_CL");',
-            '  char cmdline[32768]; size_t pos = 0; int i;',
+            '  const char *real = getenv("NEMO_REAL_MESON");',
+            '  char cmdline[32768]; size_t pos = 0; int i, is_setup = 0, has_std = 0;',
             '  STARTUPINFOA si; PROCESS_INFORMATION pi; DWORD code = 1;',
-            '  if (!real || !real[0]) { fprintf(stderr, "NEMO_REAL_CL not set\n"); return 1; }',
+            '  if (!real || !real[0]) { fprintf(stderr, "NEMO_REAL_MESON not set\n"); return 1; }',
             '  cmdline[0] = 0;',
             '  if (append_quoted(cmdline, sizeof(cmdline), &pos, real) != 0) return 1;',
             '  for (i = 1; i < argc; i++) {',
-            '    const char *a = strcmp(argv[i], "/std:c++17") == 0 ? "/std:c++20" : argv[i];',
-            '    if (append_quoted(cmdline, sizeof(cmdline), &pos, a) != 0) return 1;',
+            '    if (strcmp(argv[i], "setup") == 0) is_setup = 1;',
+            '    if (strncmp(argv[i], "-Dcpp_std=", 10) == 0) has_std = 1;',
+            '    if (append_quoted(cmdline, sizeof(cmdline), &pos, argv[i]) != 0) return 1;',
+            '  }',
+            '  if (is_setup && !has_std) {',
+            '    if (append_quoted(cmdline, sizeof(cmdline), &pos, "-Dcpp_std=c++20") != 0) return 1;',
             '  }',
             '  memset(&si, 0, sizeof(si)); si.cb = sizeof(si);',
             '  if (!CreateProcessA(real, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {',
-            '    fprintf(stderr, "CreateProcess cl failed: %lu\n", GetLastError()); return 1;',
+            '    fprintf(stderr, "CreateProcess meson failed: %lu\n", GetLastError()); return 1;',
             '  }',
             '  WaitForSingleObject(pi.hProcess, INFINITE);',
             '  GetExitCodeProcess(pi.hProcess, &code);',
@@ -126,19 +129,24 @@ jobs:
             '  return (int)code;',
             '}'
           )
-          Set-Content -Path $clShimC -Value $clShimLines -Encoding ascii
-          $shimCl = Join-Path $shim "cl.exe"
-          & $clReal /nologo /O2 "/Fe:$shimCl" $clShimC
-          if (-not (Test-Path $shimCl)) { throw "failed to build cl.exe C++20 shim" }
+          Set-Content -Path $mesonShimC -Value $mesonShimLines -Encoding ascii
+          $shimMeson = Join-Path $shim "meson.exe"
+          $clReal = (Get-Command cl).Source
+          if (-not $clReal) { throw "cl.exe not on PATH" }
+          & $clReal /nologo /O2 "/Fe:$shimMeson" $mesonShimC
+          if (-not (Test-Path $shimMeson)) { throw "failed to build meson.exe C++20 shim" }
           $env:Path = "$shim;$env:Path"
           Write-Host "CC=$env:CC CXX=$env:CXX"
           foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
           }
+          $meson = Get-Command meson -ErrorAction SilentlyContinue
+          if (-not $meson) { throw "meson not on PATH" }
+          if ($meson.Source -ne $shimMeson) { throw "meson is not the C++20 shim: $($meson.Source)" }
           $cl = Get-Command cl -ErrorAction SilentlyContinue
           if (-not $cl) { throw "cl.exe not on PATH" }
-          if ($cl.Source -ne $shimCl) { throw "cl is not the C++20 shim: $($cl.Source)" }
+          if ($cl.Source -match '[\\/]build-shims[\\/]') { throw "cl must be real MSVC, not a shim: $($cl.Source)" }
           $link = Get-Command link -ErrorAction SilentlyContinue
           if (-not $link -or $link.Source -match "Git[\\/]usr") { throw "MSVC link.exe not first on PATH: $($link.Source)" }
           $cc = Get-Command cc -ErrorAction SilentlyContinue
