@@ -218,7 +218,7 @@ jobs:
           $perl = Get-Command perl -ErrorAction SilentlyContinue
           if (-not $perl) { throw "perl not on PATH" }
           if ($perl.Source -match "Git[\\/]usr") { throw "perl is Git MSYS, not Strawberry: $($perl.Source)" }
-          & "$env:GITHUB_WORKSPACE\scripts\ci\windows-apm-patch-build-rs.ps1"
+          & python "$env:GITHUB_WORKSPACE\scripts\ci\windows-apm-patch-build-rs.py"
           cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v5
         continue-on-error: true

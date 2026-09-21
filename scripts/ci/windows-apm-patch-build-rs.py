@@ -1,48 +1,51 @@
-# Patch crates.io webrtc-audio-processing-sys 2.1.0 build.rs for MSVC (Windows CI).
-# Upstream is Unix-oriented: GCC flags, nm/objcopy symbol prefixing, lib*.a names.
-$ErrorActionPreference = "Stop"
+#!/usr/bin/env python3
+"""Patch crates.io webrtc-audio-processing-sys 2.1.0 build.rs for MSVC (Windows CI)."""
+from __future__ import annotations
 
-cargo fetch
-$registrySrc = Join-Path $env:USERPROFILE ".cargo\registry\src"
-if (-not (Test-Path $registrySrc)) { throw "cargo registry src missing after fetch" }
+import pathlib
+import subprocess
+import sys
 
-$apmBuild = Get-ChildItem -Path $registrySrc -Recurse -Filter "build.rs" |
-  Where-Object { $_.Directory.Name -eq "webrtc-audio-processing-sys-2.1.0" } |
-  Select-Object -First 1 -ExpandProperty FullName
-if (-not $apmBuild) { throw "webrtc-audio-processing-sys-2.1.0 build.rs not fetched" }
 
-$t = [System.IO.File]::ReadAllText($apmBuild)
-$orig = $t
+def main() -> None:
+    subprocess.check_call(["cargo", "fetch"])
+    registry = pathlib.Path.home() / ".cargo" / "registry" / "src"
+    if not registry.is_dir():
+        raise SystemExit(f"cargo registry src missing after fetch: {registry}")
 
-# 1) MSVC rejects GCC -Wno-*; use cc's portable helpers.
-$t = $t.Replace(
-  "        .flag(`"-std=c++17`")`n        .flag(`"-Wno-unused-parameter`")",
-  "        .std(`"c++17`")`n        .flag_if_supported(`"-Wno-unused-parameter`")"
-)
+    builds = list(registry.glob("*/webrtc-audio-processing-sys-2.1.0/build.rs"))
+    if not builds:
+        raise SystemExit("webrtc-audio-processing-sys-2.1.0 build.rs not fetched")
+    path = builds[0]
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    orig = text
 
-# 2) Skip nm/objcopy symbol prefixing on MSVC (tool/.a vs .lib mismatch; one APM in nemo-ffi).
-$oldPrefix = @'
-    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;
-'@
-$newPrefix = @'
+    text = text.replace(
+        '        .flag("-std=c++17")\n        .flag("-Wno-unused-parameter")',
+        '        .std("c++17")\n        .flag_if_supported("-Wno-unused-parameter")',
+    )
+
+    old_prefix = (
+        "    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;"
+    )
+    new_prefix = """\
     // Nemo Windows CI: skip prefix on MSVC (nm/objcopy + lib*.a vs *.lib).
     let renamed_symbols = if cfg!(target_env = "msvc") {
         Vec::new()
     } else {
         webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?
-    };
-'@
-if (-not $t.Contains($oldPrefix)) { throw "APM prefix_library_symbols anchor not found" }
-$t = $t.Replace($oldPrefix, $newPrefix)
+    };"""
+    if old_prefix not in text:
+        raise SystemExit("APM prefix_library_symbols anchor not found")
+    text = text.replace(old_prefix, new_prefix, 1)
 
-# 3) MSVC link.exe wants *.lib; Meson often installs lib*.a — mirror them.
-$oldLink = @'
+    old_link = """\
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static={LIB_NAME}");
         println!("cargo:rustc-link-lib=absl_strings");
     } else {
-'@
-$newLink = @'
+"""
+    new_link = """\
     if cfg!(feature = "bundled") {
         if cfg!(target_env = "msvc") {
             for dir in &lib_dirs {
@@ -81,12 +84,12 @@ $newLink = @'
             }
         }
     } else {
-'@
-if (-not $t.Contains($oldLink)) { throw "APM bundled link anchor not found" }
-$t = $t.Replace($oldLink, $newLink)
+"""
+    if old_link not in text:
+        raise SystemExit("APM bundled link anchor not found")
+    text = text.replace(old_link, new_link, 1)
 
-# 4) rust-objcopy path: prefer .exe / llvm-objcopy on Windows.
-$oldObj = @'
+    old_obj = """\
     let objcopy = sysroot.join("lib").join("rustlib").join(host).join("bin").join("rust-objcopy");
 
     // Optional: verification
@@ -96,8 +99,8 @@ $oldObj = @'
     }
 
     Ok(objcopy)
-'@
-$newObj = @'
+"""
+    new_obj = """\
     let bin = sysroot.join("lib").join("rustlib").join(host).join("bin");
     let candidates = [
         bin.join("rust-objcopy.exe"),
@@ -111,14 +114,26 @@ $newObj = @'
         println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
     }
     Ok(objcopy)
-'@
-if (-not $t.Contains($oldObj)) { throw "APM determine_objcopy_path anchor not found" }
-$t = $t.Replace($oldObj, $newObj)
+"""
+    if old_obj not in text:
+        raise SystemExit("APM determine_objcopy_path anchor not found")
+    text = text.replace(old_obj, new_obj, 1)
 
-if ($t -eq $orig) { throw "APM build.rs patch produced no changes" }
-if (-not $t.Contains("flag_if_supported")) { throw "APM CC flag patch missing" }
-if (-not $t.Contains("skip prefix on MSVC")) { throw "APM MSVC prefix skip patch missing" }
-if (-not $t.Contains('{name}.lib')) { throw "APM .lib mirror patch missing" }
+    if text == orig:
+        raise SystemExit("APM build.rs patch produced no changes")
+    if "flag_if_supported" not in text:
+        raise SystemExit("APM CC flag patch missing")
+    if "skip prefix on MSVC" not in text:
+        raise SystemExit("APM MSVC prefix skip patch missing")
+    if "{name}.lib" not in text:
+        raise SystemExit("APM .lib mirror patch missing")
 
-[System.IO.File]::WriteAllText($apmBuild, $t)
-Write-Host "Patched MSVC APM build.rs: $apmBuild"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    print(f"Patched MSVC APM build.rs: {path}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
