@@ -95,6 +95,11 @@ fn read_value(input: &[u8]) -> Result<(Value, &[u8])> {
         }
         4 => {
             let count = usize::try_from(n).map_err(|_| WireError::Cbor("array too large"))?;
+            // Each element needs ≥1 byte; reject before with_capacity (HPKE noise
+            // can look like an 8-byte array length and overflow RawVec).
+            if count > rest.len() {
+                return Err(WireError::Cbor("array too large"));
+            }
             let mut rest = rest;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
@@ -106,6 +111,10 @@ fn read_value(input: &[u8]) -> Result<(Value, &[u8])> {
         }
         5 => {
             let count = usize::try_from(n).map_err(|_| WireError::Cbor("map too large"))?;
+            // Each map entry needs a key (≥1 byte); same capacity-overflow guard.
+            if count > rest.len() {
+                return Err(WireError::Cbor("map too large"));
+            }
             let mut rest = rest;
             let mut pairs = Vec::with_capacity(count);
             let mut last_key: Option<u64> = None;
@@ -232,5 +241,22 @@ mod tests {
         let bytes = encode(&v);
         assert_eq!(decode(&bytes).unwrap(), v);
         assert_eq!(bytes[0], (4 << 5) | 2);
+    }
+
+    #[test]
+    fn oversized_array_length_is_error_not_panic() {
+        // major 4, ai=27: definite array with a huge u64 count (HPKE-like noise).
+        let mut bytes = vec![0x9bu8];
+        bytes.extend_from_slice(&u64::MAX.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 32]);
+        assert!(decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn oversized_map_length_is_error_not_panic() {
+        let mut bytes = vec![0xbbu8];
+        bytes.extend_from_slice(&u64::MAX.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 32]);
+        assert!(decode(&bytes).is_err());
     }
 }
