@@ -32,6 +32,36 @@ An ADB MCP can drive extra taps in a Cursor chat. CI uses Gradle, not MCP.
 
 ---
 
+## Run the same checks as GitHub before pushing
+
+These are the `test` and `android` jobs in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). They are not the live-mic freeze.
+
+```text
+# licences + libsignal ban (needs: cargo install cargo-deny --locked)
+cargo deny check
+
+cargo test --workspace
+cargo test -p nemo-wire -p nemo-server --test no_libsignal
+
+# desktop Compose (needs a JDK 21)
+cd apps/compose && ./gradlew --no-daemon desktopTest
+
+# APK (needs Android SDK 36 + NDK r27c + cargo-ndk)
+cd apps/compose && ./gradlew --no-daemon assembleDebug
+```
+
+`cargo-deny` must parse `deny.toml`. The `allow` list is SPDX identifiers only (`MIT`, `ISC`, `OpenSSL`, …), not `ISC AND MIT AND OpenSSL`.
+
+The Android GitHub job also installs SDK packages with `android-actions/setup-android`. Do not request the old `tools` package; Google removed it. Local SDK manager:
+
+```text
+sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "emulator"
+```
+
+Emulator instrumented tests still need a running `nemo-server` on `0.0.0.0:18787` (see below). The Windows job (`cargo build -p nemo-ffi`) only runs on a Windows machine or in GitHub.
+
+---
+
 ## Shared home (desktop and Android)
 
 Android 16 (`minSdk` 36). The debug APK talks to the same home as desktop.

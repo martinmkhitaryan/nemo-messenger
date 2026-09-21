@@ -6,6 +6,13 @@ all-features = false
 [advisories]
 unmaintained = "workspace"
 yanked = "deny"
+# OpenMLS 0.6 pins hpke-rs 0.2 via openmls_rust_crypto 0.3. MLS Welcome is one-shot HPKE, not the reusable-context / huge-export cases. Bump when OpenMLS does.
+ignore = [
+    { id = "RUSTSEC-2026-0069", reason = "openmls_rust_crypto 0.3 → hpke-rs 0.2; export length > 65535 is not an MLS path" },
+    { id = "RUSTSEC-2026-0070", reason = "openmls_rust_crypto 0.3 → hpke-rs 0.2; MLS does not seal on an export-only context" },
+    { id = "RUSTSEC-2026-0071", reason = "openmls_rust_crypto 0.3 → hpke-rs 0.2; MLS does not reuse one HPKE context for 2^32 messages" },
+    { id = "RUSTSEC-2026-0072", reason = "openmls_rust_crypto 0.3 → hpke-rs-rust-crypto 0.2; wait for OpenMLS to move the provider" },
+]
 
 [licenses]
 allow = [
@@ -25,10 +32,25 @@ allow = [
     "CC0-1.0",
     "BSL-1.0",
     "Unlicense",
-    "ISC AND MIT AND OpenSSL",
-    "MIT AND ISC AND OpenSSL",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
+unused-allowed-license = "allow"
+
+[[licenses.clarify]]
+crate = "webrtc-audio-processing"
+expression = "BSD-3-Clause"
+license-files = [{ path = "COPYING", hash = 0x3d3ea952 }]
+
+[[licenses.clarify]]
+crate = "webrtc-audio-processing-config"
+expression = "BSD-3-Clause"
+license-files = [{ path = "COPYING", hash = 0x7e861f0d }]
+
+[[licenses.clarify]]
+crate = "webrtc-audio-processing-sys"
+expression = "BSD-3-Clause"
+license-files = [{ path = "COPYING", hash = 0x7e861f0d }]
 
 [bans]
 multiple-versions = "allow"
