@@ -36,13 +36,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          components: llvm-tools
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
+      # compiles webrtc-audio-processing. Meson on this image picks Strawberry
+      # MinGW (abseil/cctz then fails). GITHUB_ENV PATH rewrite is not enough;
+      # strip MinGW in the same process as cargo, like mesonbuild's own CI.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Meson for desktop APM
         run: pip install meson ninja
       - name: Build nemo_ffi.dll
-        run: cargo build -p nemo-ffi
+        shell: pwsh
+        run: |
+          $env:Path = ($env:Path.Split(';') | Where-Object { $_ -and ($_ -notmatch 'mingw|Strawberry|msys64') }) -join ';'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          $clangBin = Join-Path $vs "VC\Tools\Llvm\x64\bin"
+          if (Test-Path (Join-Path $clangBin "clang.exe")) {
+            $env:Path = "$clangBin;$env:Path"
+            $env:CC = "clang"
+            $env:CXX = "clang"
+            if (Test-Path (Join-Path $clangBin "libclang.dll")) {
+              $env:LIBCLANG_PATH = $clangBin
+            }
+          } else {
+            $env:CC = "cl"
+            $env:CXX = "cl"
+          }
+          $sysroot = (rustc --print sysroot).Trim()
+          $llvmTools = Join-Path $sysroot "lib\rustlib\x86_64-pc-windows-msvc\bin"
+          if (Test-Path (Join-Path $llvmTools "rust-nm.exe")) {
+            $shim = Join-Path $env:RUNNER_TEMP "llvm-shims"
+            New-Item -ItemType Directory -Force -Path $shim | Out-Null
+            Copy-Item (Join-Path $llvmTools "rust-nm.exe") (Join-Path $shim "nm.exe") -Force
+            $env:Path = "$shim;$llvmTools;$env:Path"
+          }
+          Write-Host "CC=$env:CC CXX=$env:CXX"
+          foreach ($tool in @("cl", "clang", "cc", "c++", "meson", "ninja", "nm")) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
+          }
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl.exe not on PATH" }
+          $cc = Get-Command cc -ErrorAction SilentlyContinue
+          if ($cc -and $cc.Source -match "Strawberry|mingw") { throw "cc is still MinGW: $($cc.Source)" }
+          cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v5
         with:
           name: nemo-ffi-windows
