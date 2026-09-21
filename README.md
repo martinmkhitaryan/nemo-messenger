@@ -1,10 +1,12 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 11 (2026-09-21)<br>
+**Status:** Draft, revision 12 (2026-09-21)<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
-**Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)
+**Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)<br>
+**v1.1 follow-on:** [`docs/v1.1.md`](docs/v1.1.md)<br>
+**Manual live-call check:** [`docs/testing.md`](docs/testing.md)
 
 ---
 

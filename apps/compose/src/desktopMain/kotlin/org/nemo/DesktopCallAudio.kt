@@ -88,7 +88,13 @@ internal object DesktopCallAudio {
             val info = DataLine.Info(T::class.java, format)
             if (!AudioSystem.isLineSupported(info)) return null
             @Suppress("UNCHECKED_CAST")
-            (AudioSystem.getLine(info) as T).also { it.open(format) }
+            (AudioSystem.getLine(info) as T).also { line ->
+                when (line) {
+                    is TargetDataLine -> line.open(format)
+                    is SourceDataLine -> line.open(format)
+                    else -> line.open()
+                }
+            }
         } catch (_: Throwable) {
             null
         }

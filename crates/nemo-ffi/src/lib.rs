@@ -3140,6 +3140,44 @@ mod tests {
     }
 
     #[test]
+    fn wrong_passphrase_does_not_open_vault() {
+        let dir = temp_dir("nemo-ffi-bad-pass");
+        let _ = NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
+            .unwrap();
+        let err = match NemoClient::open_at(dir.to_string_lossy().into_owned(), "incorrect!!".into())
+        {
+            Ok(_) => panic!("wrong passphrase opened the vault"),
+            Err(e) => e,
+        };
+        assert!(!err.to_string().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn privacy_private_survives_unlock_high_is_refused() {
+        let base = serve_home();
+        let dir = temp_dir("nemo-ffi-privacy");
+        let alice =
+            NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
+                .unwrap();
+        alice.register(base).unwrap();
+        assert_eq!(alice.privacy_mode().unwrap(), "normal");
+        alice.set_privacy_mode("private".into()).unwrap();
+        assert_eq!(alice.privacy_mode().unwrap(), "private");
+        let high = alice.set_privacy_mode("high".into()).unwrap_err();
+        assert!(
+            high.to_string().to_lowercase().contains("maximum")
+                || high.to_string().contains("privacy")
+        );
+        drop(alice);
+        let opened =
+            NemoClient::open_at(dir.to_string_lossy().into_owned(), "correct horse".into())
+                .unwrap();
+        assert_eq!(opened.privacy_mode().unwrap(), "private");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn wakeup_then_fetch_sees_row() {
         let base = serve_home();
         let alice_dir = temp_dir("nemo-ffi-wake-a");

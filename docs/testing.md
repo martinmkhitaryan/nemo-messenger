@@ -1,8 +1,10 @@
 # Manual product tests
 
-CI builds and unit-tests the client. It does **not** prove a live microphone call or an APK on a phone. Do those here.
+v1 automated tests run in CI (`cargo test`, `desktopTest`, Android emulator instrumented tests). This file is the **live audible 1:1** you still run by hand, plus how to point a phone at a local home.
 
 Two vaults in one desktop window count as two identities. Headphones on at least one side, or you hear yourself twice.
+
+Follow-on features (Tor, cover traffic, group calls, FCM): [`v1.1.md`](v1.1.md).
 
 ---
 
@@ -16,7 +18,17 @@ cd apps/compose && ./gradlew desktopTest
 cd apps/compose && ./gradlew assembleDebug
 ```
 
-`desktopTest` registers two vaults on a local `nemo-server`, exchanges text and a file, and joins a group. It does not open a window, use a microphone, or install an APK.
+`desktopTest` registers two vaults on a local `nemo-server`, exchanges text and a file, and joins a group.
+
+Android instrumented tests run on an Android 16 (API 36) emulator in CI (`connectedDebugAndroidTest`). They are the Android product suite: create-screen copy, QR, vault, 1:1 text/file, group join. They do not listen to a microphone. A live audible call is still a manual check.
+
+```text
+# host server the emulator reaches as 10.0.2.2
+NEMO_LISTEN=0.0.0.0:18787 NEMO_S2S_LISTEN=127.0.0.1:19443 cargo run -p nemo-server
+cd apps/compose && ./gradlew connectedDebugAndroidTest
+```
+
+An ADB MCP can drive extra taps in a Cursor chat. CI uses Gradle, not MCP.
 
 ---
 

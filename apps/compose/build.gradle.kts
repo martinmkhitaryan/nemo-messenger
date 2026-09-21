@@ -54,6 +54,14 @@ kotlin {
                 implementation("io.getstream:stream-webrtc-android:1.3.8")
             }
         }
+        val androidInstrumentedTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+                implementation("androidx.compose.ui:ui-test-junit4:1.7.8")
+                implementation("androidx.test.ext:junit:1.2.1")
+                implementation("androidx.test:runner:1.6.2")
+            }
+        }
         val desktopMain by getting {
             dependsOn(sharedJvm)
             dependencies {
@@ -81,6 +89,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -91,6 +100,10 @@ android {
             keepDebugSymbols += setOf("**/libnemo_ffi.so")
         }
     }
+}
+
+dependencies {
+    debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.8")
 }
 
 compose.desktop {
@@ -192,4 +205,7 @@ afterEvaluate {
     tasks.findByName("run")?.dependsOn("cargoBuildFfi")
     tasks.matching { it.name.startsWith("package") }.configureEach { dependsOn("cargoBuildFfi") }
     tasks.findByName("preBuild")?.dependsOn("cargoNdkFfi")
+    tasks.matching { it.name.contains("AndroidTest") && it.name.startsWith("connected") }.configureEach {
+        dependsOn("cargoNdkFfi")
+    }
 }

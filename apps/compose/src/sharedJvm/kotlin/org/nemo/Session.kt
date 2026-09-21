@@ -80,6 +80,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -93,16 +94,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.EncodeHintType
-import com.google.zxing.qrcode.QRCodeWriter
-import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private const val CANNOT_RECOVER =
+internal const val CANNOT_RECOVER =
     "This identity cannot be recovered or exported. If you lose the passphrase, the keys and history are gone."
 
 expect fun pickLocalFile(): String?
@@ -110,6 +107,7 @@ expect fun pickLocalFile(): String?
 @Composable
 expect fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit
 
+@Composable
 expect fun rememberScanQr(onText: (String) -> Unit): () -> Unit
 
 expect fun defaultHomeUrl(): String
@@ -271,7 +269,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                     Spacer(Modifier.height(12.dp))
                     Button(
                         enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().testTag("create-identity"),
                         onClick = {
                             runIo {
                                 if (passphrase.length < 8) {
@@ -1359,7 +1357,7 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit) 
         onValueChange = onChange,
         label = { Text(label) },
         visualTransformation = PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().testTag(label),
         singleLine = true,
         shape = RoundedCornerShape(12.dp),
     )
@@ -1367,7 +1365,7 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit) 
 
 private fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
 
-private fun previewLine(row: DisplayRow): String = when {
+internal fun previewLine(row: DisplayRow): String = when {
     row.hidden && row.kind == "expired" -> "Message expired"
     row.hidden || row.kind == "deleted" -> "Message deleted"
     row.kind == "reaction" -> "Reacted ${row.emoji}"
@@ -1384,7 +1382,7 @@ private fun previewLine(row: DisplayRow): String = when {
     else -> row.text
 }
 
-private fun bubbleText(row: DisplayRow): String = when {
+internal fun bubbleText(row: DisplayRow): String = when {
     row.hidden && row.kind == "expired" -> "Expired"
     row.hidden || row.kind == "deleted" -> "Deleted"
     row.kind == "reaction" -> "Reacted ${row.emoji}"
@@ -1411,7 +1409,7 @@ private fun formatTime(sentAt: ULong): String {
     }
 }
 
-private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {
+internal fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {
     for (row in rows) {
         if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
             stopCallAudio()
@@ -1431,7 +1429,7 @@ private fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayR
     }
 }
 
-private fun shareCardBytes(uri: String): ByteArray? {
+internal fun shareCardBytes(uri: String): ByteArray? {
     if (!uri.startsWith("nemo:1:")) return null
     val hex = uri.removePrefix("nemo:1:").substringBefore('#')
     if (hex.length < 2 || hex.length % 2 != 0) return null
@@ -1444,20 +1442,7 @@ private fun shareCardBytes(uri: String): ByteArray? {
 
 @Composable
 private fun ContactQr(bytes: ByteArray, modifier: Modifier = Modifier) {
-    val matrix = remember(bytes) {
-        val hints = mapOf(
-            EncodeHintType.CHARACTER_SET to "ISO-8859-1",
-            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
-            EncodeHintType.MARGIN to 1,
-        )
-        QRCodeWriter().encode(
-            String(bytes, Charsets.ISO_8859_1),
-            BarcodeFormat.QR_CODE,
-            0,
-            0,
-            hints,
-        )
-    }
+    val matrix = remember(bytes) { encodeContactQr(bytes) }
     Canvas(modifier) {
         val n = matrix.width
         if (n == 0) return@Canvas

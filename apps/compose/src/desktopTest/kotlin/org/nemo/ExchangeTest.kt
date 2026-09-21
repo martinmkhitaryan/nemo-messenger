@@ -43,6 +43,8 @@ class ExchangeTest {
             right.register(home)
             val uri = left.mintShareUri()
             assertTrue(uri.startsWith("nemo:1:"))
+            val preview = right.previewContact(uri)
+            assertEquals(left.fingerprint(), preview.fingerprint)
             val leftId = left.identityIdHex()
             right.addContact(uri, "Left")
             right.sendText(leftId, "hello from right")
