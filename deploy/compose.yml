@@ -25,6 +25,8 @@ services:
       NEMO_S2S_PORT: "9443"
       NEMO_S2S_LISTEN: 0.0.0.0:9443
       DATABASE_URL: postgres://nemo:${NEMO_POSTGRES_PASSWORD:-nemo}@postgres:5432/nemo
+      NEMO_TURN_SECRET: ${NEMO_TURN_SECRET:-nemo-dev-turn}
+      NEMO_TURN_URL: ${NEMO_TURN_URL:-turn:127.0.0.1:3478}
     expose:
       - "8787"
       - "9443"
@@ -53,8 +55,8 @@ services:
       - --min-port=49152
       - --max-port=49200
       - --fingerprint
-      - --lt-cred-mech
-      - --user=nemo:nemo
+      - --use-auth-secret
+      - --static-auth-secret=${NEMO_TURN_SECRET:-nemo-dev-turn}
       - --realm=nemo.local
       - --no-cli
       - --no-tls

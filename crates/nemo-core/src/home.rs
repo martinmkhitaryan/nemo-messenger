@@ -684,7 +684,7 @@ impl<T: HomeTransport> HomeSession<T> {
             url: cbor::expect_text(cbor::map_get(&m, 0)?)?.to_owned(),
             username: cbor::expect_text(cbor::map_get(&m, 1)?)?.to_owned(),
             credential: cbor::expect_text(cbor::map_get(&m, 2)?)?.to_owned(),
-            bind: std::env::var("NEMO_ICE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into()),
+            bind: TurnConfig::ice_bind(),
         })
     }
 

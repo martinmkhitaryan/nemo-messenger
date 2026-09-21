@@ -1,0 +1,141 @@
+# Manual product tests
+
+CI builds and unit-tests the client. It does **not** prove a live microphone call or an APK on a phone. Do those here.
+
+Two vaults in one desktop window count as two identities. Headphones on at least one side, or you hear yourself twice.
+
+---
+
+## What CI already covers
+
+From the repo root:
+
+```text
+cargo test --workspace
+cd apps/compose && ./gradlew desktopTest
+cd apps/compose && ./gradlew assembleDebug
+```
+
+`desktopTest` registers two vaults on a local `nemo-server`, exchanges text and a file, and joins a group. It does not open a window, use a microphone, or install an APK.
+
+---
+
+## Shared home (desktop and Android)
+
+Android 16 (`minSdk` 36). The debug APK talks to the same home as desktop.
+
+```text
+# same secret on nemo-server and coturn (ADR-0035)
+export NEMO_TURN_SECRET=nemo-dev-turn
+# desktop-only freeze: loopback is enough
+export NEMO_TURN_URL=turn:127.0.0.1:3478
+
+docker compose -f deploy/compose.yml --profile calls up --build
+curl -k https://localhost:8443/v1/bundle
+```
+
+Caddy uses a local CA (`tls internal`). The Nemo client treats that as transport, not identity.
+
+A phone cannot use `localhost` or `10.0.2.2`. Use the computer’s LAN address instead:
+
+```text
+# example: this machine is 192.168.1.20
+export NEMO_TURN_URL=turn:192.168.1.20:3478
+docker compose -f deploy/compose.yml --profile calls up --build
+```
+
+Open host firewall TCP **8443**, UDP/TCP **3478**, and UDP **49152–49200**.
+
+---
+
+## Desktop freeze (you still need to do this)
+
+One window, two panes (`Left` and `Right`). Vaults: `~/.local/share/nemo/left` and `…/right`.
+
+```text
+cargo build -p nemo-ffi
+cd apps/compose
+./gradlew run
+```
+
+On **each** pane:
+
+1. **Create identity** — passphrase at least 8 characters. Copy says the identity cannot be recovered or exported.
+2. Write down the revocation phrase, then **I wrote it down**.
+3. Settings → **Home URL** `https://localhost:8443` → **Connect**.
+4. Settings → **Copy my contact card** (or show the QR).
+
+Add the other pane: **+** → **New chat** → paste the `nemo:1:…` URI (or **Scan QR** and pick a screenshot of the QR). Confirm the fingerprint, set a name, **Add**.
+
+Then:
+
+| Check | How |
+| --- | --- |
+| 1:1 text | Send from Left, see it on Right (and back). Quit and unlock both; send again. |
+| File | Paperclip on a 1:1 chat. |
+| Group | **+** → **New group**. Settings → **Copy invite**. Other pane: **+** → **Join group**, paste invite. That copies a `nemo-j:1:…` join request. First pane Settings → paste join request → **Admit to group**. Both send in the group. |
+| Live call | Open the 1:1 chat, grant the OS microphone if asked, press **Call**, answer on the other pane. Speak; you must hear the other side through coturn. Direct (host/srflx) ICE is refused. End the call. |
+
+Pass only if the call is audible with a real mic, not silence frames in a unit test.
+
+---
+
+## Android (emulator)
+
+Emulator default home URL is `https://10.0.2.2:8443` (the host). Keep `NEMO_TURN_URL=turn:10.0.2.2:3478` while the emulator is the caller or callee.
+
+```text
+export ANDROID_HOME=$HOME/Android/Sdk
+export ANDROID_SDK_ROOT=$ANDROID_HOME
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
+rustup target add aarch64-linux-android x86_64-linux-android
+cargo install cargo-ndk
+
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+  "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" \
+  "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
+
+"$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n nemo \
+  -k "system-images;android-36;google_apis;x86_64" -d pixel --force
+"$ANDROID_HOME/emulator/emulator" -avd nemo
+
+cd apps/compose
+./gradlew installDebug
+```
+
+Create / unlock / **Connect** like desktop. Pair with the desktop **Right** pane (or a second emulator).
+
+- Paste a contact card, or **Scan QR**: allow camera, photograph the desktop QR.
+- Confirm fingerprint before **Add**.
+- Allow **Microphone** when calling.
+
+Wipe the vault: uninstall the app, or `adb uninstall org.nemo`.
+
+---
+
+## Android (physical device)
+
+USB debugging, Android 16, debug APK.
+
+```text
+adb devices
+cd apps/compose
+./gradlew installDebug
+```
+
+On the phone, Settings → **Home URL** `https://<LAN-IP>:8443` → **Connect**. Do not leave `10.0.2.2` (that is emulator-only).
+
+ICE UDP on Android binds `0.0.0.0`. TURN must be the same LAN address you set in `NEMO_TURN_URL` before compose up.
+
+Walk the same checklist as desktop: register, 1:1 text, group invite→accept→admit, then a live call with the mic.
+
+---
+
+## Failures that are setup, not product bugs
+
+| Symptom | Usual cause |
+| --- | --- |
+| Connect fails from a phone | Home URL still `localhost` / `10.0.2.2`, or port 8443 not reachable on LAN |
+| Call rings, no audio | Coturn profile not up; `NEMO_TURN_URL` is still `127.0.0.1` on a phone; host/srflx ICE (must stay relay-only) |
+| TURN 401 | `NEMO_TURN_SECRET` missing on `nemo-server` or not the same as coturn `--static-auth-secret` |
+| App will not install | Device below Android 16 |

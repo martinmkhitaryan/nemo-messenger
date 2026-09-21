@@ -43,12 +43,22 @@ pub struct TurnConfig {
 }
 
 impl TurnConfig {
+    pub fn ice_bind() -> String {
+        env::var("NEMO_ICE_BIND").unwrap_or_else(|_| {
+            if cfg!(target_os = "android") {
+                "0.0.0.0:0".into()
+            } else {
+                "127.0.0.1:0".into()
+            }
+        })
+    }
+
     pub fn from_env() -> Self {
         Self {
             url: env::var("NEMO_TURN_URL").unwrap_or_else(|_| "turn:127.0.0.1:3478".into()),
             username: env::var("NEMO_TURN_USER").unwrap_or_else(|_| "nemo".into()),
             credential: env::var("NEMO_TURN_PASS").unwrap_or_else(|_| "nemo".into()),
-            bind: env::var("NEMO_ICE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into()),
+            bind: Self::ice_bind(),
         }
     }
 }

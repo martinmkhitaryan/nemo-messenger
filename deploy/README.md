@@ -26,7 +26,7 @@ Optional 1:1 media relay:
 docker compose -f deploy/compose.yml --profile calls up --build
 ```
 
-TURN credentials `nemo:nemo` and ports `3478` / `49152–49200` are a **reference** default, not identity. The product path is `POST /v1/turn` (ADR-0035): set the same `NEMO_TURN_SECRET` on `nemo-server` and coturn `--use-auth-secret`. Static `NEMO_TURN_USER` / `NEMO_TURN_PASS` remain a fallback when that route is unreachable.
+TURN credentials are issued by `POST /v1/turn` (ADR-0035). Set the same `NEMO_TURN_SECRET` on `nemo-server` and coturn `--static-auth-secret` (compose defaults both to `nemo-dev-turn`). `NEMO_TURN_URL` defaults to `turn:127.0.0.1:3478`; use the host LAN address when an Android device must allocate. Static `NEMO_TURN_USER` / `NEMO_TURN_PASS` remain a client fallback when that route is unreachable.
 
 ## Postgres password
 
@@ -97,6 +97,8 @@ cd apps/compose
 ```
 
 CI on GitHub Actions runs `assembleDebug` with `nttld/setup-ndk` (r27c) and uploads the APK. The native library is `libnemo_ffi.so` via JNA (`arm64-v8a` and `x86_64`).
+
+Register, 1:1, group, and a live call on an emulator or device: [`docs/testing.md`](../docs/testing.md).
 
 ## Rate limits (v1 defaults)
 
