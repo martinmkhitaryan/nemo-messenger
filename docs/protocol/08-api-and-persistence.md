@@ -6,7 +6,7 @@
 - **Depends on:** [04-delivery-protocol.md](04-delivery-protocol.md), [05-federation.md](05-federation.md)
 - **Decisions:** [ADR-0028](../decisions/0028-implementation-languages-and-libraries.md), [0031](../decisions/0031-mailbox-retention-and-owner-auth.md), [0032](../decisions/0032-server-signing-key-and-federation-tls.md), [0033](../decisions/0033-local-http-api-and-postgres-schema.md)
 
-This document is the HTTP and storage mapping of phases 1–5. It MUST NOT add a server-stored field that those phases did not require. Cover traffic, Maximum mode, and Tor SOCKS are client transport ([ADR-0021](../decisions/0021-privacy-layer-and-modes.md)) and have no extra routes here. Group calls and FCM are listed in [`../v1.1.md`](../v1.1.md).
+This document is the HTTP and storage mapping of phases 1–5. It MUST NOT add a server-stored field that those phases did not require. Cover traffic, Maximum mode, and Tor SOCKS are client transport ([ADR-0021](../decisions/0021-privacy-layer-and-modes.md)) and have no extra routes here. Group calls and FCM: [`../v1.1.md`](../v1.1.md). Later work: [`../v1.2.md`](../v1.2.md).
 
 ---
 

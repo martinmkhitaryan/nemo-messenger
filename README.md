@@ -1,11 +1,12 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 13 (2026-09-21)<br>
+**Status:** Draft, revision 14 (2026-09-21)<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
 **Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)<br>
 **v1.1 nice-to-have (group calls, FCM):** [`docs/v1.1.md`](docs/v1.1.md)<br>
+**v1.2 later (video, key transparency, group migration, …):** [`docs/v1.2.md`](docs/v1.2.md)<br>
 **Manual live-call check:** [`docs/testing.md`](docs/testing.md)
 
 ---
@@ -39,7 +40,7 @@ The choices below are binding for the current design. Each one has a full record
 | Privacy layer | Metadata protection is a separate tunable layer; Normal/Private/High/Maximum; High cover + optional Tor SOCKS; Maximum constant-rate slots, no calls. | [ADR-0021](docs/decisions/0021-privacy-layer-and-modes.md) |
 | Data minimisation | No server-side presence, typing, receipts, contact lists or analytics; minimal purpose-bound logs. | [ADR-0022](docs/decisions/0022-server-side-data-minimisation.md) |
 | Backup | No identity recovery, never any cryptographic-state recovery, no history backup, no history export. | [ADR-0023](docs/decisions/0023-no-backup-no-recovery.md) |
-| Voice calls | Signaling inside the E2EE conversation; WebRTC media with self-hosted TURN; always-relay (`iceTransportPolicy=relay`, no P2P); 1:1 via DTLS-SRTP; groups (deferred) via SFrame keyed from MLS through a blind SFU. | [ADR-0024](docs/decisions/0024-voice-call-architecture.md) |
+| Voice calls | Signaling inside the E2EE conversation; WebRTC media through self-hosted TURN (`iceTransportPolicy=relay`); 1:1 via DTLS-SRTP; groups (deferred) via SFrame keyed from MLS through a blind SFU. | [ADR-0024](docs/decisions/0024-voice-call-architecture.md) |
 | Open and self-hosted | Fully self-hostable, open source, standard audited cryptography only, no custom primitives. | [ADR-0025](docs/decisions/0025-self-hostable-open-source-no-custom-crypto.md) |
 | Platforms | Android, Linux, and Windows. No iOS, macOS, or web. Single Rust core. | [ADR-0026](docs/decisions/0026-target-platforms.md) |
 | Development order | Security model, then protocols, then envelope, delivery, federation, privacy, application; APIs and schemas last. | [ADR-0027](docs/decisions/0027-protocol-first-development-order.md) |
@@ -64,7 +65,7 @@ The following are deliberately **not** this product. They are listed so that nob
 * Global usernames or directory lookup (v1).
 * Hiding group membership from the group's hosting server (v1).
 * Adding someone to a group without their client accepting (unilateral MLS Add).
-* Peer-to-peer call media (always TURN; host/srflx ICE would show the peer an IP).
+* Direct call media (host or srflx ICE). Calls always use TURN so the peer does not learn the user's IP ([ADR-0024](docs/decisions/0024-voice-call-architecture.md)).
 * A public attachment CDN, content-addressed file archive, or file key stored on a server.
 * Protection against a global passive observer without the optional privacy layer.
 * Protection of plaintext already present on a compromised device.
@@ -1148,7 +1149,7 @@ The product should support different privacy/performance trade-offs.
 ```text
 Real messages only
 Padding buckets always on (envelope layer, ADR-0010)
-Calls always-relay (TURN only; no P2P)
+Calls always-relay through TURN
 Minimal other overhead
 Low bandwidth cost
 Low battery cost
@@ -2217,22 +2218,15 @@ The initial product should focus on:
 
 # 52. Deferred Features
 
-The following should not be required for the first release:
+Not required for the first release. Split so later work is not one undifferentiated pile.
 
-* mandatory constant-rate traffic;
-* advanced mix networks;
-* full global-observer anonymity;
-* anonymous group membership;
-* privacy-preserving or global contact discovery (`identity@domain`, directories);
-* mandatory Tor;
-* server-generated cover traffic as the main privacy strategy;
-* group migration between hosting servers;
-* multi-use or long-lived group invite links (v1 invites are one-time, short-TTL; ADR-0018);
-* group voice calls (SFU + SFrame, section 64.4);
-* video calls;
-* key transparency for discovery.
+**v1.1** ([`docs/v1.1.md`](docs/v1.1.md)): group voice calls (SFU + SFrame, section 64.4); FCM opaque wake.
 
-However, the protocol should be extensible enough to support them later.
+**v1.2** ([`docs/v1.2.md`](docs/v1.2.md)): video; key transparency; group migration; group re-form after a long host outage; anonymous group membership; global or privacy-preserving contact discovery; mixnets / stronger global-observer anonymity; cross-server TURN issuance; desktop delivery while the app is not running; multi-use or long-lived group invite links (v1 invites stay one-time, short-TTL; ADR-0018).
+
+**Not a later version** (rejected or out of scope; see [`docs/v1.2.md`](docs/v1.2.md)): mandatory constant-rate for every user; mandatory Tor; server-generated cover as the main privacy strategy; iOS / macOS / web; linking two installations as one person.
+
+The protocol should stay extensible enough that a new ADR can add a v1.2 item without a wire-format rewrite.
 
 ---
 
@@ -2290,7 +2284,7 @@ Per-container sequence numbers, idempotency tokens, three acknowledgement kinds;
 
 ## 53.9 Server migration — resolved (ADR-0002, section 11)
 
-Same key, new mailbox, new home-server binding with higher `seq`. ADR-0003 only constrains that the key never moves to another device. Open: group migration (deferred).
+Same key, new mailbox, new home-server binding with higher `seq`. ADR-0003 only constrains that the key never moves to another device. Open: group migration ([v1.2](docs/v1.2.md) L3).
 
 ---
 
@@ -2316,11 +2310,11 @@ Resolved by later records (kept here so the original list stays traceable):
 * Double Ratchet skip window vs retention — [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md).
 * Federation HPKE suite, handshake, replay — [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md), [`docs/protocol/05-federation.md`](docs/protocol/05-federation.md).
 
-Still open:
+Still open (v1.2, each needs a new ADR):
 
-* TURN credential issuance across servers for cross-server calls (section 64, ADR-0024).
-* Behaviour when a hosting server is unreachable for an extended time: how a group detects it and re-forms.
-* Push wake-token format beyond "opaque 32-byte token", and desktop background delivery when the app is not running.
+* TURN credential issuance across servers for cross-server calls (section 64, ADR-0024; [v1.2](docs/v1.2.md) L8).
+* Behaviour when a hosting server is unreachable for an extended time: how a group detects it and re-forms ([v1.2](docs/v1.2.md) L4).
+* Push wake-token format beyond "opaque 32-byte token", and desktop background delivery when the app is not running ([v1.2](docs/v1.2.md) L9; Android FCM itself is v1.1 N4).
 
 ---
 
@@ -2747,7 +2741,7 @@ call_end
 
 ## 64.2 1:1 media
 
-WebRTC with DTLS-SRTP, **always relayed through TURN**. There is no peer-to-peer ICE. Clients MUST set `iceTransportPolicy=relay` and MUST NOT gather host or srflx candidates. The DTLS fingerprints are exchanged inside `call_invite` / `call_answer`, which are already authenticated by the Double Ratchet, so the media path inherits contact verification. No separate short authentication string is needed; one may be derived and shown as an option.
+WebRTC with DTLS-SRTP, **always relayed through TURN**. Clients MUST set `iceTransportPolicy=relay` and MUST NOT gather host or srflx candidates. The DTLS fingerprints are exchanged inside `call_invite` / `call_answer`, which are already authenticated by the Double Ratchet, so the media path inherits contact verification. TURN sees ciphertext, not audio. No separate short authentication string is needed; one may be derived and shown as an option.
 
 Signaling and fingerprint binding live in the Rust core. Capture and AEC/AGC/NS may live in the platform shell (ADR-0028, amending ADR-0026): Android uses `org.webrtc` `JavaAudioDeviceModule`; desktop Compose uses `javax.sound.sampled` and feeds PCM into `webrtc-audio-processing` plus Opus in `nemo-core`. webrtc-rs without AEC is not sufficient.
 
@@ -2761,10 +2755,10 @@ SFU      forwards SFrame ciphertext for group calls; sees stream metadata, not c
 ```
 
 * TURN credentials are ephemeral and issued per call by the caller's home server (`POST /v1/turn`, [ADR-0035](docs/decisions/0035-ephemeral-turn-credentials.md)), not tied to an identity.
-* Always-relay is mandatory in every call-capable mode: media never goes peer to peer, so the peer never learns the user's IP.
+* Always-relay is mandatory in every call-capable mode: the peer never learns the user's IP.
 * Discovery advertises TURN and SFU endpoints as server capabilities.
 
-## 64.4 Group calls (deferred, section 52)
+## 64.4 Group calls (v1.1; video is v1.2)
 
 An SFU terminates DTLS, so hop-by-hop SRTP does not give end-to-end confidentiality. Group calls use SFrame with keys derived from the MLS exporter:
 

@@ -4,7 +4,7 @@ v1 automated tests run in CI (`cargo test`, `desktopTest`, Android emulator inst
 
 Two vaults in one desktop window count as two identities. Headphones on at least one side, or you hear yourself twice.
 
-Follow-on features still in [`v1.1.md`](v1.1.md): group calls, FCM.
+Follow-on: [`v1.1.md`](v1.1.md) (group calls, FCM), then [`v1.2.md`](v1.2.md).
 
 ---
 
@@ -86,7 +86,7 @@ Then:
 | 1:1 text | Send from Left, see it on Right (and back). Quit and unlock both; send again. |
 | File | Paperclip on a 1:1 chat. |
 | Group | **+** → **New group**. Settings → **Copy invite**. Other pane: **+** → **Join group**, paste invite. That copies a `nemo-j:1:…` join request. First pane Settings → paste join request → **Admit to group**. Both send in the group. |
-| Live call | Open the 1:1 chat, grant the OS microphone if asked, press **Call**, answer on the other pane. Speak; you must hear the other side through coturn. Direct (host/srflx) ICE is refused. End the call. |
+| Live call | Open the 1:1 chat, grant the OS microphone if asked, press **Call**, answer on the other pane. Speak; you must hear the other side through coturn. End the call. |
 
 Pass only if the call is audible with a real mic, not silence frames in a unit test.
 
@@ -148,6 +148,6 @@ Walk the same checklist as desktop: register, 1:1 text, group invite→accept→
 | Symptom | Usual cause |
 | --- | --- |
 | Connect fails from a phone | Home URL still `localhost` / `10.0.2.2`, or port 8443 not reachable on LAN |
-| Call rings, no audio | Coturn profile not up; `NEMO_TURN_URL` is still `127.0.0.1` on a phone; host/srflx ICE (must stay relay-only) |
+| Call rings, no audio | Coturn profile not up; `NEMO_TURN_URL` is still `127.0.0.1` on a phone |
 | TURN 401 | `NEMO_TURN_SECRET` missing on `nemo-server` or not the same as coturn `--static-auth-secret` |
 | App will not install | Device below Android 16 |
