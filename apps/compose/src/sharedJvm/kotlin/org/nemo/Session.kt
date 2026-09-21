@@ -103,7 +103,7 @@ import java.util.Date
 import java.util.Locale
 
 private const val CANNOT_RECOVER =
-    "This identity cannot be recovered. If you lose the passphrase, the keys are gone."
+    "This identity cannot be recovered or exported. If you lose the passphrase, the keys and history are gone."
 
 expect fun pickLocalFile(): String?
 

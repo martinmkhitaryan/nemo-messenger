@@ -1,6 +1,6 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 10 (2026-09-21)<br>
+**Status:** Draft, revision 11 (2026-09-21)<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
@@ -36,7 +36,7 @@ The choices below are binding for the current design. Each one has a full record
 | Push | Push carries an opaque wake token only; one priority class per platform; the device fetches its own ciphertext. | [ADR-0020](docs/decisions/0020-opaque-push-wakeup.md) |
 | Privacy layer | Metadata protection is a separate tunable layer with modes; Tor optional; client-side cover traffic and constant-rate modes deferred but wire-compatible. | [ADR-0021](docs/decisions/0021-privacy-layer-and-modes.md) |
 | Data minimisation | No server-side presence, typing, receipts, contact lists or analytics; minimal purpose-bound logs. | [ADR-0022](docs/decisions/0022-server-side-data-minimisation.md) |
-| Backup | No identity recovery, never any cryptographic-state recovery, no history backup or local history export/import. | [ADR-0023](docs/decisions/0023-no-backup-no-recovery.md) |
+| Backup | No identity recovery, never any cryptographic-state recovery, no history backup, no history export. | [ADR-0023](docs/decisions/0023-no-backup-no-recovery.md) |
 | Voice calls | Signaling inside the E2EE conversation; WebRTC media with self-hosted TURN; always-relay (`iceTransportPolicy=relay`, no P2P); 1:1 via DTLS-SRTP; groups (deferred) via SFrame keyed from MLS through a blind SFU. | [ADR-0024](docs/decisions/0024-voice-call-architecture.md) |
 | Open and self-hosted | Fully self-hostable, open source, standard audited cryptography only, no custom primitives. | [ADR-0025](docs/decisions/0025-self-hostable-open-source-no-custom-crypto.md) |
 | Platforms | Android, Linux, Windows first; iOS/macOS later; no web in v1; single Rust core. | [ADR-0026](docs/decisions/0026-target-platforms.md) |
@@ -57,7 +57,7 @@ The following are deliberately **not** goals of this product. They are listed so
 * Multi-device: one person using two installations appears as two identities.
 * Identity recovery after device loss.
 * Recovery or synchronisation of ratchet / MLS state, under any circumstances.
-* Message history backup, and encrypted local history export/import.
+* Message history backup or export (local file, server blob, or any other dump of readable history).
 * Global usernames or directory lookup (v1).
 * Hiding group membership from the group's hosting server (v1).
 * Adding someone to a group without their client accepting (unilateral MLS Add).
@@ -2085,7 +2085,7 @@ Revoked
 New identity          (a contact appeared with a different key: it is a different contact)
 Secure
 Messages lost         (mailbox retention exceeded)
-Cannot be recovered   (shown once at identity creation, with the revocation phrase)
+Cannot be recovered or exported   (shown once at identity creation, with the revocation phrase)
 ```
 
 The underlying system may be extremely complex, but the primary UX should remain simple.
@@ -2303,7 +2303,7 @@ The hosting server knows the member capability set. Stream append is authorised 
 
 ## 53.11 Backup and recovery — resolved as non-goal (ADR-0023)
 
-No identity recovery, never state recovery, no history backup, no local history export/import ([ADR-0023](docs/decisions/0023-no-backup-no-recovery.md) amendment 1). The local SQLCipher vault ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md)) is at-rest encryption on that device, not a backup: a forgotten passphrase is a lost identity.
+No identity recovery, never state recovery, no history backup, no history export ([ADR-0023](docs/decisions/0023-no-backup-no-recovery.md)). The local SQLCipher vault ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md)) is at-rest encryption on that device, not a backup: a forgotten passphrase is a lost identity.
 
 ---
 

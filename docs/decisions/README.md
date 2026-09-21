@@ -62,7 +62,7 @@ IDs match reading order (foundations first). New records take the next free numb
 | --- | --- | --- | --- |
 | [ADR-0021](0021-privacy-layer-and-modes.md) | 2026-09-19 | Metadata privacy as a separate, tunable layer; Tor optional; cover traffic deferred | Accepted |
 | [ADR-0022](0022-server-side-data-minimisation.md) | 2026-09-19 | Server-side data minimisation: no presence, receipts, typing, analytics; minimal logs | Accepted |
-| [ADR-0023](0023-no-backup-no-recovery.md) | 2026-09-19 | No history backup and no identity recovery in v1 | Accepted |
+| [ADR-0023](0023-no-backup-no-recovery.md) | 2026-09-19 | No backup, no recovery, no history export | Accepted |
 
 ### Features
 

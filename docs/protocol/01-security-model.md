@@ -81,7 +81,7 @@ These must remain true through every later phase and in any implementation of th
 
 - Identity recovery: none. A lost, wiped, or stolen device is a lost identity. The only off-device control is revocation ([ADR-0004](../decisions/0004-revocation-key.md), [ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
 - Cryptographic-state recovery: none, ever.
-- Message-history backup: none. No local history export/import ([ADR-0023](../decisions/0023-no-backup-no-recovery.md) amendment 1).
+- Message-history backup or export: none. No local dump, no import, no server blob ([ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
 
 ### 3.5 Portability
 
@@ -136,7 +136,7 @@ Wire encodings of these objects are phase 2. The lifecycle itself is binding now
 1. The installation generates an Ed25519 identity keypair and an independent Ed25519 revocation keypair.
 2. `identity_id = H(identity_public_key)`.
 3. The client displays the revocation private key once (24-word phrase and/or QR) and then MUST NOT store it.
-4. UX MUST state that the identity and its history cannot be recovered.
+4. UX MUST state that the identity and its history cannot be recovered or exported.
 5. The client registers with a home server: publishes identity public key, revocation public key, a signed `HomeServerBinding` (`server_id`, `server_public_key`, endpoints, monotonic `seq`, `expires_at`), and a finite one-time PQXDH prekey stock. The server never sees private keys.
 
 ### 5.2 Use
