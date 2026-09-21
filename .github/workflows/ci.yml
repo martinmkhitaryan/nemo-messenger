@@ -50,6 +50,8 @@ jobs:
       # openssl-src nmake OPENSSLDIR quoting (SYS$MANAGER / ct_log.c).
       # APM build.rs also Command::new("nm"); MinGW nm is stripped from PATH,
       # so copy llvm-nm/Git nm into the shim dir as nm.exe (not nm.cmd).
+      # After meson, the sys crate compiles wrapper.cpp with GCC-only
+      # -Wno-unused-parameter (MSVC D8021); patch build.rs before cargo build.
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -175,6 +177,19 @@ jobs:
           $perl = Get-Command perl -ErrorAction SilentlyContinue
           if (-not $perl) { throw "perl not on PATH" }
           if ($perl.Source -match "Git[\\/]usr") { throw "perl is Git MSYS, not Strawberry: $($perl.Source)" }
+          # webrtc-audio-processing-sys 2.1.0 hardcodes GCC warning flags; MSVC rejects them.
+          cargo fetch -p nemo-ffi
+          $apmBuild = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\*\webrtc-audio-processing-sys-2.1.0\build.rs" |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $apmBuild) { throw "webrtc-audio-processing-sys-2.1.0 build.rs not fetched" }
+          $apmTxt = [System.IO.File]::ReadAllText($apmBuild)
+          $apmOld = "        .flag(`"-std=c++17`")`n        .flag(`"-Wno-unused-parameter`")"
+          $apmNew = "        .std(`"c++17`")`n        .flag_if_supported(`"-Wno-unused-parameter`")"
+          if (-not $apmTxt.Contains($apmOld)) {
+            throw "webrtc-audio-processing-sys build.rs CC flags not found to patch for MSVC"
+          }
+          [System.IO.File]::WriteAllText($apmBuild, $apmTxt.Replace($apmOld, $apmNew))
+          Write-Host "Patched MSVC-safe CC flags in $apmBuild"
           cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v5
         with:
