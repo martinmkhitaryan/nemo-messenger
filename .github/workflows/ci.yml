@@ -39,6 +39,38 @@ jobs:
         with:
           toolchain: stable-x86_64-pc-windows-msvc
           components: llvm-tools
+      # APM needs rust-objcopy (symbol tools) and a real llvm-nm for POSIX
+      # output. dtolnay/rust-toolchain does not always leave them on disk.
+      - name: Ensure llvm-tools for APM
+        shell: pwsh
+        run: |
+          rustup component add llvm-tools
+          $host = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
+          $toolsBin = Join-Path (rustc --print sysroot) "lib\rustlib\$host\bin"
+          if (-not (Test-Path $toolsBin)) { throw "rustlib tools bin missing: $toolsBin" }
+          $rustObjcopy = Join-Path $toolsBin "rust-objcopy.exe"
+          if (-not (Test-Path $rustObjcopy)) {
+            foreach ($cand in @("llvm-objcopy.exe", "llvm-objcopy")) {
+              $src = Join-Path $toolsBin $cand
+              if (Test-Path $src) { Copy-Item -Force $src $rustObjcopy; break }
+            }
+          }
+          if (-not (Test-Path $rustObjcopy)) {
+            Get-ChildItem $toolsBin | ForEach-Object { $_.Name }
+            throw "rust-objcopy.exe missing after llvm-tools"
+          }
+          # build.rs joins "rust-objcopy" with no .exe; Path::exists is false on Windows.
+          $rustObjcopyNoExt = Join-Path $toolsBin "rust-objcopy"
+          if (-not (Test-Path $rustObjcopyNoExt)) {
+            Copy-Item -Force $rustObjcopy $rustObjcopyNoExt
+          }
+          $llvmNm = Join-Path $toolsBin "llvm-nm.exe"
+          if (-not (Test-Path $llvmNm)) {
+            Get-ChildItem $toolsBin | ForEach-Object { $_.Name }
+            throw "llvm-nm.exe missing after llvm-tools"
+          }
+          Write-Host "rust-objcopy=$rustObjcopy"
+          Write-Host "llvm-nm=$llvmNm"
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -48,10 +80,8 @@ jobs:
       # meson.exe (not meson.cmd). A meson.exe shim adds -Dcpp_std=c++20 on
       # setup so APM gets MSVC C++20 (C7555). Do not shim cl.exe: that breaks
       # openssl-src nmake OPENSSLDIR quoting (SYS$MANAGER / ct_log.c).
-      # APM build.rs also Command::new("nm"); MinGW nm is stripped from PATH,
-      # so copy llvm-nm/Git nm into the shim dir as nm.exe (not nm.cmd).
-      # After meson, the sys crate compiles wrapper.cpp with GCC-only
-      # -Wno-unused-parameter (MSVC D8021); patch build.rs before cargo build.
+      # APM also needs nm.exe (not nm.cmd), Git cp, libclang, and a patched
+      # build.rs (GCC flags / skip MSVC symbol prefix / mirror lib*.a → *.lib).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -78,25 +108,30 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -property installationPath
           $clangBin = Join-Path $vs "VC\Tools\Llvm\x64\bin"
-          if (Test-Path (Join-Path $clangBin "libclang.dll")) {
-            $env:LIBCLANG_PATH = $clangBin
+          $libclang = Join-Path $clangBin "libclang.dll"
+          if (-not (Test-Path $libclang)) {
+            throw "libclang.dll not found for bindgen (VS LLVM): $libclang"
           }
+          $env:LIBCLANG_PATH = $clangBin
           $gitUsr = "C:\Program Files\Git\usr\bin"
-          if (Test-Path (Join-Path $gitUsr "cp.exe")) {
-            $env:Path = "$env:Path;$gitUsr"
+          $gitCp = Join-Path $gitUsr "cp.exe"
+          if (-not (Test-Path $gitCp)) {
+            throw "Git cp.exe not found (APM build.rs Command::new(cp)): $gitCp"
           }
+          $env:Path = "$env:Path;$gitUsr"
           $mesonReal = (Get-Command meson).Source
           if (-not $mesonReal) { throw "meson not on PATH before shim" }
           $env:NEMO_REAL_MESON = $mesonReal
           $shim = Join-Path $env:RUNNER_TEMP "build-shims"
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
-          # webrtc-audio-processing-sys prefixes symbols via Command::new("nm").
+          # Prefer rustup llvm-nm (POSIX flags); fall back to Git MinGW nm + DLLs.
           $shimNm = Join-Path $shim "nm.exe"
-          $nmCandidates = @()
           $rustcHost = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
-          $nmCandidates += Join-Path (rustc --print sysroot) "lib\rustlib\$rustcHost\bin\llvm-nm.exe"
-          $nmCandidates += Join-Path $clangBin "llvm-nm.exe"
-          $nmCandidates += "C:\Program Files\Git\mingw64\bin\nm.exe"
+          $nmCandidates = @(
+            (Join-Path (rustc --print sysroot) "lib\rustlib\$rustcHost\bin\llvm-nm.exe"),
+            (Join-Path $clangBin "llvm-nm.exe"),
+            "C:\Program Files\Git\mingw64\bin\nm.exe"
+          )
           $nmSrc = $nmCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $nmSrc) { throw "nm.exe not found (llvm-tools / VS LLVM / Git mingw64)" }
           Copy-Item -Force $nmSrc $shimNm
@@ -107,6 +142,8 @@ jobs:
               if (Test-Path $dllPath) { Copy-Item -Force $dllPath $shim }
             }
           }
+          & $shimNm --version
+          if ($LASTEXITCODE -ne 0) { throw "shim nm.exe failed --version" }
           $mesonShimC = Join-Path $env:RUNNER_TEMP "nemo-meson-shim.c"
           $mesonShimLines = @(
             '#define _CRT_SECURE_NO_WARNINGS',
@@ -156,7 +193,7 @@ jobs:
           & $clReal /nologo /O2 "/Fe:$shimMeson" $mesonShimC
           if (-not (Test-Path $shimMeson)) { throw "failed to build meson.exe C++20 shim" }
           $env:Path = "$shim;$env:Path"
-          Write-Host "CC=$env:CC CXX=$env:CXX"
+          Write-Host "CC=$env:CC CXX=$env:CXX LIBCLANG_PATH=$env:LIBCLANG_PATH"
           foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
@@ -167,6 +204,8 @@ jobs:
           $nm = Get-Command nm -ErrorAction SilentlyContinue
           if (-not $nm) { throw "nm not on PATH" }
           if ($nm.Source -ne $shimNm) { throw "nm is not shim nm.exe: $($nm.Source)" }
+          $cp = Get-Command cp -ErrorAction SilentlyContinue
+          if (-not $cp -or $cp.Source -notmatch 'Git[\\/]usr') { throw "cp must be Git usr cp.exe: $($cp.Source)" }
           $cl = Get-Command cl -ErrorAction SilentlyContinue
           if (-not $cl) { throw "cl.exe not on PATH" }
           if ($cl.Source -match '[\\/]build-shims[\\/]') { throw "cl must be real MSVC, not a shim: $($cl.Source)" }
@@ -177,27 +216,14 @@ jobs:
           $perl = Get-Command perl -ErrorAction SilentlyContinue
           if (-not $perl) { throw "perl not on PATH" }
           if ($perl.Source -match "Git[\\/]usr") { throw "perl is Git MSYS, not Strawberry: $($perl.Source)" }
-          # webrtc-audio-processing-sys 2.1.0 hardcodes GCC warning flags; MSVC rejects them.
-          cargo fetch
-          $registrySrc = Join-Path $env:USERPROFILE ".cargo\registry\src"
-          if (-not (Test-Path $registrySrc)) { throw "cargo registry src missing after fetch" }
-          $apmBuild = Get-ChildItem -Path $registrySrc -Recurse -Filter "build.rs" |
-            Where-Object { $_.Directory.Name -eq "webrtc-audio-processing-sys-2.1.0" } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $apmBuild) { throw "webrtc-audio-processing-sys-2.1.0 build.rs not fetched" }
-          $apmTxt = [System.IO.File]::ReadAllText($apmBuild)
-          $apmOld = "        .flag(`"-std=c++17`")`n        .flag(`"-Wno-unused-parameter`")"
-          $apmNew = "        .std(`"c++17`")`n        .flag_if_supported(`"-Wno-unused-parameter`")"
-          if (-not $apmTxt.Contains($apmOld)) {
-            throw "webrtc-audio-processing-sys build.rs CC flags not found to patch for MSVC"
-          }
-          [System.IO.File]::WriteAllText($apmBuild, $apmTxt.Replace($apmOld, $apmNew))
-          Write-Host "Patched MSVC-safe CC flags in $apmBuild"
+          & "$env:GITHUB_WORKSPACE\scripts\ci\windows-apm-patch-build-rs.ps1"
           cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v5
+        continue-on-error: true
         with:
           name: nemo-ffi-windows
           path: ${{ runner.temp }}/cargo-target/debug/nemo_ffi.dll
+          if-no-files-found: warn
 
   android:
     runs-on: ubuntu-latest
@@ -264,6 +290,8 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: cd apps/compose && ./gradlew --no-daemon connectedDebugAndroidTest
       - uses: actions/upload-artifact@v5
+        continue-on-error: true
         with:
           name: nemo-debug-apk
           path: apps/compose/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
