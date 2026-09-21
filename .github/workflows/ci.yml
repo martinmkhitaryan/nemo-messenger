@@ -36,6 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
       - name: Install protoc
         shell: pwsh
         run: |
@@ -45,6 +47,20 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$ver/protoc-$ver-win64.zip" -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $dest -Force
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "bin")
+      - name: Enable MSVC
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+            call "%%i\VC\Auxiliary\Build\vcvars64.bat" && set >> "%GITHUB_ENV%"
+          )
+      # Meson otherwise picks Strawberry Perl's MinGW; abseil/cctz does not build with that c++.
+      - name: Drop MinGW from PATH
+        shell: pwsh
+        run: |
+          $path = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notmatch '(?i)Strawberry|mingw64|mingw32') }) -join ';'
+          Add-Content -Path $env:GITHUB_ENV -Value "PATH=$path"
+          Add-Content -Path $env:GITHUB_ENV -Value "CC=cl"
+          Add-Content -Path $env:GITHUB_ENV -Value "CXX=cl"
       - name: Meson for desktop APM
         run: pip install meson ninja
       - name: Build nemo_ffi.dll
@@ -75,7 +91,11 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 emulator'
       - name: Native build deps
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build cmake pkg-config clang libclang-dev protobuf-compiler
+          echo "LIBCLANG_PATH=$(dirname "$(find /usr/lib -name 'libclang.so*' | head -n1)")" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/gcc/$(gcc -dumpmachine)/$(gcc -dumpversion)/include" >> "$GITHUB_ENV"
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Assemble debug APK

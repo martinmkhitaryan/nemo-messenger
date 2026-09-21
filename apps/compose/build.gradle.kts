@@ -203,7 +203,16 @@ afterEvaluate {
         environment("jna.library.path", ffiLibDir.absolutePath)
     }
     tasks.findByName("run")?.dependsOn("cargoBuildFfi")
-    tasks.matching { it.name.startsWith("package") }.configureEach { dependsOn("cargoBuildFfi") }
+    // Desktop installers only. Android `packageDebug` / `packageRelease` must not
+    // build host `nemo-ffi` (that pulls webrtc-audio-processing and needs Meson).
+    tasks.matching {
+        it.name.startsWith("packageDeb") ||
+            it.name.startsWith("packageMsi") ||
+            it.name.startsWith("packageDmg") ||
+            it.name.startsWith("packageExe") ||
+            it.name.startsWith("packageUber") ||
+            it.name.startsWith("packageDistribution")
+    }.configureEach { dependsOn("cargoBuildFfi") }
     tasks.findByName("preBuild")?.dependsOn("cargoNdkFfi")
     tasks.matching { it.name.contains("AndroidTest") && it.name.startsWith("connected") }.configureEach {
         dependsOn("cargoNdkFfi")

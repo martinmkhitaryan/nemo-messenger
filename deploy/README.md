@@ -53,7 +53,7 @@ cd apps/compose
 
 ### Windows JVM run
 
-CI builds `nemo_ffi.dll` (`windows-ffi` job). On a Windows machine:
+CI builds `nemo_ffi.dll` (`windows-ffi` job) with MSVC. On a Windows machine (Visual Studio Build Tools, not MinGW):
 
 ```text
 cargo build -p nemo-ffi
