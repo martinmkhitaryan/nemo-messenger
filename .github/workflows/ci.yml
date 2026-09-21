@@ -43,10 +43,9 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
-      # compiles webrtc-audio-processing. Meson on this image picks Strawberry
-      # MinGW (abseil/cctz then fails). Keep Strawberry perl for openssl-src
-      # (sqlcipher); drop only Strawberry gcc. Strip MinGW in the same process
-      # as cargo — GITHUB_ENV PATH rewrite is not enough.
+      # compiles webrtc-audio-processing. One toolchain for the whole graph:
+      # MSVC cl (openssl-src VC-WIN64A nmake) + Strawberry perl (Configure) +
+      # no Strawberry/MinGW gcc (abseil) and no clang as CC (nmake /Zi flags).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -66,34 +65,30 @@ jobs:
           $env:Path = "$strawberryPerl;$env:Path"
           $env:PERL = $strawberryPerlExe
           $env:OPENSSL_SRC_PERL = $strawberryPerlExe
+          $env:CC = "cl"
+          $env:CXX = "cl"
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -property installationPath
           $clangBin = Join-Path $vs "VC\Tools\Llvm\x64\bin"
-          if (Test-Path (Join-Path $clangBin "clang.exe")) {
-            $env:Path = "$clangBin;$env:Path"
-            $env:CC = "clang"
-            $env:CXX = "clang"
-            if (Test-Path (Join-Path $clangBin "libclang.dll")) {
-              $env:LIBCLANG_PATH = $clangBin
-            }
-          } else {
-            $env:CC = "cl"
-            $env:CXX = "cl"
+          if (Test-Path (Join-Path $clangBin "libclang.dll")) {
+            $env:LIBCLANG_PATH = $clangBin
           }
-          $sysroot = (rustc --print sysroot).Trim()
-          $llvmTools = Join-Path $sysroot "lib\rustlib\x86_64-pc-windows-msvc\bin"
-          if (Test-Path (Join-Path $llvmTools "rust-nm.exe")) {
-            $shim = Join-Path $env:RUNNER_TEMP "llvm-shims"
-            New-Item -ItemType Directory -Force -Path $shim | Out-Null
-            Copy-Item (Join-Path $llvmTools "rust-nm.exe") (Join-Path $shim "nm.exe") -Force
-            $env:Path = "$shim;$llvmTools;$env:Path"
+          $gitUsr = "C:\Program Files\Git\usr\bin"
+          if (Test-Path (Join-Path $gitUsr "cp.exe")) {
+            $env:Path = "$env:Path;$gitUsr"
           }
+          $shim = Join-Path $env:RUNNER_TEMP "build-shims"
+          New-Item -ItemType Directory -Force -Path $shim | Out-Null
+          Set-Content -Path (Join-Path $shim "nm.cmd") -Value "@echo off`r`nexit /b 0"
+          $env:Path = "$shim;$env:Path"
           Write-Host "CC=$env:CC CXX=$env:CXX"
-          foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm")) {
+          foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
           }
           if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl.exe not on PATH" }
+          $link = Get-Command link -ErrorAction SilentlyContinue
+          if (-not $link -or $link.Source -match "Git[\\/]usr") { throw "MSVC link.exe not first on PATH: $($link.Source)" }
           $cc = Get-Command cc -ErrorAction SilentlyContinue
           if ($cc -and $cc.Source -match "Strawberry|mingw") { throw "cc is still MinGW: $($cc.Source)" }
           $perl = Get-Command perl -ErrorAction SilentlyContinue
