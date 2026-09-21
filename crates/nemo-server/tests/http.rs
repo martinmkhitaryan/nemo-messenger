@@ -779,3 +779,77 @@ async fn turn_creds_are_ephemeral_and_not_identity() {
     let user2 = cbor::expect_text(cbor::map_get(&m2, 1).unwrap()).unwrap();
     assert_ne!(user, user2);
 }
+
+#[tokio::test]
+async fn post_binding_higher_seq_disables_mailbox() {
+    let state = AppState::new();
+    let home = state.home.lock().await;
+    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let card = signed_card(home.server_id(), home.hpke_public(), &sk);
+    let id = identity_id(&sk.verifying_key().to_bytes());
+    drop(home);
+
+    let app = router(state.clone());
+    let (status, _, _) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/register")
+            .body(Body::from(card.encode().unwrap()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let mut other_hpke = [0u8; KEY_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut other_hpke);
+    let moved = ContactCard {
+        identity_public_key: card.identity_public_key,
+        revocation_public_key: card.revocation_public_key,
+        share_token: {
+            let mut t = [0u8; KEY_LEN];
+            rand::rngs::OsRng.fill_bytes(&mut t);
+            t
+        },
+        binding: HomeServerBinding::sign(
+            &sk,
+            HomeServerBinding {
+                server_id: ids::server_id(&other_hpke),
+                server_hpke_public_key: other_hpke,
+                host: "other.example".into(),
+                seq: 2,
+                expires_at: unix_now() + 86_400,
+                signature: [0; 64],
+            },
+        )
+        .unwrap(),
+    };
+    let (status, _, _) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/binding")
+            .body(Body::from(moved.encode().unwrap()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(state.home.lock().await.mailbox_disabled(id));
+    let row = state.home.lock().await.discovery(id).unwrap();
+    assert_eq!(row.binding.seq, 2);
+
+    let stranger = SigningKey::generate(&mut rand::rngs::OsRng);
+    let mut ghost_hpke = [0u8; KEY_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut ghost_hpke);
+    let ghost = signed_card(ids::server_id(&ghost_hpke), ghost_hpke, &stranger);
+    let (status, _, _) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/binding")
+            .body(Body::from(ghost.encode().unwrap()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

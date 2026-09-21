@@ -277,6 +277,26 @@ fn send_call_body(
     emit_call(session, inbox, next_seq, peer_hex, body, kind, now, true)
 }
 
+fn send_own_contact_capability(
+    session: &mut HomeSession<HttpHome>,
+    peer: nemo_wire::ids::IdentityId,
+    now: u64,
+) -> Result<(), FfiError> {
+    let cap = block_on(session.mint_contact())?;
+    let ptext = encode(&AppMessage {
+        header: AppHeader {
+            conv_seq: 0,
+            sent_at: now,
+            reply_to: None,
+        },
+        body: AppBody::Capability {
+            contact_capability: cap,
+        },
+    })?;
+    block_on(session.send_to(&peer, TtlBucket::DEFAULT, &ptext, now))?;
+    Ok(())
+}
+
 fn send_own_binding_gossip(
     session: &mut HomeSession<HttpHome>,
     peer: nemo_wire::ids::IdentityId,
@@ -818,30 +838,57 @@ impl NemoClient {
 
     pub fn register(&self, home_https_base: String) -> Result<(), FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-        let install = match inner.state.take() {
-            Some(ClientState::Local(install)) => install,
-            Some(ClientState::Registered(session)) => {
-                inner.state = Some(ClientState::Registered(session));
-                return Err(CoreError::AlreadyRegistered.into());
+        let now = now_unix();
+        match inner.state.take() {
+            Some(ClientState::Local(install)) => {
+                let transport = HttpHome::new(&home_https_base)?;
+                match block_on(async {
+                    let (mut session, _) = HomeSession::register(transport, install, now).await?;
+                    session.set_home_base(&home_https_base);
+                    session.restock_publish().await?;
+                    Ok::<_, CoreError>(session)
+                }) {
+                    Ok(session) => {
+                        inner.state = Some(ClientState::Registered(session));
+                        persist(&inner)?;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        inner.state = None;
+                        Err(err.into())
+                    }
+                }
             }
-            None => return Err(FfiError::Core("busy".into())),
-        };
-        let transport = HttpHome::new(&home_https_base)?;
-        match block_on(async {
-            let (mut session, _) = HomeSession::register(transport, install, now_unix()).await?;
-            session.set_home_base(&home_https_base);
-            session.restock_publish().await?;
-            Ok::<_, CoreError>(session)
-        }) {
-            Ok(session) => {
-                inner.state = Some(ClientState::Registered(session));
-                persist(&inner)?;
-                Ok(())
+            Some(ClientState::Registered(mut session)) => {
+                let new_base = home_https_base.trim_end_matches('/');
+                if !session.home_base.is_empty()
+                    && session.home_base.trim_end_matches('/') == new_base
+                {
+                    inner.state = Some(ClientState::Registered(session));
+                    return Err(CoreError::AlreadyRegistered.into());
+                }
+                match block_on(session.rehome(
+                    HttpHome::new(&home_https_base)?,
+                    &home_https_base,
+                    now,
+                )) {
+                    Ok(_) => {
+                        let peers: Vec<_> = session.contacts.keys().copied().collect();
+                        for peer in peers {
+                            let _ = send_own_contact_capability(&mut session, peer, now);
+                            let _ = send_own_binding_gossip(&mut session, peer, now);
+                        }
+                        inner.state = Some(ClientState::Registered(session));
+                        persist(&inner)?;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        inner.state = Some(ClientState::Registered(session));
+                        Err(err.into())
+                    }
+                }
             }
-            Err(err) => {
-                inner.state = None;
-                Err(err.into())
-            }
+            None => Err(FfiError::Core("busy".into())),
         }
     }
 
@@ -2499,6 +2546,32 @@ mod tests {
         assert_eq!(alice2.identity_id_hex().unwrap(), alice_id);
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn register_again_rehomes_to_a_second_server() {
+        let a = serve_home();
+        let b = serve_home();
+        let dir = temp_dir("nemo-ffi-rehome");
+        let alice =
+            NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
+                .unwrap();
+        alice.register(a.clone()).unwrap();
+        let err = alice.register(a).unwrap_err();
+        assert!(err.to_string().contains("already registered"));
+        alice.register(b.clone()).unwrap();
+        alice.mint_share_uri().unwrap();
+        drop(alice);
+        let opened =
+            NemoClient::open_at(dir.to_string_lossy().into_owned(), "correct horse".into())
+                .unwrap();
+        assert!(opened
+            .register(b)
+            .unwrap_err()
+            .to_string()
+            .contains("already registered"));
+        opened.mint_share_uri().unwrap();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

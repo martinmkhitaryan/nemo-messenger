@@ -410,6 +410,46 @@ async fn revoked_identity_fails_discovery_check() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn rehome_opens_new_mailbox_and_disables_old() {
+    let a_state = AppState::new();
+    let b_state = AppState::new();
+    let a = RouterTransport {
+        app: router(a_state.clone()),
+    };
+    let b = RouterTransport {
+        app: router(b_state.clone()),
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (mut alice, _) = HomeSession::register(a.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let created = alice
+        .create_group([7u8; 32], alice.mint_contact().await.unwrap())
+        .await
+        .unwrap();
+    alice.remember_group(created);
+    let old_seq = alice.install.binding_seq();
+    let id = alice.identity_id();
+
+    let same = alice.rehome(a.clone(), "", now).await.unwrap_err();
+    assert!(matches!(same, CoreError::AlreadyRegistered));
+
+    let card = alice.rehome(b, "http://b.example", now).await.unwrap();
+    assert_eq!(card.binding.seq, old_seq + 1);
+    assert_eq!(alice.install.binding_seq(), old_seq + 1);
+    assert_eq!(alice.home_base, "http://b.example");
+    assert_eq!(alice.cursor, 0);
+    assert!(a_state.home.lock().await.mailbox_disabled(id));
+    let on_b = b_state.home.lock().await.discovery(id).unwrap();
+    assert_eq!(on_b.binding.seq, old_seq + 1);
+    let on_a = a_state.home.lock().await.discovery(id).unwrap();
+    assert_eq!(on_a.binding.seq, old_seq + 1);
+    assert_eq!(on_a.binding.server_id, on_b.binding.server_id);
+    alice.mint_contact().await.expect("new mailbox on B");
+}
+
 /// Set `NEMO_TEST_HOME_URL` (e.g. `https://localhost:8443` after compose up).
 #[tokio::test]
 async fn two_installations_register_on_env_home() {

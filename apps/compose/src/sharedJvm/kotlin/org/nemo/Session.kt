@@ -385,9 +385,12 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 onBack = { showSettings = false },
                                 onRegister = {
                                     runIo {
+                                        val moving = registered
                                         withContext(Dispatchers.IO) { c?.register(homeUrl.trim()) }
                                         registered = true
-                                        snackbar.showSnackbar("Connected to home")
+                                        snackbar.showSnackbar(
+                                            if (moving) "Moved to new home" else "Connected to home",
+                                        )
                                     }
                                 },
                                 onShare = {

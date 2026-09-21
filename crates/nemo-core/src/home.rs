@@ -329,6 +329,48 @@ impl<T: HomeTransport> HomeSession<T> {
         ))
     }
 
+    /// Same identity, new mailbox on `new_transport` (README §11). Contacts and
+    /// groups stay; group **host** migration stays deferred.
+    pub async fn rehome(
+        &mut self,
+        new_transport: T,
+        new_base: &str,
+        now_unix: u64,
+    ) -> Result<ContactCard> {
+        let bundle = fetch_bundle(&new_transport).await?;
+        if bundle.server_id == self.bundle.server_id {
+            return Err(CoreError::AlreadyRegistered);
+        }
+        let card = self.install.mint_card(
+            bundle.server_hpke_public_key,
+            &bundle.host,
+            now_unix.saturating_add(CARD_TTL_SECS),
+        )?;
+        let res = new_transport
+            .call(HttpRequest {
+                method: "POST",
+                path: "/v1/register".into(),
+                headers: vec![],
+                body: card.encode()?,
+            })
+            .await?;
+        check_empty(&res)?;
+        let old = std::mem::replace(&mut self.transport, new_transport);
+        self.bundle = bundle;
+        self.cursor = 0;
+        self.set_home_base(new_base);
+        self.restock_publish().await?;
+        let hpke = self.hpke_public();
+        let groups = self.groups.clone();
+        for g in &groups {
+            if let Ok(cap) = self.mint_contact().await {
+                let _ = Self::post_fanout(&old, g.group_id, &g.cred, cap, hpke).await;
+            }
+        }
+        let _ = Self::post_binding(&old, &card).await;
+        Ok(card)
+    }
+
     pub fn resume(transport: T, install: Installation, state: HomeState) -> Self {
         Self {
             transport,
@@ -929,19 +971,47 @@ impl<T: HomeTransport> HomeSession<T> {
         delivery_capability: [u8; KEY_LEN],
         home_hpke_public: [u8; KEY_LEN],
     ) -> Result<()> {
+        Self::post_fanout(
+            &self.transport,
+            group_id,
+            cred,
+            delivery_capability,
+            home_hpke_public,
+        )
+        .await
+    }
+
+    async fn post_fanout(
+        transport: &T,
+        group_id: [u8; KEY_LEN],
+        cred: &HostCred,
+        delivery_capability: [u8; KEY_LEN],
+        home_hpke_public: [u8; KEY_LEN],
+    ) -> Result<()> {
         let body = cbor::encode(&Value::Map(vec![
             (0, Value::Bytes(cred.credential_id.to_vec())),
             (1, Value::Bytes(cred.credential_secret.to_vec())),
             (2, Value::Bytes(delivery_capability.to_vec())),
             (3, Value::Bytes(home_hpke_public.to_vec())),
         ]));
-        let res = self
-            .transport
+        let res = transport
             .call(HttpRequest {
                 method: "POST",
                 path: format!("/v1/groups/{}/fanout", ids::to_hex(&group_id)),
                 headers: vec![],
                 body,
+            })
+            .await?;
+        check_empty(&res)
+    }
+
+    async fn post_binding(transport: &T, card: &ContactCard) -> Result<()> {
+        let res = transport
+            .call(HttpRequest {
+                method: "POST",
+                path: "/v1/binding".into(),
+                headers: vec![],
+                body: card.encode()?,
             })
             .await?;
         check_empty(&res)

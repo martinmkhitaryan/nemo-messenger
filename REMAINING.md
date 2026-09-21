@@ -1,6 +1,6 @@
 # Missing besides Track N
 
-**Status:** working list after idle discovery / revoke-remove / quiet MLS updates.  
+**Status:** working list after identity re-home (R4).  
 **Not a specification.** `README.md`, `docs/decisions/`, and `docs/protocol/` win if this file disagrees.  
 **Delete this file** with `IMPLEMENTATION.md` when I12 freeze is done.
 
@@ -10,7 +10,7 @@ Next free ADR is **0036**. Do not invent schema, ICE, or push tables without a r
 
 ## Still open (not Track N)
 
-Protocol types for v1 messages, 1:1 media, groups, vault, and wakeup are in the tree. R1–R3 idle MUST work is in the fetch/expire loop. What is left is **human freeze checks** plus identity re-home (R4).
+Protocol types for v1 messages, 1:1 media, groups, vault, and wakeup are in the tree. R1–R4 specified MUST work is in the client/server path. What is left is **human freeze checks**.
 
 ### Freeze checks
 
@@ -29,7 +29,7 @@ Product verification, not missing codecs.
 | R1 | Idle discovery refresh | **Done** — `expire_now` / `fetch_now` walk stale 1:1 pins and group identities (`DISCOVERY_REFRESH_SECS`). |
 | R2 | MLS Remove on revocation | **Done** — idle sweep emits `RemoveBundle` for each shared group and a `revoked` row. |
 | R3 | Quiet-group MLS Update | **Done** — `maybe_self_update` also fires after `UPDATE_ON_ONLINE` (24 h) and is flushed from the idle path. |
-| R4 | Identity move to another home | README §11: same key, new mailbox, higher binding `seq`, gossip, then `refresh_fanout` under each member credential. The **old** server drops the mailbox when it sees a higher `seq` (implemented). FFI/UI can register once; they cannot re-home, bump `seq`, or call `HomeSession::refresh_fanout`. Group **host** migration stays §52. |
+| R4 | Identity move to another home | **Done** — `POST /v1/binding` maps `observe_binding`; `HomeSession::rehome` mints a higher `seq`, registers on B, restocks, refreshes fan-out on the old host, and notifies A. FFI `register` while already registered moves home, gossips the binding, and sends new contact capabilities. Group **host** migration stays §52. |
 
 `call_ice` trickle send is not listed: offer/answer wait until ICE gathering completes and put relay candidates in the invite/answer. Receive of `CallIce` already works.
 
@@ -37,7 +37,7 @@ Product verification, not missing codecs.
 
 ## Shipped (do not re-open as missing)
 
-M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, idle discovery refresh, MLS Remove on revoke, quiet-group Updates, wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
+M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, idle discovery refresh, MLS Remove on revoke, quiet-group Updates, identity re-home (R4), wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
 
 ---
 

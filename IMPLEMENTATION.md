@@ -35,7 +35,7 @@ How to use it:
 | Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
 | Packaging / self-host docs | **Done** (I11) — compose HTTPS :8443; JVM `./gradlew run`; LICENSE split |
 | Desktop hardening | **Done** (I12) — 120 s owner auth, capability/peer rate limits, cargo-deny, log redaction |
-| v1 freeze | Next — see [`REMAINING.md`](REMAINING.md): live call + device APK, then R4 identity re-home |
+| v1 freeze | Next — see [`REMAINING.md`](REMAINING.md): live call + device APK |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -355,4 +355,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Do **not** freeze yet. What is left besides Track N is listed in [`REMAINING.md`](REMAINING.md): a live audible 1:1 call, an APK on a device, identity re-home (R4), then delete this file. FCM is I10b and needs ADR-0036.
+**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Do **not** freeze yet. What is left besides Track N is listed in [`REMAINING.md`](REMAINING.md): a live audible 1:1 call and an APK on a device, then delete this file. FCM is I10b and needs ADR-0036.

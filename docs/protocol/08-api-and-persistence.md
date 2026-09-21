@@ -64,6 +64,8 @@ Returns the host `ServerBundle` (phase 5). Clients check `server_id` / HPKE agai
 
 Body: `ContactCard`. Server verifies the card, that `binding.server_id` is this host, creates the mailbox, stores discovery keys, and registers the card's share token. 204.
 
+`POST /binding`: same body. Observes a `HomeServerBinding` for an identity this host already knows ([phase 1](01-security-model.md) §5.3). Higher `seq` is stored; if `binding.server_id` is not this host, the mailbox is disabled (README §11). Unknown identity: 403 empty. No extra table.
+
 ### 3.3 `GET /discovery/{identity_id}`
 
 Returns `DiscoveryRecord` CBOR:

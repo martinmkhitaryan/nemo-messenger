@@ -80,6 +80,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/bundle", get(bundle))
         .route("/v1/register", post(register))
+        .route("/v1/binding", post(observe_card_binding))
         .route("/v1/discovery/{id}", get(discovery))
         .route("/v1/prekeys", get(fetch_prekey).post(upload_prekey))
         .route("/v1/envelopes", post(post_envelope))
@@ -162,6 +163,19 @@ async fn register(State(st): State<AppState>, body: Bytes) -> StatusCode {
     home.now = unix_now();
     match home.register_from_card(&card) {
         Ok(_) => StatusCode::NO_CONTENT,
+        Err(e) => map_err(e),
+    }
+}
+
+/// Higher `seq` from another home disables this mailbox (README §11). No new table.
+async fn observe_card_binding(State(st): State<AppState>, body: Bytes) -> StatusCode {
+    let Ok(card) = ContactCard::decode(&body) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    let mut home = st.home.lock().await;
+    home.now = unix_now();
+    match home.observe_binding(card.identity_id(), &card.binding) {
+        Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => map_err(e),
     }
 }
