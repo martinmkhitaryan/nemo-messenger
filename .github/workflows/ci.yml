@@ -44,8 +44,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
       # compiles webrtc-audio-processing. Meson on this image picks Strawberry
-      # MinGW (abseil/cctz then fails). GITHUB_ENV PATH rewrite is not enough;
-      # strip MinGW in the same process as cargo, like mesonbuild's own CI.
+      # MinGW (abseil/cctz then fails). Keep Strawberry perl for openssl-src
+      # (sqlcipher); drop only Strawberry gcc. Strip MinGW in the same process
+      # as cargo — GITHUB_ENV PATH rewrite is not enough.
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -54,7 +55,17 @@ jobs:
       - name: Build nemo_ffi.dll
         shell: pwsh
         run: |
-          $env:Path = ($env:Path.Split(';') | Where-Object { $_ -and ($_ -notmatch 'mingw|Strawberry|msys64') }) -join ';'
+          $env:Path = ($env:Path.Split(';') | Where-Object {
+            $_ -and ($_ -notmatch 'mingw|msys64|Strawberry[\\/]+c[\\/]')
+          }) -join ';'
+          $strawberryPerl = "C:\Strawberry\perl\bin"
+          $strawberryPerlExe = Join-Path $strawberryPerl "perl.exe"
+          if (-not (Test-Path $strawberryPerlExe)) {
+            throw "Strawberry perl.exe not found (openssl-src / sqlcipher)"
+          }
+          $env:Path = "$strawberryPerl;$env:Path"
+          $env:PERL = $strawberryPerlExe
+          $env:OPENSSL_SRC_PERL = $strawberryPerlExe
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -property installationPath
           $clangBin = Join-Path $vs "VC\Tools\Llvm\x64\bin"
@@ -78,13 +89,16 @@ jobs:
             $env:Path = "$shim;$llvmTools;$env:Path"
           }
           Write-Host "CC=$env:CC CXX=$env:CXX"
-          foreach ($tool in @("cl", "clang", "cc", "c++", "meson", "ninja", "nm")) {
+          foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm")) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
           }
           if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl.exe not on PATH" }
           $cc = Get-Command cc -ErrorAction SilentlyContinue
           if ($cc -and $cc.Source -match "Strawberry|mingw") { throw "cc is still MinGW: $($cc.Source)" }
+          $perl = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $perl) { throw "perl not on PATH" }
+          if ($perl.Source -match "Git[\\/]usr") { throw "perl is Git MSYS, not Strawberry: $($perl.Source)" }
           cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v5
         with:
