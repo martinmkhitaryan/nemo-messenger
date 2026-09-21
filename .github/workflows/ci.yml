@@ -46,7 +46,9 @@ jobs:
       # compiles webrtc-audio-processing. MSVC cl + Strawberry perl, no MinGW.
       # Short CARGO_TARGET_DIR (MAX_PATH). Cargo Command::new("meson") runs
       # meson.exe and skips a meson.cmd wrapper, so APM stays /std:c++17.
-      # A cl.exe shim rewrites that to /std:c++20 (MSVC C7555).
+      # A cl.exe shim rewrites that to /std:c++20 (MSVC C7555). The real cl
+      # lives under Program Files; spawnv without quotes made Meson pass
+      # path fragments as .obj files (LNK1181).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -89,25 +91,39 @@ jobs:
           $clShimC = Join-Path $env:RUNNER_TEMP "nemo-cl-shim.c"
           $clShimLines = @(
             '#define _CRT_SECURE_NO_WARNINGS',
-            '#include <process.h>',
+            '#define WIN32_LEAN_AND_MEAN',
+            '#include <windows.h>',
             '#include <stdio.h>',
             '#include <stdlib.h>',
             '#include <string.h>',
+            'static int append_quoted(char *dst, size_t cap, size_t *pos, const char *arg) {',
+            '  size_t n = *pos, alen = strlen(arg);',
+            '  if (n + alen + 4 >= cap) return -1;',
+            '  if (n) dst[n++] = '' '';',
+            '  dst[n++] = ''"'';',
+            '  memcpy(dst + n, arg, alen); n += alen;',
+            '  dst[n++] = ''"'';',
+            '  dst[n] = 0; *pos = n; return 0;',
+            '}',
             'int main(int argc, char **argv) {',
             '  const char *real = getenv("NEMO_REAL_CL");',
-            '  const char **nv;',
-            '  int i;',
-            '  intptr_t rc;',
+            '  char cmdline[32768]; size_t pos = 0; int i;',
+            '  STARTUPINFOA si; PROCESS_INFORMATION pi; DWORD code = 1;',
             '  if (!real || !real[0]) { fprintf(stderr, "NEMO_REAL_CL not set\n"); return 1; }',
-            '  nv = (const char **)calloc((size_t)argc + 1, sizeof(char *));',
-            '  if (!nv) return 1;',
-            '  nv[0] = real;',
+            '  cmdline[0] = 0;',
+            '  if (append_quoted(cmdline, sizeof(cmdline), &pos, real) != 0) return 1;',
             '  for (i = 1; i < argc; i++) {',
-            '    nv[i] = strcmp(argv[i], "/std:c++17") == 0 ? "/std:c++20" : argv[i];',
+            '    const char *a = strcmp(argv[i], "/std:c++17") == 0 ? "/std:c++20" : argv[i];',
+            '    if (append_quoted(cmdline, sizeof(cmdline), &pos, a) != 0) return 1;',
             '  }',
-            '  rc = _spawnv(_P_WAIT, real, nv);',
-            '  if (rc < 0) { perror("spawn cl"); return 1; }',
-            '  return (int)rc;',
+            '  memset(&si, 0, sizeof(si)); si.cb = sizeof(si);',
+            '  if (!CreateProcessA(real, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {',
+            '    fprintf(stderr, "CreateProcess cl failed: %lu\n", GetLastError()); return 1;',
+            '  }',
+            '  WaitForSingleObject(pi.hProcess, INFINITE);',
+            '  GetExitCodeProcess(pi.hProcess, &code);',
+            '  CloseHandle(pi.hProcess); CloseHandle(pi.hThread);',
+            '  return (int)code;',
             '}'
           )
           Set-Content -Path $clShimC -Value $clShimLines -Encoding ascii
