@@ -48,6 +48,8 @@ jobs:
       # meson.exe (not meson.cmd). A meson.exe shim adds -Dcpp_std=c++20 on
       # setup so APM gets MSVC C++20 (C7555). Do not shim cl.exe: that breaks
       # openssl-src nmake OPENSSLDIR quoting (SYS$MANAGER / ct_log.c).
+      # APM build.rs also Command::new("nm"); MinGW nm is stripped from PATH,
+      # so copy llvm-nm/Git nm into the shim dir as nm.exe (not nm.cmd).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -86,7 +88,23 @@ jobs:
           $env:NEMO_REAL_MESON = $mesonReal
           $shim = Join-Path $env:RUNNER_TEMP "build-shims"
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
-          Set-Content -Path (Join-Path $shim "nm.cmd") -Value "@echo off`r`nexit /b 0"
+          # webrtc-audio-processing-sys prefixes symbols via Command::new("nm").
+          $shimNm = Join-Path $shim "nm.exe"
+          $nmCandidates = @()
+          $rustcHost = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
+          $nmCandidates += Join-Path (rustc --print sysroot) "lib\rustlib\$rustcHost\bin\llvm-nm.exe"
+          $nmCandidates += Join-Path $clangBin "llvm-nm.exe"
+          $nmCandidates += "C:\Program Files\Git\mingw64\bin\nm.exe"
+          $nmSrc = $nmCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $nmSrc) { throw "nm.exe not found (llvm-tools / VS LLVM / Git mingw64)" }
+          Copy-Item -Force $nmSrc $shimNm
+          if ($nmSrc -match '[\\/]mingw64[\\/]') {
+            $mingwBin = Split-Path $nmSrc
+            foreach ($dll in @("libwinpthread-1.dll", "libgcc_s_seh-1.dll", "zlib1.dll")) {
+              $dllPath = Join-Path $mingwBin $dll
+              if (Test-Path $dllPath) { Copy-Item -Force $dllPath $shim }
+            }
+          }
           $mesonShimC = Join-Path $env:RUNNER_TEMP "nemo-meson-shim.c"
           $mesonShimLines = @(
             '#define _CRT_SECURE_NO_WARNINGS',
@@ -144,6 +162,9 @@ jobs:
           $meson = Get-Command meson -ErrorAction SilentlyContinue
           if (-not $meson) { throw "meson not on PATH" }
           if ($meson.Source -ne $shimMeson) { throw "meson is not the C++20 shim: $($meson.Source)" }
+          $nm = Get-Command nm -ErrorAction SilentlyContinue
+          if (-not $nm) { throw "nm not on PATH" }
+          if ($nm.Source -ne $shimNm) { throw "nm is not shim nm.exe: $($nm.Source)" }
           $cl = Get-Command cl -ErrorAction SilentlyContinue
           if (-not $cl) { throw "cl.exe not on PATH" }
           if ($cl.Source -match '[\\/]build-shims[\\/]') { throw "cl must be real MSVC, not a shim: $($cl.Source)" }
