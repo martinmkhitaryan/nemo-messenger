@@ -34,33 +34,11 @@ jobs:
   windows-ffi:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
         with:
-          toolchain: stable-x86_64-pc-windows-msvc
-      - name: Install protoc
-        shell: pwsh
-        run: |
-          $ver = "32.1"
-          $zip = Join-Path $env:RUNNER_TEMP "protoc.zip"
-          $dest = Join-Path $env:RUNNER_TEMP "protoc"
-          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$ver/protoc-$ver-win64.zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "bin")
-      - name: Enable MSVC
-        shell: cmd
-        run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-            call "%%i\VC\Auxiliary\Build\vcvars64.bat" && set >> "%GITHUB_ENV%"
-          )
-      # Meson otherwise picks Strawberry Perl's MinGW; abseil/cctz does not build with that c++.
-      - name: Drop MinGW from PATH
-        shell: pwsh
-        run: |
-          $path = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notmatch '(?i)Strawberry|mingw64|mingw32') }) -join ';'
-          Add-Content -Path $env:GITHUB_ENV -Value "PATH=$path"
-          Add-Content -Path $env:GITHUB_ENV -Value "CC=cl"
-          Add-Content -Path $env:GITHUB_ENV -Value "CXX=cl"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Meson for desktop APM
         run: pip install meson ninja
       - name: Build nemo_ffi.dll

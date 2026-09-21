@@ -58,7 +58,7 @@ The Android GitHub job also installs SDK packages with `android-actions/setup-an
 sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "emulator"
 ```
 
-Emulator instrumented tests still need a running `nemo-server` on `0.0.0.0:18787` (see below). The Windows job (`cargo build -p nemo-ffi`) only runs on a Windows machine or in GitHub. Use the MSVC toolchain (`stable-x86_64-pc-windows-msvc`). MinGW from Strawberry Perl on PATH makes `webrtc-audio-processing` fail in abseil.
+Emulator instrumented tests still need a running `nemo-server` on `0.0.0.0:18787` (see below). The Windows job (`cargo build -p nemo-ffi`) only runs on a Windows machine or in GitHub.
 
 ---
 
