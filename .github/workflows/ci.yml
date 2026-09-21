@@ -43,9 +43,10 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
-      # compiles webrtc-audio-processing. One toolchain for the whole graph:
-      # MSVC cl (openssl-src VC-WIN64A nmake) + Strawberry perl (Configure) +
-      # no Strawberry/MinGW gcc (abseil) and no clang as CC (nmake /Zi flags).
+      # compiles webrtc-audio-processing. One toolchain: MSVC cl (openssl-src
+      # VC-WIN64A) + Strawberry perl (Configure) + no MinGW gcc. Default
+      # target\debug\build\... path is 261 chars for one abseil source and
+      # cl.exe then C1083s (MAX_PATH is 260).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -53,6 +54,8 @@ jobs:
         run: pip install meson ninja
       - name: Build nemo_ffi.dll
         shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: |
           $env:Path = ($env:Path.Split(';') | Where-Object {
             $_ -and ($_ -notmatch 'mingw|msys64|Strawberry[\\/]+c[\\/]')
@@ -98,7 +101,7 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: nemo-ffi-windows
-          path: target/debug/nemo_ffi.dll
+          path: ${{ runner.temp }}/cargo-target/debug/nemo_ffi.dll
 
   android:
     runs-on: ubuntu-latest
