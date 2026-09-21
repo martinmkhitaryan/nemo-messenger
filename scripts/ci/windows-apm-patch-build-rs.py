@@ -2,50 +2,86 @@
 """Patch crates.io webrtc-audio-processing-sys 2.1.0 build.rs for MSVC (Windows CI)."""
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import sys
 
 
+def cargo_home() -> pathlib.Path:
+    raw = os.environ.get("CARGO_HOME")
+    if raw:
+        return pathlib.Path(raw)
+    return pathlib.Path.home() / ".cargo"
+
+
+def require_replace(text: str, old: str, new: str, label: str) -> str:
+    if old not in text:
+        raise SystemExit(f"APM {label} anchor not found")
+    return text.replace(old, new, 1)
+
+
 def main() -> None:
     subprocess.check_call(["cargo", "fetch"])
-    registry = pathlib.Path.home() / ".cargo" / "registry" / "src"
+    registry = cargo_home() / "registry" / "src"
     if not registry.is_dir():
         raise SystemExit(f"cargo registry src missing after fetch: {registry}")
 
-    builds = list(registry.glob("*/webrtc-audio-processing-sys-2.1.0/build.rs"))
+    builds = sorted(registry.glob("*/webrtc-audio-processing-sys-2.1.0/build.rs"))
     if not builds:
-        raise SystemExit("webrtc-audio-processing-sys-2.1.0 build.rs not fetched")
-    path = builds[0]
-    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        raise SystemExit(
+            f"webrtc-audio-processing-sys-2.1.0 build.rs not under {registry}"
+        )
+
+    path = None
+    text = ""
+    for candidate in builds:
+        candidate_text = candidate.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if 'flag("-std=c++17")' in candidate_text or "flag_if_supported" in candidate_text:
+            path = candidate
+            text = candidate_text
+            break
+    if path is None:
+        raise SystemExit(
+            "no webrtc-audio-processing-sys-2.1.0 build.rs looked like upstream/patched APM"
+        )
+
+    # Already patched (e.g. warm cargo cache on a reused runner).
+    if "skip prefix on MSVC" in text and "flag_if_supported" in text and "{name}.lib" in text:
+        print(f"APM build.rs already patched: {path}")
+        return
+
     orig = text
 
-    text = text.replace(
+    text = require_replace(
+        text,
         '        .flag("-std=c++17")\n        .flag("-Wno-unused-parameter")',
         '        .std("c++17")\n        .flag_if_supported("-Wno-unused-parameter")',
+        "CC flags",
     )
 
-    old_prefix = (
-        "    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;"
-    )
-    new_prefix = """\
+    text = require_replace(
+        text,
+        "    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;",
+        """\
     // Nemo Windows CI: skip prefix on MSVC (nm/objcopy + lib*.a vs *.lib).
     let renamed_symbols = if cfg!(target_env = "msvc") {
         Vec::new()
     } else {
         webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?
-    };"""
-    if old_prefix not in text:
-        raise SystemExit("APM prefix_library_symbols anchor not found")
-    text = text.replace(old_prefix, new_prefix, 1)
+    };""",
+        "prefix_library_symbols",
+    )
 
-    old_link = """\
+    text = require_replace(
+        text,
+        """\
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static={LIB_NAME}");
         println!("cargo:rustc-link-lib=absl_strings");
     } else {
-"""
-    new_link = """\
+""",
+        """\
     if cfg!(feature = "bundled") {
         if cfg!(target_env = "msvc") {
             for dir in &lib_dirs {
@@ -84,12 +120,13 @@ def main() -> None:
             }
         }
     } else {
-"""
-    if old_link not in text:
-        raise SystemExit("APM bundled link anchor not found")
-    text = text.replace(old_link, new_link, 1)
+""",
+        "bundled link",
+    )
 
-    old_obj = """\
+    text = require_replace(
+        text,
+        """\
     let objcopy = sysroot.join("lib").join("rustlib").join(host).join("bin").join("rust-objcopy");
 
     // Optional: verification
@@ -99,8 +136,8 @@ def main() -> None:
     }
 
     Ok(objcopy)
-"""
-    new_obj = """\
+""",
+        """\
     let bin = sysroot.join("lib").join("rustlib").join(host).join("bin");
     let candidates = [
         bin.join("rust-objcopy.exe"),
@@ -114,10 +151,9 @@ def main() -> None:
         println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
     }
     Ok(objcopy)
-"""
-    if old_obj not in text:
-        raise SystemExit("APM determine_objcopy_path anchor not found")
-    text = text.replace(old_obj, new_obj, 1)
+""",
+        "determine_objcopy_path",
+    )
 
     if text == orig:
         raise SystemExit("APM build.rs patch produced no changes")

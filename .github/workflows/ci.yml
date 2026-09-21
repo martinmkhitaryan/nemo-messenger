@@ -45,7 +45,11 @@ jobs:
         shell: pwsh
         run: |
           rustup component add llvm-tools
-          $rustcHost = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
+          $rustcHost = $null
+          foreach ($line in (rustc -vV)) {
+            if ($line -match '^host:\s*(\S+)') { $rustcHost = $Matches[1]; break }
+          }
+          if (-not $rustcHost) { throw "could not parse rustc host triple" }
           $toolsBin = Join-Path (rustc --print sysroot) "lib\rustlib\$rustcHost\bin"
           if (-not (Test-Path $toolsBin)) { throw "rustlib tools bin missing: $toolsBin" }
           $rustObjcopy = Join-Path $toolsBin "rust-objcopy.exe"
@@ -128,7 +132,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
           # Prefer rustup llvm-nm (POSIX flags); fall back to Git MinGW nm + DLLs.
           $shimNm = Join-Path $shim "nm.exe"
-          $rustcHost = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
+          $rustcHost = $null
+          foreach ($line in (rustc -vV)) {
+            if ($line -match '^host:\s*(\S+)') { $rustcHost = $Matches[1]; break }
+          }
+          if (-not $rustcHost) { throw "could not parse rustc host triple" }
           $nmCandidates = @(
             (Join-Path (rustc --print sysroot) "lib\rustlib\$rustcHost\bin\llvm-nm.exe"),
             (Join-Path $clangBin "llvm-nm.exe"),
@@ -207,18 +215,30 @@ jobs:
           if (-not $nm) { throw "nm not on PATH" }
           if ($nm.Source -ne $shimNm) { throw "nm is not shim nm.exe: $($nm.Source)" }
           $cp = Get-Command cp.exe -ErrorAction SilentlyContinue
-          if (-not $cp -or $cp.Source -ne $gitCp) { throw "cp.exe must be Git usr: $($cp.Source)" }
-          $cl = Get-Command cl -ErrorAction SilentlyContinue
+          $cpPath = if ($cp) { [System.IO.Path]::GetFullPath($cp.Source) } else { $null }
+          $gitCpFull = [System.IO.Path]::GetFullPath($gitCp)
+          if ($cpPath -ne $gitCpFull) { throw "cp.exe must be Git usr: $cpPath (expected $gitCpFull)" }
+          $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
           if (-not $cl) { throw "cl.exe not on PATH" }
           if ($cl.Source -match '[\\/]build-shims[\\/]') { throw "cl must be real MSVC, not a shim: $($cl.Source)" }
-          $link = Get-Command link -ErrorAction SilentlyContinue
+          $link = Get-Command link.exe -ErrorAction SilentlyContinue
           if (-not $link -or $link.Source -match "Git[\\/]usr") { throw "MSVC link.exe not first on PATH: $($link.Source)" }
-          $cc = Get-Command cc -ErrorAction SilentlyContinue
+          $cc = Get-Command cc.exe -ErrorAction SilentlyContinue
           if ($cc -and $cc.Source -match "Strawberry|mingw") { throw "cc is still MinGW: $($cc.Source)" }
-          $perl = Get-Command perl -ErrorAction SilentlyContinue
+          $perl = Get-Command perl.exe -ErrorAction SilentlyContinue
           if (-not $perl) { throw "perl not on PATH" }
           if ($perl.Source -match "Git[\\/]usr") { throw "perl is Git MSYS, not Strawberry: $($perl.Source)" }
-          & python "$env:GITHUB_WORKSPACE\scripts\ci\windows-apm-patch-build-rs.py"
+          $py = Get-Command python.exe -ErrorAction SilentlyContinue
+          if (-not $py) { $py = Get-Command py.exe -ErrorAction SilentlyContinue }
+          if (-not $py) { throw "python.exe not on PATH (APM build.rs patch)" }
+          $patchScript = Join-Path $env:GITHUB_WORKSPACE "scripts\ci\windows-apm-patch-build-rs.py"
+          if (-not (Test-Path $patchScript)) { throw "missing APM patch script: $patchScript" }
+          if ($py.Name -eq "py.exe") {
+            & $py.Source -3 $patchScript
+          } else {
+            & $py.Source $patchScript
+          }
+          if ($LASTEXITCODE -ne 0) { throw "APM build.rs patch failed with exit $LASTEXITCODE" }
           cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v5
         continue-on-error: true
