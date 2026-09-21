@@ -110,6 +110,8 @@ expect fun pickLocalFile(): String?
 @Composable
 expect fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit
 
+expect fun rememberScanQr(onText: (String) -> Unit): () -> Unit
+
 expect fun defaultHomeUrl(): String
 
 expect fun copyToClipboard(text: String)
@@ -161,6 +163,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var shareUri by remember { mutableStateOf("") }
     var privacyPrivate by remember { mutableStateOf(false) }
     var cardPaste by remember { mutableStateOf("") }
+    var cardPreviewFp by remember { mutableStateOf("") }
     var nickname by remember { mutableStateOf("") }
     var groupName by remember { mutableStateOf("") }
     var invitePaste by remember { mutableStateOf("") }
@@ -645,7 +648,22 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
                         ) {
                             when (sheet) {
-                                Sheet.AddContact -> SheetForm(
+                                Sheet.AddContact -> {
+                                    val scanQr = rememberScanQr { text ->
+                                        cardPaste = text.trim()
+                                    }
+                                    LaunchedEffect(cardPaste, client) {
+                                        val c = client
+                                        val raw = cardPaste.trim()
+                                        cardPreviewFp = if (c == null || raw.isEmpty()) {
+                                            ""
+                                        } else {
+                                            withContext(Dispatchers.IO) {
+                                                runCatching { c.previewContact(raw).fingerprint }.getOrDefault("")
+                                            }
+                                        }
+                                    }
+                                    SheetForm(
                                     title = "New chat",
                                     action = "Add",
                                     enabled = !busy && cardPaste.isNotBlank(),
@@ -660,6 +678,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             contacts[peer] = nickname.ifBlank { shortId(peer) }
                                             selected = ChatTarget(peer, contacts[peer] ?: shortId(peer), false)
                                             cardPaste = ""
+                                            cardPreviewFp = ""
                                             nickname = ""
                                             sheet = Sheet.None
                                         }
@@ -672,6 +691,22 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         placeholder = { Text("nemo:1:…") },
                                         modifier = Modifier.fillMaxWidth(),
                                     )
+                                    TextButton(onClick = scanQr) {
+                                        Text("Scan QR")
+                                    }
+                                    if (cardPreviewFp.isNotEmpty()) {
+                                        Text(
+                                            "Fingerprint",
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                        SelectionContainer {
+                                            Text(
+                                                cardPreviewFp,
+                                                fontFamily = FontFamily.Monospace,
+                                                style = MaterialTheme.typography.bodySmall,
+                                            )
+                                        }
+                                    }
                                     OutlinedTextField(
                                         value = nickname,
                                         onValueChange = { nickname = it },
@@ -679,6 +714,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         modifier = Modifier.fillMaxWidth(),
                                         singleLine = true,
                                     )
+                                }
                                 }
                                 Sheet.NewGroup -> SheetForm(
                                     title = "New group",

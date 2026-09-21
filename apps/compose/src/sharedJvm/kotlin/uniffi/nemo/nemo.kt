@@ -798,6 +798,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -854,6 +856,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_preview_contact(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode(
 ): Short
@@ -997,6 +1001,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(`ptr`: Pointer,
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_preview_contact(`ptr`: Pointer,`cardOrUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1221,6 +1227,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri() != 36588.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_preview_contact() != 61487.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode() != 38096.toShort()) {
@@ -1743,6 +1752,8 @@ public interface NemoClientInterface {
     
     fun `mintShareUri`(): kotlin.String
     
+    fun `previewContact`(`cardOrUri`: kotlin.String): ContactPreview
+    
     fun `privacyMode`(): kotlin.String
     
     fun `pullPlaybackPcm`(`maxSamples`: kotlin.UInt): List<kotlin.Short>
@@ -2147,6 +2158,19 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    @Throws(FfiException::class)override fun `previewContact`(`cardOrUri`: kotlin.String): ContactPreview {
+            return FfiConverterTypeContactPreview.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_preview_contact(
+        it, FfiConverterString.lower(`cardOrUri`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `privacyMode`(): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
@@ -2450,6 +2474,41 @@ public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Pointer> {
         // The Rust code always expects pointers written as 8 bytes,
         // and will fail to compile if they don't fit.
         buf.putLong(Pointer.nativeValue(lower(value)))
+    }
+}
+
+
+
+/**
+ * Identity shown before adding a contact. No keys besides the public fingerprint.
+ */
+data class ContactPreview (
+    var `identityIdHex`: kotlin.String, 
+    var `fingerprint`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeContactPreview: FfiConverterRustBuffer<ContactPreview> {
+    override fun read(buf: ByteBuffer): ContactPreview {
+        return ContactPreview(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ContactPreview) = (
+            FfiConverterString.allocationSize(value.`identityIdHex`) +
+            FfiConverterString.allocationSize(value.`fingerprint`)
+    )
+
+    override fun write(value: ContactPreview, buf: ByteBuffer) {
+            FfiConverterString.write(value.`identityIdHex`, buf)
+            FfiConverterString.write(value.`fingerprint`, buf)
     }
 }
 

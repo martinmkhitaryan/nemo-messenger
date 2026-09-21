@@ -74,6 +74,13 @@ pub struct ContactRow {
     pub nickname: String,
 }
 
+/// Identity shown before adding a contact. No keys besides the public fingerprint.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct ContactPreview {
+    pub identity_id_hex: String,
+    pub fingerprint: String,
+}
+
 const GROUP_INVITE_PREFIX: &str = "nemo-g:1:";
 const JOIN_REQUEST_PREFIX: &str = "nemo-j:1:";
 
@@ -274,7 +281,7 @@ fn emit_call(
         body,
     })?;
     let peer = parse_identity_id(&peer_hex)?;
-    block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
+    block_on(session.send_to_now(&peer, invite_ttl_bucket(), &ptext, now))?;
     if echo {
         Ok(push_control(
             inbox, next_seq, peer_hex, seq, now, kind, id_hex, 0,
@@ -976,6 +983,14 @@ impl NemoClient {
         }
         persist(&inner)?;
         Ok(peer)
+    }
+
+    pub fn preview_contact(&self, card_or_uri: String) -> Result<ContactPreview, FfiError> {
+        let card = parse_card(&card_or_uri)?;
+        Ok(ContactPreview {
+            identity_id_hex: ids::to_hex(&card.identity_id()),
+            fingerprint: nemo_wire::fingerprint(&card.identity_id()),
+        })
     }
 
     pub fn send_text(&self, peer_id_hex: String, text: String) -> Result<DisplayRow, FfiError> {
@@ -2142,7 +2157,7 @@ impl NemoClient {
         let peer = parse_identity_id(&peer_id_hex)?;
         {
             let session = inner.registered()?;
-            block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
+            block_on(session.send_to_now(&peer, invite_ttl_bucket(), &ptext, now))?;
         }
         let call = Arc::new(call);
         inner.live_call = Some(Arc::clone(&call));
@@ -2197,7 +2212,7 @@ impl NemoClient {
         let peer = parse_identity_id(&pending.peer)?;
         {
             let session = inner.registered()?;
-            block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
+            block_on(session.send_to_now(&peer, invite_ttl_bucket(), &ptext, now))?;
         }
         let call = Arc::new(call);
         inner.live_call = Some(Arc::clone(&call));
@@ -2543,6 +2558,25 @@ mod tests {
         let mnemonic = client.take_revocation_mnemonic().unwrap();
         assert!(mnemonic.is_some());
         assert!(client.take_revocation_mnemonic().unwrap().is_none());
+    }
+
+    #[test]
+    fn preview_contact_shows_peer_fingerprint_before_add() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-preview-a");
+        let bob_dir = temp_dir("nemo-ffi-preview-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let uri = alice.mint_share_uri().unwrap();
+        let preview = bob.preview_contact(uri).unwrap();
+        assert_eq!(preview.identity_id_hex, alice.identity_id_hex().unwrap());
+        assert_eq!(preview.fingerprint, alice.fingerprint().unwrap());
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
     }
 
     #[test]

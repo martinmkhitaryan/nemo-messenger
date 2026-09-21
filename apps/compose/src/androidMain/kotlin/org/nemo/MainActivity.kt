@@ -61,6 +61,31 @@ actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
     }
 }
 
+@Composable
+actual fun rememberScanQr(onText: (String) -> Unit): () -> Unit {
+    val ctx = LocalContext.current
+    val latest = rememberUpdatedState(onText)
+    val photo = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap == null) return@rememberLauncherForActivityResult
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        decodeQrArgb(pixels, w, h)?.let(latest.value::invoke)
+    }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) photo.launch(null)
+    }
+    return remember(photo, camera) {
+        {
+            when (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA)) {
+                PackageManager.PERMISSION_GRANTED -> photo.launch(null)
+                else -> camera.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+}
+
 actual fun defaultHomeUrl(): String = "https://10.0.2.2:8443"
 
 actual fun copyToClipboard(text: String) {

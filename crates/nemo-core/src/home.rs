@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
-use nemo_wire::ids::{self, IdentityId, KEY_LEN};
+use nemo_wire::ids::{self, IdentityId, ServerId, KEY_LEN};
 use nemo_wire::prekey::SignedPrekey;
 use nemo_wire::{
-    ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, RevocationStatement, ServerBundle,
+    ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, HomeServerBinding, RevocationStatement,
+    ServerBundle,
 };
 
 use crate::call::TurnConfig;
@@ -132,6 +133,8 @@ pub struct StoredContact {
     pub dest_hpke: [u8; KEY_LEN],
     pub last_discovery_unix: u64,
     pub revoked: bool,
+    /// HTTP origin of the peer's current home. Empty means this session's transport.
+    pub home_origin: String,
 }
 
 /// Durable home-server binding: survives vault reopen (I2).
@@ -162,6 +165,7 @@ impl HomeState {
                 (5, Value::Bytes(c.dest_hpke.to_vec())),
                 (6, Value::Uint(c.last_discovery_unix)),
                 (7, Value::Uint(u64::from(c.revoked))),
+                (8, Value::Text(c.home_origin.clone())),
             ]));
         }
         let groups = self
@@ -238,6 +242,12 @@ impl HomeState {
                 cbor::expect_uint(cbor::map_get(cm, 7).map_err(|_| CoreError::VaultCorrupt)?)
                     .map_err(|_| CoreError::VaultCorrupt)?
                     != 0;
+            let home_origin = match cbor::map_get_opt(cm, 8) {
+                Some(v) => cbor::expect_text(v)
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned(),
+                None => String::new(),
+            };
             contacts.insert(
                 id,
                 StoredContact {
@@ -251,6 +261,7 @@ impl HomeState {
                     dest_hpke: hpke,
                     last_discovery_unix: last,
                     revoked,
+                    home_origin,
                 },
             );
         }
@@ -309,6 +320,7 @@ pub struct HomeSession<T> {
     pub groups: Vec<HostGroup>,
     pub home_base: String,
     pub privacy: PrivacyMode,
+    pending_outers: Mutex<Vec<OuterEnvelope>>,
 }
 
 impl<T: HomeTransport> HomeSession<T> {
@@ -343,6 +355,7 @@ impl<T: HomeTransport> HomeSession<T> {
                 groups: Vec::new(),
                 home_base: String::new(),
                 privacy: PrivacyMode::Normal,
+                pending_outers: Mutex::new(Vec::new()),
             },
             card,
         ))
@@ -406,6 +419,7 @@ impl<T: HomeTransport> HomeSession<T> {
             groups: state.groups,
             home_base: state.home_base,
             privacy: state.privacy,
+            pending_outers: Mutex::new(Vec::new()),
         }
     }
 
@@ -434,6 +448,68 @@ impl<T: HomeTransport> HomeSession<T> {
         self.home_base = base.into().trim_end_matches('/').to_string();
     }
 
+    fn origin_for_binding(&self, binding: &HomeServerBinding) -> String {
+        peer_http_origin(
+            &binding.host,
+            binding.server_id,
+            &self.bundle.host,
+            self.bundle.server_id,
+            &self.home_base,
+        )
+    }
+
+    async fn call_on(&self, origin: &str, req: HttpRequest) -> Result<HttpResponse> {
+        let origin = origin.trim_end_matches('/');
+        if origin.is_empty() || origin == self.home_base {
+            return self.transport.call(req).await;
+        }
+        match self.transport.redirect(origin) {
+            Some(alt) => alt.call(req).await,
+            None => Err(CoreError::Transport(format!("no transport for {origin}"))),
+        }
+    }
+
+    pub async fn discovery_at(&self, origin: &str, identity_id: IdentityId) -> Result<Discovery> {
+        let res = self
+            .call_on(
+                origin,
+                HttpRequest {
+                    method: "GET",
+                    path: format!("/v1/discovery/{}", ids::to_hex(&identity_id)),
+                    headers: vec![],
+                    body: vec![],
+                },
+            )
+            .await?;
+        let body = check_body(&res)?;
+        let rec = DiscoveryRecord::decode(body)?;
+        Ok(Discovery {
+            identity_public_key: rec.identity_public_key,
+            revocation_public_key: rec.revocation_public_key,
+            binding: rec.binding,
+            revocation: rec.revocation,
+        })
+    }
+
+    pub async fn fetch_prekey_at(
+        &self,
+        origin: &str,
+        share_token: [u8; KEY_LEN],
+    ) -> Result<SignedPrekey> {
+        let res = self
+            .call_on(
+                origin,
+                HttpRequest {
+                    method: "GET",
+                    path: "/v1/prekeys".into(),
+                    headers: vec![("nemo-token".into(), ids::to_hex(&share_token))],
+                    body: vec![],
+                },
+            )
+            .await?;
+        Ok(SignedPrekey::decode(check_body(&res)?)?)
+    }
+
     /// Fetch the current binding, start PQXDH, and remember the delivery address.
     pub async fn add_contact(
         &mut self,
@@ -441,9 +517,11 @@ impl<T: HomeTransport> HomeSession<T> {
         delivery_capability: [u8; KEY_LEN],
         now_unix: u64,
     ) -> Result<()> {
-        let disc = self.discovery(card.identity_id()).await?;
+        let origin = self.origin_for_binding(&card.binding);
+        let disc = self.discovery_at(&origin, card.identity_id()).await?;
         let binding = resolve_contact(card, &disc, now_unix)?;
-        let prekey = self.fetch_prekey(card.share_token).await?;
+        let live_origin = self.origin_for_binding(&binding);
+        let prekey = self.fetch_prekey_at(&live_origin, card.share_token).await?;
         self.install.start_session(card, &prekey, now_unix).await?;
         let mut pin = ContactPin::from_card(card);
         pin.seq = binding.seq;
@@ -455,14 +533,23 @@ impl<T: HomeTransport> HomeSession<T> {
                 dest_hpke: binding.server_hpke_public_key,
                 last_discovery_unix: now_unix,
                 revoked: false,
+                home_origin: live_origin,
             },
         );
         Ok(())
     }
 
     pub async fn refresh_contact(&mut self, peer: &IdentityId, now_unix: u64) -> Result<()> {
-        let disc = self.discovery(*peer).await?;
+        let origin = self
+            .contacts
+            .get(peer)
+            .map(|c| c.home_origin.clone())
+            .unwrap_or_default();
+        let disc = self.discovery_at(&origin, *peer).await?;
         disc.verify(now_unix)?;
+        let own_host = self.bundle.host.clone();
+        let own_server = self.bundle.server_id;
+        let own_base = self.home_base.clone();
         let contact = self
             .contacts
             .get_mut(peer)
@@ -473,22 +560,38 @@ impl<T: HomeTransport> HomeSession<T> {
         }
         let binding = contact.pin.refresh(&disc, now_unix)?;
         contact.dest_hpke = binding.server_hpke_public_key;
+        contact.home_origin = peer_http_origin(
+            &binding.host,
+            binding.server_id,
+            &own_host,
+            own_server,
+            &own_base,
+        );
         contact.last_discovery_unix = now_unix;
         Ok(())
     }
 
-    /// Fetch discovery and refuse a valid revocation. Unknown-to-this-home is not revocation.
+    /// Fetch discovery and refuse a valid revocation.
+    ///
+    /// Known contacts are checked on their pinned home. Unknown identities are
+    /// checked on this home; `Denied` there is not revocation (they may live
+    /// elsewhere).
     pub async fn check_discovery_not_revoked(
         &self,
         identity_id: IdentityId,
         now_unix: u64,
     ) -> Result<()> {
-        match self.discovery(identity_id).await {
+        let origin = self
+            .contacts
+            .get(&identity_id)
+            .map(|c| c.home_origin.as_str())
+            .filter(|s| !s.is_empty());
+        match self.discovery_at(origin.unwrap_or(""), identity_id).await {
             Ok(disc) => {
                 disc.verify(now_unix)?;
                 disc.check_not_revoked()
             }
-            Err(CoreError::Denied) => Ok(()),
+            Err(CoreError::Denied) if origin.is_none() => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -613,6 +716,35 @@ impl<T: HomeTransport> HomeSession<T> {
         self.post_envelope(&outer).await
     }
 
+    /// Like [`send_to`] but never holds the Private batch window (calls, acks).
+    pub async fn send_to_now(
+        &mut self,
+        peer: &IdentityId,
+        ttl_bucket: TtlBucket,
+        plaintext: &[u8],
+        now_unix: u64,
+    ) -> Result<EnqueueResult> {
+        let stale = match self.contacts.get(peer) {
+            None => return Err(CoreError::UnknownContact),
+            Some(c) if c.revoked => return Err(CoreError::Revoked),
+            Some(c) => now_unix.saturating_sub(c.last_discovery_unix) >= DISCOVERY_REFRESH_SECS,
+        };
+        if stale {
+            self.refresh_contact(peer, now_unix).await?;
+        }
+        let contact = self.contacts.get(peer).ok_or(CoreError::UnknownContact)?;
+        if contact.revoked {
+            return Err(CoreError::Revoked);
+        }
+        let dest_hpke = contact.dest_hpke;
+        let cap = contact.delivery_capability;
+        let outer = self
+            .install
+            .encrypt_to_mailbox(peer, &dest_hpke, cap, ttl_bucket, plaintext)
+            .await?;
+        self.post_envelope_now(&outer).await
+    }
+
     /// 1:1 file: same contact path as [`send_to`], padded to an A* DR envelope.
     pub async fn send_attachment(
         &mut self,
@@ -674,23 +806,7 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn discovery(&self, identity_id: IdentityId) -> Result<Discovery> {
-        let res = self
-            .transport
-            .call(HttpRequest {
-                method: "GET",
-                path: format!("/v1/discovery/{}", ids::to_hex(&identity_id)),
-                headers: vec![],
-                body: vec![],
-            })
-            .await?;
-        let body = check_body(&res)?;
-        let rec = DiscoveryRecord::decode(body)?;
-        Ok(Discovery {
-            identity_public_key: rec.identity_public_key,
-            revocation_public_key: rec.revocation_public_key,
-            binding: rec.binding,
-            revocation: rec.revocation,
-        })
+        self.discovery_at(&self.home_base, identity_id).await
     }
 
     pub async fn publish_prekey(&mut self) -> Result<()> {
@@ -709,16 +825,7 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn fetch_prekey(&self, share_token: [u8; KEY_LEN]) -> Result<SignedPrekey> {
-        let res = self
-            .transport
-            .call(HttpRequest {
-                method: "GET",
-                path: "/v1/prekeys".into(),
-                headers: vec![("nemo-token".into(), ids::to_hex(&share_token))],
-                body: vec![],
-            })
-            .await?;
-        Ok(SignedPrekey::decode(check_body(&res)?)?)
+        self.fetch_prekey_at(&self.home_base, share_token).await
     }
 
     pub async fn mint_contact(&self) -> Result<[u8; KEY_LEN]> {
@@ -775,13 +882,53 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn post_envelope(&self, outer: &OuterEnvelope) -> Result<EnqueueResult> {
-        if self.privacy == PrivacyMode::Private {
-            let delay = std::time::Duration::from_millis(private_send_delay_ms());
-            tokio::time::sleep(delay).await;
-        }
+        self.post_envelope_maybe_batch(outer, true).await
+    }
+
+    /// Call signaling skips Private batching so ringing is not delayed up to 5 s.
+    pub async fn post_envelope_now(&self, outer: &OuterEnvelope) -> Result<EnqueueResult> {
+        self.post_envelope_maybe_batch(outer, false).await
+    }
+
+    async fn post_envelope_maybe_batch(
+        &self,
+        outer: &OuterEnvelope,
+        batch: bool,
+    ) -> Result<EnqueueResult> {
         if self.privacy == PrivacyMode::High {
             return Err(CoreError::MaximumNotShipped);
         }
+        if batch && self.privacy == PrivacyMode::Private {
+            self.pending_outers
+                .lock()
+                .map_err(|_| CoreError::Transport("outbox lock".into()))?
+                .push(outer.clone());
+            let delay = std::time::Duration::from_millis(private_send_delay_ms());
+            tokio::time::sleep(delay).await;
+            return self.flush_private_outbox().await;
+        }
+        self.post_one_envelope(outer).await
+    }
+
+    async fn flush_private_outbox(&self) -> Result<EnqueueResult> {
+        let batch = {
+            let mut g = self
+                .pending_outers
+                .lock()
+                .map_err(|_| CoreError::Transport("outbox lock".into()))?;
+            std::mem::take(&mut *g)
+        };
+        if batch.is_empty() {
+            return Ok(EnqueueResult::Queued);
+        }
+        let mut last = EnqueueResult::Queued;
+        for outer in batch {
+            last = self.post_one_envelope(&outer).await?;
+        }
+        Ok(last)
+    }
+
+    async fn post_one_envelope(&self, outer: &OuterEnvelope) -> Result<EnqueueResult> {
         let auth = self.owner_header(0, 1)?;
         let res = self
             .transport
@@ -1275,6 +1422,42 @@ impl HttpHome {
     }
 }
 
+/// HTTP origin for a peer home. Same `server_id` stays on this session's
+/// transport (`own_base`, empty in-process). Otherwise `NEMO_HOST_ORIGINS`
+/// (`host=http://127.0.0.1:1,other=http://…`) or `{http|https}://{host}`.
+pub fn peer_http_origin(
+    peer_host: &str,
+    peer_server: ServerId,
+    own_host: &str,
+    own_server: ServerId,
+    own_base: &str,
+) -> String {
+    if peer_server == own_server {
+        return own_base.trim_end_matches('/').to_string();
+    }
+    if let Some(over) = host_origin_override(peer_host) {
+        return over;
+    }
+    let _ = own_host;
+    let scheme = if own_base.starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    };
+    format!("{scheme}://{}", peer_host.trim_end_matches('/'))
+}
+
+fn host_origin_override(host: &str) -> Option<String> {
+    let raw = std::env::var("NEMO_HOST_ORIGINS").ok()?;
+    for part in raw.split(',') {
+        let (h, url) = part.split_once('=')?;
+        if h.trim() == host {
+            return Some(url.trim().trim_end_matches('/').to_string());
+        }
+    }
+    None
+}
+
 pub(crate) fn wakeup_url(base: &str) -> String {
     if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}/v1/wakeup")
@@ -1403,7 +1586,7 @@ fn privacy_from_u64(v: u64) -> Result<PrivacyMode> {
 
 #[cfg(test)]
 mod wakeup_url_tests {
-    use super::wakeup_url;
+    use super::{peer_http_origin, wakeup_url};
 
     #[test]
     fn https_home_wakeup_is_wss() {
@@ -1414,6 +1597,35 @@ mod wakeup_url_tests {
         assert_eq!(
             wakeup_url("http://127.0.0.1:8787"),
             "ws://127.0.0.1:8787/v1/wakeup"
+        );
+    }
+
+    #[test]
+    fn peer_origin_stays_on_own_home_when_server_matches() {
+        let sid = [1u8; 32];
+        assert_eq!(
+            peer_http_origin("other.example", sid, "local", sid, "http://127.0.0.1:9"),
+            "http://127.0.0.1:9"
+        );
+    }
+
+    #[test]
+    fn peer_origin_uses_https_host_when_homes_differ() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        assert_eq!(
+            peer_http_origin(
+                "bob.example",
+                b,
+                "alice.example",
+                a,
+                "https://alice.example"
+            ),
+            "https://bob.example"
+        );
+        assert_eq!(
+            peer_http_origin("home-b", b, "home-a", a, "http://home-a"),
+            "http://home-b"
         );
     }
 }

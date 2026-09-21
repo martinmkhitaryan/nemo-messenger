@@ -81,7 +81,7 @@ These must remain true through every later phase and in any implementation of th
 
 - Identity recovery: none. A lost, wiped, or stolen device is a lost identity. The only off-device control is revocation ([ADR-0004](../decisions/0004-revocation-key.md), [ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
 - Cryptographic-state recovery: none, ever.
-- Message-history backup: none in v1.
+- Message-history backup: none. No local history export/import ([ADR-0023](../decisions/0023-no-backup-no-recovery.md) amendment 1).
 
 ### 3.5 Portability
 

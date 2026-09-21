@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
@@ -25,17 +26,44 @@ fn now_unix() -> u64 {
 
 #[derive(Clone)]
 struct RouterTransport {
-    app: axum::Router,
+    origin: String,
+    apps: std::sync::Arc<HashMap<String, axum::Router>>,
+}
+
+impl RouterTransport {
+    fn single(app: axum::Router) -> Self {
+        let mut apps = HashMap::new();
+        apps.insert(String::new(), app);
+        Self {
+            origin: String::new(),
+            apps: std::sync::Arc::new(apps),
+        }
+    }
 }
 
 impl HomeTransport for RouterTransport {
+    fn redirect(&self, origin: &str) -> Option<Self> {
+        let origin = origin.trim_end_matches('/');
+        if origin.is_empty() || !self.apps.contains_key(origin) {
+            return None;
+        }
+        Some(Self {
+            origin: origin.to_string(),
+            apps: std::sync::Arc::clone(&self.apps),
+        })
+    }
+
     async fn call(&self, req: HttpRequest) -> nemo_core::Result<HttpResponse> {
+        let app = self
+            .apps
+            .get(&self.origin)
+            .or_else(|| self.apps.get(""))
+            .ok_or(CoreError::HomeHttp(0))?;
         let mut builder = Request::builder().method(req.method).uri(&req.path);
         for (k, v) in &req.headers {
             builder = builder.header(k.as_str(), v.as_str());
         }
-        let res = self
-            .app
+        let res = app
             .clone()
             .oneshot(
                 builder
@@ -58,9 +86,7 @@ impl HomeTransport for RouterTransport {
 
 #[tokio::test]
 async fn alice_messages_bob_through_home_http() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (bob_inst, _) = Installation::create().unwrap();
@@ -111,9 +137,7 @@ async fn alice_messages_bob_through_home_http() {
 
 #[tokio::test]
 async fn group_join_through_home_client() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (bob_inst, _) = Installation::create().unwrap();
@@ -167,9 +191,7 @@ async fn group_join_through_home_client() {
 
 #[tokio::test]
 async fn unknown_discovery_is_denied() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let (inst, _) = Installation::create().unwrap();
     let (alice, _) = HomeSession::register(transport, inst, now_unix())
         .await
@@ -252,9 +274,7 @@ fn temp_vault() -> std::path::PathBuf {
 
 #[tokio::test]
 async fn vault_restart_keeps_1to1_session() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (bob_inst, _) = Installation::create().unwrap();
@@ -323,9 +343,7 @@ async fn vault_restart_keeps_1to1_session() {
 
 #[tokio::test]
 async fn revoked_contact_refuses_send() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (bob_inst, bob_export) = Installation::create().unwrap();
@@ -356,9 +374,7 @@ async fn revoked_contact_refuses_send() {
 
 #[tokio::test]
 async fn idle_discovery_notices_revocation_without_send() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (bob_inst, bob_export) = Installation::create().unwrap();
@@ -385,9 +401,7 @@ async fn idle_discovery_notices_revocation_without_send() {
 
 #[tokio::test]
 async fn revoked_identity_fails_discovery_check() {
-    let transport = RouterTransport {
-        app: router(AppState::new()),
-    };
+    let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (bob_inst, bob_export) = Installation::create().unwrap();
@@ -414,12 +428,8 @@ async fn revoked_identity_fails_discovery_check() {
 async fn rehome_opens_new_mailbox_and_disables_old() {
     let a_state = AppState::new();
     let b_state = AppState::new();
-    let a = RouterTransport {
-        app: router(a_state.clone()),
-    };
-    let b = RouterTransport {
-        app: router(b_state.clone()),
-    };
+    let a = RouterTransport::single(router(a_state.clone()));
+    let b = RouterTransport::single(router(b_state.clone()));
     let now = now_unix();
     let (alice_inst, _) = Installation::create().unwrap();
     let (mut alice, _) = HomeSession::register(a.clone(), alice_inst, now)
@@ -533,4 +543,38 @@ async fn two_installations_register_on_env_home() {
         .unwrap()
         .expect("wss wakeup");
     assert!(frame.is_empty());
+}
+
+#[tokio::test]
+async fn add_contact_fetches_discovery_and_prekey_on_peer_home() {
+    let mut home_a = nemo_server::home::HomeServer::advertise("home-a", 9443);
+    let mut home_b = nemo_server::home::HomeServer::advertise("home-b", 9444);
+    nemo_server::pin_each_other(&mut home_a, &mut home_b).unwrap();
+    let a_state = AppState::from_parts(home_a, nemo_server::group::GroupHost::new());
+    let b_state = AppState::from_parts(home_b, nemo_server::group::GroupHost::new());
+    let mut apps = HashMap::new();
+    apps.insert("http://home-a".into(), router(a_state));
+    apps.insert("http://home-b".into(), router(b_state));
+    let apps = std::sync::Arc::new(apps);
+    let a_tr = RouterTransport {
+        origin: "http://home-a".into(),
+        apps: std::sync::Arc::clone(&apps),
+    };
+    let b_tr = RouterTransport {
+        origin: "http://home-b".into(),
+        apps,
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (mut alice, _) = HomeSession::register(a_tr, alice_inst, now).await.unwrap();
+    alice.set_home_base("http://home-a");
+    let (mut bob, bob_card) = HomeSession::register(b_tr, bob_inst, now).await.unwrap();
+    bob.set_home_base("http://home-b");
+    bob.publish_prekey().await.unwrap();
+    let cap = bob.mint_contact().await.unwrap();
+    alice.add_contact(&bob_card, cap, now).await.unwrap();
+    let stored = &alice.contacts[&bob.identity_id()];
+    assert_eq!(stored.home_origin, "http://home-b");
+    assert_eq!(stored.dest_hpke, bob.hpke_public());
 }

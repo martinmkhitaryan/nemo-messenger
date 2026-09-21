@@ -33,8 +33,8 @@ pub use group::{
     UPDATE_INTERVAL, UPDATE_ON_ONLINE,
 };
 pub use home::{
-    EnqueueResult, HomeSession, HomeState, HomeTransport, HostAccept, HostCred, HostGroup,
-    HttpHome, HttpRequest, HttpResponse, MailboxRow, StoredContact, FETCH_LIMIT,
+    peer_http_origin, EnqueueResult, HomeSession, HomeState, HomeTransport, HostAccept, HostCred,
+    HostGroup, HttpHome, HttpRequest, HttpResponse, MailboxRow, StoredContact, FETCH_LIMIT,
 };
 pub use identity::{
     revocation_from_mnemonic, Installation, RevocationExport, PREKEY_RESTOCK_BELOW,

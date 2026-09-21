@@ -35,7 +35,7 @@ How to use it:
 | Client wakeup WS | **Done** (I10a) — empty binary frames; poll fetch still required |
 | Packaging / self-host docs | **Done** (I11) — compose HTTPS :8443; JVM `./gradlew run`; LICENSE split |
 | Desktop hardening | **Done** (I12) — 120 s owner auth, capability/peer rate limits, cargo-deny, log redaction |
-| v1 freeze | Next — see [`REMAINING.md`](REMAINING.md): live call + device APK |
+| v1 freeze | Next — see [`REMAINING.md`](REMAINING.md): live call + device APK, then delete the working docs |
 | Tor/Arti, cover traffic, group calls | Nice-to-have — Track N |
 
 ---
@@ -323,7 +323,7 @@ User-marked deferred. Implement only after I12, or after an explicit “pull thi
 | N3 | Group calls | SFrame + call-specific MLS + SFU (ADR-0024). Video stays out. |
 | N4 | FCM HTTP v1 | After I10b ADR. Operator service account; payload = opaque wake token. |
 
-Also still out of v1 by README §52: iOS/macOS/web, history export, multi-device, key transparency, group migration.
+Also still out of v1 by README §52: iOS/macOS/web, multi-device, key transparency, group migration. History export is a non-goal (ADR-0023), not deferred.
 
 ---
 
@@ -355,4 +355,4 @@ Order if time is short before a demo: **I1 → I2 → I3 → I4**. That is a rec
 
 ## Next action
 
-**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Do **not** freeze yet. What is left besides Track N is listed in [`REMAINING.md`](REMAINING.md): a live audible 1:1 call and an APK on a device, then delete this file. FCM is I10b and needs ADR-0036.
+**I5 Android is implemented** (Gradle KMP + CI `assembleDebug`). Leftover code L1–L5 is in. Freeze is a live audible 1:1 and an APK on a device, then delete this file and [`REMAINING.md`](REMAINING.md). History export is a non-goal. FCM is I10b and needs ADR-0036.

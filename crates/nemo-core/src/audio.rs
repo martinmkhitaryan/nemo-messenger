@@ -109,31 +109,31 @@ pub struct AudioEngine {
     capture: Mutex<VecDeque<i16>>,
     playback: Mutex<VecDeque<i16>>,
     opus: Mutex<OpusPair>,
-    #[cfg(all(not(target_os = "android"), unix))]
+    #[cfg(not(target_os = "android"))]
     apm: Option<webrtc_audio_processing::Processor>,
 }
 
 impl AudioEngine {
     pub fn new(cbr: bool) -> Result<Arc<Self>> {
         let opus = OpusPair::new(cbr)?;
-        #[cfg(all(not(target_os = "android"), unix))]
+        #[cfg(not(target_os = "android"))]
         let apm = make_apm();
         Ok(Arc::new(Self {
             capture: Mutex::new(VecDeque::new()),
             playback: Mutex::new(VecDeque::new()),
             opus: Mutex::new(opus),
-            #[cfg(all(not(target_os = "android"), unix))]
+            #[cfg(not(target_os = "android"))]
             apm,
         }))
     }
 
     #[cfg(test)]
     pub fn has_apm(&self) -> bool {
-        #[cfg(all(not(target_os = "android"), unix))]
+        #[cfg(not(target_os = "android"))]
         {
             self.apm.is_some()
         }
-        #[cfg(not(all(not(target_os = "android"), unix)))]
+        #[cfg(target_os = "android")]
         {
             false
         }
@@ -233,7 +233,7 @@ impl AudioEngine {
     }
 
     fn process_capture(&self, mono: &mut [i16]) {
-        #[cfg(all(not(target_os = "android"), unix))]
+        #[cfg(not(target_os = "android"))]
         if let Some(apm) = self.apm.as_ref() {
             for chunk in mono.chunks_mut(APM_CHUNK) {
                 if chunk.len() != APM_CHUNK {
@@ -248,14 +248,14 @@ impl AudioEngine {
                 }
             }
         }
-        #[cfg(not(all(not(target_os = "android"), unix)))]
+        #[cfg(target_os = "android")]
         {
             let _ = mono;
         }
     }
 
     fn process_render(&self, mono: &mut [i16]) {
-        #[cfg(all(not(target_os = "android"), unix))]
+        #[cfg(not(target_os = "android"))]
         if let Some(apm) = self.apm.as_ref() {
             for chunk in mono.chunks_mut(APM_CHUNK) {
                 if chunk.len() != APM_CHUNK {
@@ -269,14 +269,14 @@ impl AudioEngine {
                 }
             }
         }
-        #[cfg(not(all(not(target_os = "android"), unix)))]
+        #[cfg(target_os = "android")]
         {
             let _ = mono;
         }
     }
 }
 
-#[cfg(all(not(target_os = "android"), unix))]
+#[cfg(not(target_os = "android"))]
 fn make_apm() -> Option<webrtc_audio_processing::Processor> {
     use webrtc_audio_processing::config::{
         EchoCanceller, GainController, GainController1, GainControllerMode, HighPassFilter,
@@ -375,7 +375,7 @@ mod tests {
         assert!(energy > 1_000_000, "energy={energy}");
     }
 
-    #[cfg(all(unix, not(target_os = "android")))]
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn apm_initializes_on_desktop() {
         let eng = AudioEngine::new(false).expect("opus");

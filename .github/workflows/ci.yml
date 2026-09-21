@@ -39,6 +39,8 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Meson for desktop APM
+        run: pip install meson ninja
       - name: Build nemo_ffi.dll
         run: cargo build -p nemo-ffi
       - uses: actions/upload-artifact@v4

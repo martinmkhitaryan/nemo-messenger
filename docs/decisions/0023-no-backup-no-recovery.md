@@ -52,6 +52,11 @@ Rejected together with any identity hierarchy (ADR-0003).
 - Client UX must state at identity creation that the identity and its history cannot be recovered.
 - The "Non-goals" section of the README lists all three items.
 
+## Amendment 1 (2026-09-21)
+
+Encrypted local history export/import is **not** a later add-on. It stays a non-goal with identity recovery and cryptographic-state export. There is no client API, file format, or UI for dumping or restoring message history. A future product that wants archival must write a new ADR; until then do not implement it.
+
 ## History
 
 - 2026-09-19 — Accepted. No history backup and no identity recovery in v1.
+- 2026-09-21 — Amendment 1: local history export/import is a non-goal, not a deferred leftover.

@@ -1,6 +1,6 @@
-# Missing besides Track N
+# Remaining work
 
-**Status:** working list after `call_ice` trickle send.  
+**Status:** leftover **code** from the last audit (L1–L5) is in the tree. History export is a **non-goal** (ADR-0023 amendment 1).  
 **Not a specification.** `README.md`, `docs/decisions/`, and `docs/protocol/` win if this file disagrees.  
 **Delete this file** with `IMPLEMENTATION.md` when I12 freeze is done.
 
@@ -8,60 +8,36 @@ Next free ADR is **0036**. Do not invent schema, ICE, or push tables without a r
 
 ---
 
-## Still open (not Track N)
+## Still open
 
-Protocol types for v1 messages, 1:1 media, groups, vault, and wakeup are in the tree. R1–R4 specified MUST work is in the client/server path. What is left is **human freeze checks**.
-
-### Freeze checks
-
-Product verification, not missing codecs.
+Product verification. CI cannot do these.
 
 | Item | Why it is still open |
 | --- | --- |
-| Live audible 1:1 call | Capture, AEC, Opus CBR (Private), and relay ICE are in code. CI has no microphone. Confirm two clients through local coturn with a real mic. Direct ICE still refused. |
+| Live audible 1:1 call | Capture, AEC, Opus CBR (Private), relay ICE, and `call_ice` trickle are in code. Confirm two clients through local coturn with a real mic. Direct ICE still refused. |
 | Android APK on a device | CI `assembleDebug` exists. Install on Android 16 and complete register / 1:1 / group / call. |
 | Delete `IMPLEMENTATION.md` | I12 last checkbox. Only after the two rows above. |
 
-### Specified MUST not fully on the idle path
+---
 
-| ID | Item | Where it stops today |
-| --- | --- | --- |
-| R1 | Idle discovery refresh | **Done** — `expire_now` / `fetch_now` walk stale 1:1 pins and group identities (`DISCOVERY_REFRESH_SECS`). |
-| R2 | MLS Remove on revocation | **Done** — idle sweep emits `RemoveBundle` for each shared group and a `revoked` row. |
-| R3 | Quiet-group MLS Update | **Done** — `maybe_self_update` also fires after `UPDATE_ON_ONLINE` (24 h) and is flushed from the idle path. |
-| R4 | Identity move to another home | **Done** — `POST /v1/binding` maps `observe_binding`; `HomeSession::rehome` mints a higher `seq`, registers on B, restocks, refreshes fan-out on the old host, and notifies A. FFI `register` while already registered moves home, gossips the binding, and sends new contact capabilities. Group **ops stay on the original host** (`HostGroup.host_base`); moving the group itself stays §52. |
+## Shipped (do not re-open)
 
-`call_ice` trickle send is **Done**: invite/answer go out after the first relay candidate; later relay candidates are `call_ice`. Receive of `CallIce` already applied them. Direct ICE still refused.
+Cross-server 1:1 discovery and prekeys on the peer home, Private envelope batching (calls skip the hold), Windows desktop AEC, QR scan to add a contact, peer fingerprint before add, `call_ice` trickle, identity re-home with group ops on the original host, idle discovery / MLS Remove / quiet Updates, wakeup WebSocket + poll.
 
 ---
 
-## Shipped (do not re-open as missing)
+## Track N (nice-to-have, not leftover v1)
 
-M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup / `call_ice` trickle, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, idle discovery refresh, MLS Remove on revoke, quiet-group Updates, identity re-home (R4), wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
-
----
-
-## Track N (nice-to-have, not missing v1)
-
-User-deferred. Do not treat as open MUST.
-
-| Item | Where it is deferred |
-| --- | --- |
-| Tor / Arti | Track N, ADR-0021 (`High` hop flag only until then) |
-| Cover traffic, constant-rate, Maximum mode | ADR-0021, README §52 |
-| Group calls (SFU + SFrame), video | ADR-0024, README §52 |
-| FCM HTTP v1 | Track N / I10b; needs **ADR-0036** because `0001_init.sql` has no push table |
-
-Wakeup WebSocket + poll is the shipped non-Google path (ADR-0020 / ADR-0028).
+Tor / Arti, cover traffic / Maximum, group calls + video, FCM HTTP v1 (needs **ADR-0036** — no push table in frozen DDL).
 
 ---
 
 ## Out of v1 by README §52
 
-iOS, macOS, web, multi-device, history export, key transparency, group migration, anonymous group membership, global directory lookup.
+iOS, macOS, web, multi-device, key transparency, group migration, anonymous group membership, global directory lookup. History export is a non-goal, not deferred.
 
 ---
 
 ## Decision gates
 
-Still stop for: FCM table, OS keystore wrapping SQLCipher, incompatible Argon2 bump, MLS storage-provider swap, P2P ICE, JSON protocol objects, libsignal on the server.
+Still stop for: FCM table, OS keystore wrapping SQLCipher, incompatible Argon2 bump, MLS storage-provider swap, P2P ICE, JSON protocol objects, libsignal on the server. Do not open an ADR to add history export.

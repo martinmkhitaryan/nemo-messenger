@@ -73,6 +73,28 @@ actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
     }
 }
 
+@Composable
+actual fun rememberScanQr(onText: (String) -> Unit): () -> Unit {
+    val latest = rememberUpdatedState(onText)
+    return {
+        val dlg = java.awt.FileDialog(null as java.awt.Frame?, "Scan QR image", java.awt.FileDialog.LOAD)
+        dlg.isVisible = true
+        val dir = dlg.directory
+        val name = dlg.file
+        if (!dir.isNullOrEmpty() && !name.isNullOrEmpty()) {
+            val file = java.io.File(dir, name)
+            val image = javax.imageio.ImageIO.read(file)
+            if (image != null) {
+                val w = image.width
+                val h = image.height
+                val pixels = IntArray(w * h)
+                image.getRGB(0, 0, w, h, pixels, 0, w)
+                decodeQrArgb(pixels, w, h)?.let(latest.value)
+            }
+        }
+    }
+}
+
 actual fun defaultHomeUrl(): String = "https://localhost:8443"
 
 actual fun copyToClipboard(text: String) {
