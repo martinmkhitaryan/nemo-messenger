@@ -44,8 +44,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
       # compiles webrtc-audio-processing. MSVC cl + Strawberry perl, no MinGW.
-      # Short CARGO_TARGET_DIR (MAX_PATH). Meson cpp_std=c++20: APM uses
-      # designated initializers that MSVC rejects under C++17 (C7555).
+      # Short CARGO_TARGET_DIR (MAX_PATH). Cargo Command::new("meson") runs
+      # meson.exe and skips a meson.cmd wrapper, so APM stays /std:c++17.
+      # A cl.exe shim rewrites that to /std:c++20 (MSVC C7555).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -79,26 +80,49 @@ jobs:
           if (Test-Path (Join-Path $gitUsr "cp.exe")) {
             $env:Path = "$env:Path;$gitUsr"
           }
-          $mesonReal = (Get-Command meson).Source
+          $clReal = (Get-Command cl).Source
+          if (-not $clReal) { throw "cl.exe not on PATH before shim" }
+          $env:NEMO_REAL_CL = $clReal
           $shim = Join-Path $env:RUNNER_TEMP "build-shims"
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
           Set-Content -Path (Join-Path $shim "nm.cmd") -Value "@echo off`r`nexit /b 0"
-          $mesonCmd = @(
-            '@echo off',
-            'if /I "%~1"=="setup" (',
-            "  `"$mesonReal`" %* -Dcpp_std=c++20",
-            ') else (',
-            "  `"$mesonReal`" %*",
-            ')'
-          ) -join "`r`n"
-          Set-Content -Path (Join-Path $shim "meson.cmd") -Value $mesonCmd
+          $clShimC = Join-Path $env:RUNNER_TEMP "nemo-cl-shim.c"
+          $clShimLines = @(
+            '#define _CRT_SECURE_NO_WARNINGS',
+            '#include <process.h>',
+            '#include <stdio.h>',
+            '#include <stdlib.h>',
+            '#include <string.h>',
+            'int main(int argc, char **argv) {',
+            '  const char *real = getenv("NEMO_REAL_CL");',
+            '  const char **nv;',
+            '  int i;',
+            '  intptr_t rc;',
+            '  if (!real || !real[0]) { fprintf(stderr, "NEMO_REAL_CL not set\n"); return 1; }',
+            '  nv = (const char **)calloc((size_t)argc + 1, sizeof(char *));',
+            '  if (!nv) return 1;',
+            '  nv[0] = real;',
+            '  for (i = 1; i < argc; i++) {',
+            '    nv[i] = strcmp(argv[i], "/std:c++17") == 0 ? "/std:c++20" : argv[i];',
+            '  }',
+            '  rc = _spawnv(_P_WAIT, real, nv);',
+            '  if (rc < 0) { perror("spawn cl"); return 1; }',
+            '  return (int)rc;',
+            '}'
+          )
+          Set-Content -Path $clShimC -Value $clShimLines -Encoding ascii
+          $shimCl = Join-Path $shim "cl.exe"
+          & $clReal /nologo /O2 "/Fe:$shimCl" $clShimC
+          if (-not (Test-Path $shimCl)) { throw "failed to build cl.exe C++20 shim" }
           $env:Path = "$shim;$env:Path"
           Write-Host "CC=$env:CC CXX=$env:CXX"
           foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
           }
-          if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl.exe not on PATH" }
+          $cl = Get-Command cl -ErrorAction SilentlyContinue
+          if (-not $cl) { throw "cl.exe not on PATH" }
+          if ($cl.Source -ne $shimCl) { throw "cl is not the C++20 shim: $($cl.Source)" }
           $link = Get-Command link -ErrorAction SilentlyContinue
           if (-not $link -or $link.Source -match "Git[\\/]usr") { throw "MSVC link.exe not first on PATH: $($link.Source)" }
           $cc = Get-Command cc -ErrorAction SilentlyContinue
