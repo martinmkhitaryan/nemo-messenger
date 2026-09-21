@@ -11,7 +11,7 @@ use nemo_core::home::{
 use nemo_core::identity::{revocation_from_mnemonic, Installation};
 use nemo_core::{CoreError, Vault};
 use nemo_server::{router, AppState};
-use nemo_wire::envelope::TtlBucket;
+use nemo_wire::envelope::{MessageType, TtlBucket};
 use nemo_wire::{GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_MIN};
 use rand::RngCore;
 use tower::ServiceExt;
@@ -448,6 +448,52 @@ async fn rehome_opens_new_mailbox_and_disables_old() {
     assert_eq!(on_a.binding.seq, old_seq + 1);
     assert_eq!(on_a.binding.server_id, on_b.binding.server_id);
     alice.mint_contact().await.expect("new mailbox on B");
+}
+
+#[tokio::test]
+async fn rehome_keeps_group_append_on_old_host() {
+    let a_state = AppState::new();
+    let b_state = AppState::new();
+    let a_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let b_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a_addr = a_listener.local_addr().unwrap();
+    let b_addr = b_listener.local_addr().unwrap();
+    let a_app = router(a_state.clone());
+    let b_app = router(b_state);
+    tokio::spawn(async move {
+        axum::serve(a_listener, a_app).await.expect("serve a");
+    });
+    tokio::spawn(async move {
+        axum::serve(b_listener, b_app).await.expect("serve b");
+    });
+    let now = now_unix();
+    let a_base = format!("http://{a_addr}");
+    let b_base = format!("http://{b_addr}");
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (mut alice, _) = HomeSession::register(HttpHome::new(&a_base).unwrap(), alice_inst, now)
+        .await
+        .unwrap();
+    alice.set_home_base(&a_base);
+    let created = alice
+        .create_group([7u8; 32], alice.mint_contact().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(created.host_base, a_base);
+    alice.remember_group(created.clone());
+    alice
+        .rehome(HttpHome::new(&b_base).unwrap(), &b_base, now)
+        .await
+        .unwrap();
+    assert_eq!(alice.groups[0].host_base, a_base);
+    alice
+        .group_append(
+            created.group_id,
+            &created.cred,
+            MessageType::MlsApp,
+            vec![1, 2, 3],
+        )
+        .await
+        .expect("append on old group host");
 }
 
 /// Set `NEMO_TEST_HOME_URL` (e.g. `https://localhost:8443` after compose up).

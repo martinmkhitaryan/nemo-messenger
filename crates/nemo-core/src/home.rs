@@ -38,6 +38,15 @@ pub struct HttpResponse {
 
 pub trait HomeTransport: Send + Sync {
     fn call(&self, req: HttpRequest) -> impl Future<Output = Result<HttpResponse>> + Send;
+    /// HTTP origin for a group that still lives on another home. In-process
+    /// transports stay on `self`.
+    fn redirect(&self, origin: &str) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = origin;
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,10 +55,12 @@ pub struct HostCred {
     pub credential_secret: [u8; KEY_LEN],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostGroup {
     pub group_id: [u8; KEY_LEN],
     pub cred: HostCred,
+    /// Group host HTTP origin. Empty means the current home (in-process tests).
+    pub host_base: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +172,7 @@ impl HomeState {
                     Value::Bytes(g.group_id.to_vec()),
                     Value::Bytes(g.cred.credential_id.to_vec()),
                     Value::Bytes(g.cred.credential_secret.to_vec()),
+                    Value::Text(g.host_base.clone()),
                 ])
             })
             .collect();
@@ -249,7 +261,7 @@ impl HomeState {
             let Value::Array(row) = item else {
                 return Err(CoreError::VaultCorrupt);
             };
-            if row.len() != 3 {
+            if row.len() != 3 && row.len() != 4 {
                 return Err(CoreError::VaultCorrupt);
             }
             groups.push(HostGroup {
@@ -257,6 +269,13 @@ impl HomeState {
                 cred: HostCred {
                     credential_id: ids::copy_fixed(cbor::expect_bytes(&row[1])?)?,
                     credential_secret: ids::copy_fixed(cbor::expect_bytes(&row[2])?)?,
+                },
+                host_base: if row.len() == 4 {
+                    cbor::expect_text(&row[3])
+                        .map_err(|_| CoreError::VaultCorrupt)?
+                        .to_owned()
+                } else {
+                    String::new()
                 },
             });
         }
@@ -355,6 +374,12 @@ impl<T: HomeTransport> HomeSession<T> {
             })
             .await?;
         check_empty(&res)?;
+        let old_base = self.home_base.clone();
+        for g in &mut self.groups {
+            if g.host_base.is_empty() {
+                g.host_base = old_base.clone();
+            }
+        }
         let old = std::mem::replace(&mut self.transport, new_transport);
         self.bundle = bundle;
         self.cursor = 0;
@@ -852,6 +877,7 @@ impl<T: HomeTransport> HomeSession<T> {
                 credential_id: read_key(&m, 1)?,
                 credential_secret: read_key(&m, 2)?,
             },
+            host_base: self.home_base.clone(),
         })
     }
 
@@ -869,13 +895,15 @@ impl<T: HomeTransport> HomeSession<T> {
             (3, Value::Bytes(body)),
         ]));
         let res = self
-            .transport
-            .call(HttpRequest {
-                method: "POST",
-                path: format!("/v1/groups/{}/append", ids::to_hex(&group_id)),
-                headers: vec![],
-                body: payload,
-            })
+            .call_group(
+                group_id,
+                HttpRequest {
+                    method: "POST",
+                    path: format!("/v1/groups/{}/append", ids::to_hex(&group_id)),
+                    headers: vec![],
+                    body: payload,
+                },
+            )
             .await?;
         let m = expect_map(check_body(&res)?)?;
         Ok(cbor::expect_uint(cbor::map_get(&m, 0)?)?)
@@ -893,13 +921,15 @@ impl<T: HomeTransport> HomeSession<T> {
             (2, Value::Bytes(invite.encode())),
         ]));
         let res = self
-            .transport
-            .call(HttpRequest {
-                method: "POST",
-                path: format!("/v1/groups/{}/invites", ids::to_hex(&group_id)),
-                headers: vec![],
-                body,
-            })
+            .call_group(
+                group_id,
+                HttpRequest {
+                    method: "POST",
+                    path: format!("/v1/groups/{}/invites", ids::to_hex(&group_id)),
+                    headers: vec![],
+                    body,
+                },
+            )
             .await?;
         check_empty(&res)
     }
@@ -952,13 +982,15 @@ impl<T: HomeTransport> HomeSession<T> {
             (5, Value::Bytes(joiner_hpke.to_vec())),
         ]));
         let res = self
-            .transport
-            .call(HttpRequest {
-                method: "POST",
-                path: format!("/v1/groups/{}/admit", ids::to_hex(&group_id)),
-                headers: vec![],
-                body,
-            })
+            .call_group(
+                group_id,
+                HttpRequest {
+                    method: "POST",
+                    path: format!("/v1/groups/{}/admit", ids::to_hex(&group_id)),
+                    headers: vec![],
+                    body,
+                },
+            )
             .await?;
         let m = expect_map(check_body(&res)?)?;
         read_key(&m, 0)
@@ -971,14 +1003,19 @@ impl<T: HomeTransport> HomeSession<T> {
         delivery_capability: [u8; KEY_LEN],
         home_hpke_public: [u8; KEY_LEN],
     ) -> Result<()> {
-        Self::post_fanout(
-            &self.transport,
-            group_id,
-            cred,
-            delivery_capability,
-            home_hpke_public,
-        )
-        .await
+        let origin = self.group_origin(group_id);
+        if let Some(alt) = self.transport.redirect(&origin) {
+            Self::post_fanout(&alt, group_id, cred, delivery_capability, home_hpke_public).await
+        } else {
+            Self::post_fanout(
+                &self.transport,
+                group_id,
+                cred,
+                delivery_capability,
+                home_hpke_public,
+            )
+            .await
+        }
     }
 
     async fn post_fanout(
@@ -1025,23 +1062,25 @@ impl<T: HomeTransport> HomeSession<T> {
         body: Vec<u8>,
     ) -> Result<()> {
         let res = self
-            .transport
-            .call(HttpRequest {
-                method: "POST",
-                path: format!(
-                    "/v1/groups/{}/files/{}",
-                    ids::to_hex(&group_id),
-                    ids::to_hex(&fetch_token)
-                ),
-                headers: vec![
-                    ("nemo-cred-id".into(), ids::to_hex(&cred.credential_id)),
-                    (
-                        "nemo-cred-secret".into(),
-                        ids::to_hex(&cred.credential_secret),
+            .call_group(
+                group_id,
+                HttpRequest {
+                    method: "POST",
+                    path: format!(
+                        "/v1/groups/{}/files/{}",
+                        ids::to_hex(&group_id),
+                        ids::to_hex(&fetch_token)
                     ),
-                ],
-                body,
-            })
+                    headers: vec![
+                        ("nemo-cred-id".into(), ids::to_hex(&cred.credential_id)),
+                        (
+                            "nemo-cred-secret".into(),
+                            ids::to_hex(&cred.credential_secret),
+                        ),
+                    ],
+                    body,
+                },
+            )
             .await?;
         check_empty(&res)
     }
@@ -1053,29 +1092,48 @@ impl<T: HomeTransport> HomeSession<T> {
         fetch_token: [u8; KEY_LEN],
     ) -> Result<Vec<u8>> {
         let res = self
-            .transport
-            .call(HttpRequest {
-                method: "GET",
-                path: format!(
-                    "/v1/groups/{}/files/{}",
-                    ids::to_hex(&group_id),
-                    ids::to_hex(&fetch_token)
-                ),
-                headers: vec![
-                    ("nemo-cred-id".into(), ids::to_hex(&cred.credential_id)),
-                    (
-                        "nemo-cred-secret".into(),
-                        ids::to_hex(&cred.credential_secret),
+            .call_group(
+                group_id,
+                HttpRequest {
+                    method: "GET",
+                    path: format!(
+                        "/v1/groups/{}/files/{}",
+                        ids::to_hex(&group_id),
+                        ids::to_hex(&fetch_token)
                     ),
-                ],
-                body: vec![],
-            })
+                    headers: vec![
+                        ("nemo-cred-id".into(), ids::to_hex(&cred.credential_id)),
+                        (
+                            "nemo-cred-secret".into(),
+                            ids::to_hex(&cred.credential_secret),
+                        ),
+                    ],
+                    body: vec![],
+                },
+            )
             .await?;
         Ok(check_body(&res)?.to_vec())
     }
 
     pub fn remember_group(&mut self, group: HostGroup) {
         self.groups.push(group);
+    }
+
+    fn group_origin(&self, group_id: [u8; KEY_LEN]) -> String {
+        self.groups
+            .iter()
+            .find(|g| g.group_id == group_id)
+            .map(|g| g.host_base.clone())
+            .unwrap_or_default()
+    }
+
+    async fn call_group(&self, group_id: [u8; KEY_LEN], req: HttpRequest) -> Result<HttpResponse> {
+        let origin = self.group_origin(group_id);
+        if let Some(alt) = self.transport.redirect(&origin) {
+            alt.call(req).await
+        } else {
+            self.transport.call(req).await
+        }
     }
 
     fn owner_header(&self, cursor: u64, limit: u64) -> Result<String> {
@@ -1290,6 +1348,14 @@ impl rustls::client::danger::ServerCertVerifier for WebPkiIsNotIdentity {
 }
 
 impl HomeTransport for HttpHome {
+    fn redirect(&self, origin: &str) -> Option<Self> {
+        let origin = origin.trim_end_matches('/');
+        if origin.is_empty() {
+            return None;
+        }
+        HttpHome::new(origin).ok()
+    }
+
     async fn call(&self, req: HttpRequest) -> Result<HttpResponse> {
         let method = req
             .method

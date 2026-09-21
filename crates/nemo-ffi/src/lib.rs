@@ -424,7 +424,7 @@ fn load_live_groups(vault: &Vault, install: &Installation, hosts: &[HostGroup]) 
     let mls = vault.load_groups(install).unwrap_or_default();
     hosts
         .iter()
-        .copied()
+        .cloned()
         .zip(mls)
         .map(|(host, mls)| LiveGroup {
             host,
@@ -873,6 +873,15 @@ impl NemoClient {
                     now,
                 )) {
                     Ok(_) => {
+                        for live in inner.groups.iter_mut() {
+                            if let Some(h) = session
+                                .groups
+                                .iter()
+                                .find(|g| g.group_id == live.host.group_id)
+                            {
+                                live.host = h.clone();
+                            }
+                        }
                         let peers: Vec<_> = session.contacts.keys().copied().collect();
                         for peer in peers {
                             let _ = send_own_contact_capability(&mut session, peer, now);
@@ -1308,8 +1317,9 @@ impl NemoClient {
                     let live = HostGroup {
                         group_id: gid,
                         cred: host.cred,
+                        host_base: session.home_base.clone(),
                     };
-                    session.remember_group(live);
+                    session.remember_group(live.clone());
                     groups.push(LiveGroup {
                         host: live,
                         mls,
@@ -1334,7 +1344,7 @@ impl NemoClient {
                                     session.install.mls_provider(),
                                     &row.inner,
                                 ) {
-                                    opened = Some((g.host, plaintext));
+                                    opened = Some((g.host.clone(), plaintext));
                                     break;
                                 }
                             }
@@ -1534,7 +1544,7 @@ impl NemoClient {
             let mls = session.install.create_group()?;
             let cap = block_on(session.mint_contact())?;
             let host = block_on(session.create_group(mls.group_signing_public(), cap))?;
-            session.remember_group(host);
+            session.remember_group(host.clone());
             let id = ids::to_hex(&host.group_id);
             groups.push(LiveGroup {
                 host,

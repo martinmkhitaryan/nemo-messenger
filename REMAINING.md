@@ -29,7 +29,7 @@ Product verification, not missing codecs.
 | R1 | Idle discovery refresh | **Done** — `expire_now` / `fetch_now` walk stale 1:1 pins and group identities (`DISCOVERY_REFRESH_SECS`). |
 | R2 | MLS Remove on revocation | **Done** — idle sweep emits `RemoveBundle` for each shared group and a `revoked` row. |
 | R3 | Quiet-group MLS Update | **Done** — `maybe_self_update` also fires after `UPDATE_ON_ONLINE` (24 h) and is flushed from the idle path. |
-| R4 | Identity move to another home | **Done** — `POST /v1/binding` maps `observe_binding`; `HomeSession::rehome` mints a higher `seq`, registers on B, restocks, refreshes fan-out on the old host, and notifies A. FFI `register` while already registered moves home, gossips the binding, and sends new contact capabilities. Group **host** migration stays §52. |
+| R4 | Identity move to another home | **Done** — `POST /v1/binding` maps `observe_binding`; `HomeSession::rehome` mints a higher `seq`, registers on B, restocks, refreshes fan-out on the old host, and notifies A. FFI `register` while already registered moves home, gossips the binding, and sends new contact capabilities. Group **ops stay on the original host** (`HostGroup.host_base`); moving the group itself stays §52. |
 
 `call_ice` trickle send is not listed: offer/answer wait until ICE gathering completes and put relay candidates in the invite/answer. Receive of `CallIce` already works.
 
