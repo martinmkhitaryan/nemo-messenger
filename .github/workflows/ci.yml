@@ -118,6 +118,8 @@ jobs:
           if (-not (Test-Path $gitCp)) {
             throw "Git cp.exe not found (APM build.rs Command::new(cp)): $gitCp"
           }
+          # Append (don't prepend): keep MSVC link.exe first. Rust Command::new("cp")
+          # finds cp.exe on PATH; PowerShell's `cp` alias is unrelated.
           $env:Path = "$env:Path;$gitUsr"
           $mesonReal = (Get-Command meson).Source
           if (-not $mesonReal) { throw "meson not on PATH before shim" }
@@ -194,7 +196,7 @@ jobs:
           if (-not (Test-Path $shimMeson)) { throw "failed to build meson.exe C++20 shim" }
           $env:Path = "$shim;$env:Path"
           Write-Host "CC=$env:CC CXX=$env:CXX LIBCLANG_PATH=$env:LIBCLANG_PATH"
-          foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
+          foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp.exe", "link")) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             Write-Host "${tool}: $(if ($cmd) { $cmd.Source } else { 'missing' })"
           }
@@ -204,8 +206,8 @@ jobs:
           $nm = Get-Command nm -ErrorAction SilentlyContinue
           if (-not $nm) { throw "nm not on PATH" }
           if ($nm.Source -ne $shimNm) { throw "nm is not shim nm.exe: $($nm.Source)" }
-          $cp = Get-Command cp -ErrorAction SilentlyContinue
-          if (-not $cp -or $cp.Source -notmatch 'Git[\\/]usr') { throw "cp must be Git usr cp.exe: $($cp.Source)" }
+          $cp = Get-Command cp.exe -ErrorAction SilentlyContinue
+          if (-not $cp -or $cp.Source -ne $gitCp) { throw "cp.exe must be Git usr: $($cp.Source)" }
           $cl = Get-Command cl -ErrorAction SilentlyContinue
           if (-not $cl) { throw "cl.exe not on PATH" }
           if ($cl.Source -match '[\\/]build-shims[\\/]') { throw "cl must be real MSVC, not a shim: $($cl.Source)" }
