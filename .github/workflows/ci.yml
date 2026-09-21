@@ -83,14 +83,15 @@ jobs:
           $shim = Join-Path $env:RUNNER_TEMP "build-shims"
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
           Set-Content -Path (Join-Path $shim "nm.cmd") -Value "@echo off`r`nexit /b 0"
-          Set-Content -Path (Join-Path $shim "meson.cmd") -Value @"
-@echo off
-if /I "%~1"=="setup" (
-  "$mesonReal" %* -Dcpp_std=c++20
-) else (
-  "$mesonReal" %*
-)
-"@
+          $mesonCmd = @(
+            '@echo off',
+            'if /I "%~1"=="setup" (',
+            "  `"$mesonReal`" %* -Dcpp_std=c++20",
+            ') else (',
+            "  `"$mesonReal`" %*",
+            ')'
+          ) -join "`r`n"
+          Set-Content -Path (Join-Path $shim "meson.cmd") -Value $mesonCmd
           $env:Path = "$shim;$env:Path"
           Write-Host "CC=$env:CC CXX=$env:CXX"
           foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
