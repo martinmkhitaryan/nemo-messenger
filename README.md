@@ -1,11 +1,11 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 12 (2026-09-21)<br>
+**Status:** Draft, revision 13 (2026-09-21)<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
 **Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)<br>
-**v1.1 follow-on:** [`docs/v1.1.md`](docs/v1.1.md)<br>
+**v1.1 nice-to-have (group calls, FCM):** [`docs/v1.1.md`](docs/v1.1.md)<br>
 **Manual live-call check:** [`docs/testing.md`](docs/testing.md)
 
 ---
@@ -36,12 +36,12 @@ The choices below are binding for the current design. Each one has a full record
 | Group join | Mailbox token ≠ member credential. Signing keys MUST be in MLS before invite. Bound invitee_binding is a hash commitment. Inviter admits or relays proof over MLS. Admit requires a discovery revoke check. Credential dies when Remove is admitted. | [ADR-0018](docs/decisions/0018-group-join-and-member-credentials.md) |
 | Attachments | 1:1: padded envelope in the recipient mailbox. Groups: one encrypted object on the host; fetch is write-once 256-bit token + member credential over S2S. No public CDN, no file key on the server. | [ADR-0019](docs/decisions/0019-attachment-as-padded-envelope.md) |
 | Push | Push carries an opaque wake token only; one priority class per platform; the device fetches its own ciphertext. | [ADR-0020](docs/decisions/0020-opaque-push-wakeup.md) |
-| Privacy layer | Metadata protection is a separate tunable layer with modes; Tor optional; client-side cover traffic and constant-rate modes deferred but wire-compatible. | [ADR-0021](docs/decisions/0021-privacy-layer-and-modes.md) |
+| Privacy layer | Metadata protection is a separate tunable layer; Normal/Private/High/Maximum; High cover + optional Tor SOCKS; Maximum constant-rate slots, no calls. | [ADR-0021](docs/decisions/0021-privacy-layer-and-modes.md) |
 | Data minimisation | No server-side presence, typing, receipts, contact lists or analytics; minimal purpose-bound logs. | [ADR-0022](docs/decisions/0022-server-side-data-minimisation.md) |
 | Backup | No identity recovery, never any cryptographic-state recovery, no history backup, no history export. | [ADR-0023](docs/decisions/0023-no-backup-no-recovery.md) |
 | Voice calls | Signaling inside the E2EE conversation; WebRTC media with self-hosted TURN; always-relay (`iceTransportPolicy=relay`, no P2P); 1:1 via DTLS-SRTP; groups (deferred) via SFrame keyed from MLS through a blind SFU. | [ADR-0024](docs/decisions/0024-voice-call-architecture.md) |
 | Open and self-hosted | Fully self-hostable, open source, standard audited cryptography only, no custom primitives. | [ADR-0025](docs/decisions/0025-self-hostable-open-source-no-custom-crypto.md) |
-| Platforms | Android, Linux, Windows first; iOS/macOS later; no web in v1; single Rust core. | [ADR-0026](docs/decisions/0026-target-platforms.md) |
+| Platforms | Android, Linux, and Windows. No iOS, macOS, or web. Single Rust core. | [ADR-0026](docs/decisions/0026-target-platforms.md) |
 | Development order | Security model, then protocols, then envelope, delivery, federation, privacy, application; APIs and schemas last. | [ADR-0027](docs/decisions/0027-protocol-first-development-order.md) |
 | Implementation stack | Rust core and Rust server; libsignal primitives + OpenMLS; Compose Multiplatform + UniFFI; Axum + sqlx + PostgreSQL + Caddy; spec/server MIT, client AGPL; no Cargo workspace until the protocols exist. | [ADR-0028](docs/decisions/0028-implementation-languages-and-libraries.md) |
 | Crypto encodings | SHA-256 ids; CBOR contact card ≤400 bytes (`nemo:1:` URI); MLS suite 0x0003; Update every 7 days / 72 h before send; 30-minute share tokens. | [ADR-0029](docs/decisions/0029-cryptographic-identifiers-and-encodings.md) |
@@ -49,21 +49,22 @@ The choices below are binding for the current design. Each one has a full record
 | Mailboxes | 14-day / 500 MiB default retention; owner-only fetch; DR skip window ≥2000. | [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md) |
 | Federation hop | Server Ed25519 + HPKE X25519; TLS 1.3 with pinned keys; not Web PKI. | [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md) |
 | HTTP and schema | Client-to-home `/v1` on localhost HTTP; Caddy terminates TLS; CBOR/octet-stream, never JSON; Postgres DDL from phases 1–5 only. | [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md) |
-| Local vault | App passphrase (min 8); Argon2id; SQLCipher in `nemo-core`; revocation mnemonic never stored; lost passphrase is a lost identity. | [ADR-0034](docs/decisions/0034-local-vault-passphrase.md) |
+| Local vault | App passphrase (min 8); Argon2id; SQLCipher in `nemo-core`; device secret mixed in (Android Keystore / OS credential store); revocation mnemonic never stored; lost passphrase or lost device secret is a lost identity. | [ADR-0034](docs/decisions/0034-local-vault-passphrase.md) |
 | TURN credentials | Per-call HMAC-SHA1 REST creds from `POST /v1/turn`; username is not identity; no credentials table. | [ADR-0035](docs/decisions/0035-ephemeral-turn-credentials.md) |
 
-## 0.1 Non-goals
+## 0.1 Product prohibitions
 
-The following are deliberately **not** goals of this product. They are listed so that nobody "fixes" them later without a new decision record.
+The following are deliberately **not** this product. They are listed so that nobody "fixes" them later without a new decision record.
 
-* Multi-device: one person using two installations appears as two identities.
+* Multi-device: one person using two installations appears as two identities. A new device is a new identity ([ADR-0003](docs/decisions/0003-single-key-identity.md)).
+* iOS, macOS, and web clients ([ADR-0026](docs/decisions/0026-target-platforms.md)).
 * Identity recovery after device loss.
 * Recovery or synchronisation of ratchet / MLS state, under any circumstances.
-* Message history backup or export (local file, server blob, or any other dump of readable history).
+* Message history backup or export (local file, server blob, or any other dump of readable history). Prohibited ([ADR-0023](docs/decisions/0023-no-backup-no-recovery.md)).
 * Global usernames or directory lookup (v1).
 * Hiding group membership from the group's hosting server (v1).
 * Adding someone to a group without their client accepting (unilateral MLS Add).
-* Peer-to-peer call media (always TURN; P2P would be a later record).
+* Peer-to-peer call media (always TURN; host/srflx ICE would show the peer an IP).
 * A public attachment CDN, content-addressed file archive, or file key stored on a server.
 * Protection against a global passive observer without the optional privacy layer.
 * Protection of plaintext already present on a compromised device.
@@ -223,7 +224,7 @@ Person
 * Moving to a new device means creating a new identity and being re-added by every contact.
 * A lost, wiped or stolen device is a lost identity. The only external control over an identity is revocation (3.3).
 
-This removes device enrollment, device revocation, cross-device state synchronisation and root-key custody from the protocol. The cost is that multi-device is a non-goal (0.1).
+This removes device enrollment, device revocation, cross-device state synchronisation and root-key custody from the protocol. Multi-device linking is prohibited (0.1).
 
 ---
 
@@ -1240,15 +1241,13 @@ The server should not know whether an opaque envelope contains:
 
 ---
 
-# 28. Initial Cover Traffic Strategy (ADR-0021)
+# 28. Cover traffic in High and Maximum (ADR-0021)
 
-Cover traffic should not be mandatory in the first version because of:
+Cover traffic is optional. Normal and Private do not emit dummies.
 
-* bandwidth cost;
-* battery consumption;
-* implementation complexity.
+High posts client-generated dummy envelopes to a contact on a jittered interval. Maximum uses an approximately 2-second slot (a real send fills the slot). Envelope bytes stay the same buckets as real traffic.
 
-However, the protocol should be designed so that cover traffic can be introduced later without redesigning the entire messaging format.
+Client→home HTTP in High/Maximum uses SOCKS5 to Arti when the home origin is not loopback. Loopback stays direct.
 
 ---
 
@@ -1417,7 +1416,7 @@ Encrypted Message
 
 The device wakes up and fetches encrypted envelopes itself.
 
-Per ADR-0026 the first release targets Android, Linux and Windows. On Android with Play Services, push is FCM (one priority class, opaque payload). Linux, Windows, and Android without Play Services have no platform push: a persistent WebSocket or periodic poll while the application runs (ADR-0028). The protocol MUST NOT require Google. iOS (APNs, and PushKit/CallKit for calls) is specified when the platform is added. Every wake on a platform uses the same priority (ADR-0020).
+Per ADR-0026 the product targets Android, Linux and Windows. On Android with Play Services, push is FCM (one priority class, opaque payload). Linux, Windows, and Android without Play Services have no platform push: a persistent WebSocket or periodic poll while the application runs (ADR-0028). The protocol MUST NOT require Google. Every wake on a platform uses the same priority (ADR-0020).
 
 ---
 
@@ -2162,8 +2161,8 @@ The initial product should focus on:
 
 ## Identity
 
-* one cryptographic identity per installation;
-* passphrase-locked SQLCipher vault on the device ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md));
+* one cryptographic identity per installation (a new device is a new identity);
+* passphrase-locked SQLCipher vault on the device, mixed with an OS-held device secret ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md));
 * revocation key and revocation flow;
 * contact card and invite-first contact establishment;
 * local contact nicknames;
@@ -2209,7 +2208,7 @@ The initial product should focus on:
 
 ## Platforms (ADR-0026, ADR-0028)
 
-* Android, Linux, Windows;
+* Android, Linux, Windows (not iOS, macOS, or web);
 * opaque push notifications on Android with Play Services; long-lived connection otherwise;
 * encrypted message retrieval after wake-up;
 * single Rust core with a Compose Multiplatform shell over UniFFI.
@@ -2231,8 +2230,6 @@ The following should not be required for the first release:
 * multi-use or long-lived group invite links (v1 invites are one-time, short-TTL; ADR-0018);
 * group voice calls (SFU + SFrame, section 64.4);
 * video calls;
-* peer-linked identities for multi-device UX (the only path compatible with ADR-0003);
-* iOS, macOS, web clients;
 * key transparency for discovery.
 
 However, the protocol should be extensible enough to support them later.
@@ -2303,9 +2300,9 @@ The hosting server knows the member capability set. Stream append is authorised 
 
 ---
 
-## 53.11 Backup and recovery — resolved as non-goal (ADR-0023)
+## 53.11 Backup and recovery — prohibited (ADR-0023)
 
-No identity recovery, never state recovery, no history backup, no history export ([ADR-0023](docs/decisions/0023-no-backup-no-recovery.md)). The local SQLCipher vault ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md)) is at-rest encryption on that device, not a backup: a forgotten passphrase is a lost identity.
+Identity recovery, cryptographic-state recovery, history backup, and history export are prohibited ([ADR-0023](docs/decisions/0023-no-backup-no-recovery.md)). The local SQLCipher vault ([ADR-0034](docs/decisions/0034-local-vault-passphrase.md)) is at-rest encryption on that device: a forgotten passphrase is a lost identity.
 
 ---
 
@@ -2365,7 +2362,7 @@ Defines:
 
 ## Phase 6 — Privacy transport
 
-**Complete (v1 subset):** [`docs/protocol/06-privacy-transport.md`](docs/protocol/06-privacy-transport.md). Cover traffic and Maximum mode remain deferred (ADR-0021).
+**Complete:** [`docs/protocol/06-privacy-transport.md`](docs/protocol/06-privacy-transport.md). High cover and Maximum slots ship in the client.
 
 ## Phase 7 — Application protocol
 
@@ -2796,5 +2793,5 @@ Calls are the worst case for the metadata layer: long, bidirectional, near-const
 
 ## 64.6 Wake-up
 
-Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. On Android with Play Services this is FCM at the platform's single wake priority plus a foreground service. On Android without Play Services and on desktop, the long-lived connection (ADR-0028) carries the envelope. iOS (PushKit/CallKit) is specified with the platform (ADR-0026).
+Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. On Android with Play Services this is FCM at the platform's single wake priority plus a foreground service. On Android without Play Services and on desktop, the long-lived connection (ADR-0028) carries the envelope.
 

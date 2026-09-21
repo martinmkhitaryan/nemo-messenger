@@ -14,7 +14,7 @@ Calls are built as three separable parts.
 
 **Signaling** rides the existing end-to-end encrypted conversation. `call_invite`, `call_ringing`, `call_answer`, `call_ice`, `call_reject`, `call_cancel`, `call_end` are application messages in the 1:1 (Double Ratchet) or group (MLS) conversation. Servers see ordinary envelopes. Invites use the smallest `ttl_bucket` (ADR-0014) so stale invites are dropped. ICE candidates travel encrypted because they contain IP addresses.
 
-**Media transport** is WebRTC: ICE/STUN/TURN for 1:1, an SFU for groups. Each server may host TURN and an SFU and advertises them through discovery. TURN credentials are ephemeral, issued per call by the caller's home server, and not tied to identity. Media is **always relayed through TURN**. There is no peer-to-peer ICE. Clients MUST set `iceTransportPolicy=relay` and MUST NOT gather host or srflx candidates, so the peer never learns the user's IP. P2P can be added later by a new record; it is not a hidden default.
+**Media transport** is WebRTC: ICE/STUN/TURN for 1:1, an SFU for groups. Each server may host TURN and an SFU and advertises them through discovery. TURN credentials are ephemeral, issued per call by the caller's home server, and not tied to identity. Media is **always relayed through TURN**. There is no peer-to-peer ICE. Clients MUST set `iceTransportPolicy=relay` and MUST NOT gather host or srflx candidates, so the peer never learns the user's IP. Direct ICE (host or srflx) would show the peer the user's IP; that is a privacy loss, not a security gain. There is no user-selectable P2P mode. A new ADR that supersedes this record is required before any direct ICE.
 
 **Media encryption:**
 
@@ -69,3 +69,4 @@ Rejected as a supported mode: Tor carries no UDP and TURN-over-TCP-over-Tor give
 ## History
 
 - 2026-09-19 — Accepted. E2EE signaling, always-relay WebRTC, no P2P.
+- 2026-09-21 — Amendment 1: P2P ICE is forbidden (peer IP leak). Not a later default and not a user choice.

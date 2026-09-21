@@ -956,9 +956,9 @@ fun uniffi_nemo_ffi_fn_free_nemoclient(`ptr`: Pointer,uniffi_out_err: UniffiRust
 ): Unit
 fun uniffi_nemo_ffi_fn_constructor_nemoclient_create(uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`deviceSecret`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`deviceSecret`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(`ptr`: Pointer,`inviteUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1289,10 +1289,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create() != 13485.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create_at() != 33156.toShort()) {
+    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create_at() != 60682.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_open_at() != 49111.toShort()) {
+    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_open_at() != 1505.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -2422,23 +2422,26 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
         
     /**
      * Create an identity and lock it in `dir` (ADR-0034).
+     *
+     * `device_secret` is the Keystore-unwrapped 32-byte bind on Android. Empty
+     * means `nemo-core` loads the OS bind (desktop).
      */
-    @Throws(FfiException::class) fun `createAt`(`dir`: kotlin.String, `passphrase`: kotlin.String): NemoClient {
+    @Throws(FfiException::class) fun `createAt`(`dir`: kotlin.String, `passphrase`: kotlin.String, `deviceSecret`: kotlin.ByteArray): NemoClient {
             return FfiConverterTypeNemoClient.lift(
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(
-        FfiConverterString.lower(`dir`),FfiConverterString.lower(`passphrase`),_status)
+        FfiConverterString.lower(`dir`),FfiConverterString.lower(`passphrase`),FfiConverterByteArray.lower(`deviceSecret`),_status)
 }
     )
     }
     
 
         
-    @Throws(FfiException::class) fun `openAt`(`dir`: kotlin.String, `passphrase`: kotlin.String): NemoClient {
+    @Throws(FfiException::class) fun `openAt`(`dir`: kotlin.String, `passphrase`: kotlin.String, `deviceSecret`: kotlin.ByteArray): NemoClient {
             return FfiConverterTypeNemoClient.lift(
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(
-        FfiConverterString.lower(`dir`),FfiConverterString.lower(`passphrase`),_status)
+        FfiConverterString.lower(`dir`),FfiConverterString.lower(`passphrase`),FfiConverterByteArray.lower(`deviceSecret`),_status)
 }
     )
     }

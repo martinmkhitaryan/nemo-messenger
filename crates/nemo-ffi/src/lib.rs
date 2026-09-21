@@ -659,7 +659,8 @@ fn turn_config(inner: &Inner) -> Result<TurnConfig, FfiError> {
 fn call_cbr(inner: &Inner) -> bool {
     matches!(
         inner.state.as_ref(),
-        Some(ClientState::Registered(session)) if session.privacy == PrivacyMode::Private
+        Some(ClientState::Registered(session))
+            if matches!(session.privacy, PrivacyMode::Private | PrivacyMode::High)
     )
 }
 
@@ -784,10 +785,22 @@ impl NemoClient {
     }
 
     /// Create an identity and lock it in `dir` (ADR-0034).
+    ///
+    /// `device_secret` is the Keystore-unwrapped 32-byte bind on Android. Empty
+    /// means `nemo-core` loads the OS bind (desktop).
     #[uniffi::constructor]
-    pub fn create_at(dir: String, passphrase: String) -> Result<Arc<Self>, FfiError> {
+    pub fn create_at(
+        dir: String,
+        passphrase: String,
+        device_secret: Vec<u8>,
+    ) -> Result<Arc<Self>, FfiError> {
         let (install, export) = Installation::create()?;
-        let vault = Vault::create(&dir, &passphrase, &install)?;
+        let injected = if device_secret.is_empty() {
+            None
+        } else {
+            Some(device_secret)
+        };
+        let vault = Vault::create_bound(&dir, &passphrase, &install, injected.as_deref())?;
         Ok(Arc::new(Self {
             inner: Arc::new(Mutex::new(empty_inner(
                 Some(ClientState::Local(install)),
@@ -798,8 +811,17 @@ impl NemoClient {
     }
 
     #[uniffi::constructor]
-    pub fn open_at(dir: String, passphrase: String) -> Result<Arc<Self>, FfiError> {
-        let (vault, install) = Vault::open(&dir, &passphrase)?;
+    pub fn open_at(
+        dir: String,
+        passphrase: String,
+        device_secret: Vec<u8>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let injected = if device_secret.is_empty() {
+            None
+        } else {
+            Some(device_secret)
+        };
+        let (vault, install) = Vault::open_bound(&dir, &passphrase, injected.as_deref())?;
         let (state, groups) = match vault.load_home()? {
             Some(home) if !home.home_base.is_empty() => {
                 let hosts = home.groups.clone();
@@ -860,7 +882,8 @@ impl NemoClient {
         let parsed = match mode.to_ascii_lowercase().as_str() {
             "normal" => PrivacyMode::Normal,
             "private" => PrivacyMode::Private,
-            "high" | "maximum" => return Err(CoreError::MaximumNotShipped.into()),
+            "high" => PrivacyMode::High,
+            "maximum" => PrivacyMode::Maximum,
             _ => return Err(FfiError::Core("privacy mode".into())),
         };
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
@@ -880,6 +903,7 @@ impl NemoClient {
             PrivacyMode::Normal => "normal".into(),
             PrivacyMode::Private => "private".into(),
             PrivacyMode::High => "high".into(),
+            PrivacyMode::Maximum => "maximum".into(),
         })
     }
 
@@ -1048,6 +1072,7 @@ impl NemoClient {
                 None => return Err(FfiError::Core("busy".into())),
             };
             let last_acked = session.cursor;
+            let _ = block_on(session.pump_cover());
             let rows = block_on(session.fetch_mailbox())?;
             let mut new_rows = if rows.is_empty() {
                 Vec::new()
@@ -2133,6 +2158,11 @@ impl NemoClient {
             if inner.live_call.is_some() {
                 return Err(FfiError::Core("call already live".into()));
             }
+            if let Some(ClientState::Registered(session)) = inner.state.as_ref() {
+                if !session.calls_allowed() {
+                    return Err(CoreError::CallsUnavailable.into());
+                }
+            }
             (turn_config(&inner)?, call_cbr(&inner))
         };
         let call = block_on(Call::offer_with(&turn, cbr))?;
@@ -2188,6 +2218,11 @@ impl NemoClient {
                 .remove(&call_id_hex)
                 .ok_or_else(|| FfiError::Core("unknown call".into()))?;
             let turn = turn_config(&inner)?;
+            if let Some(ClientState::Registered(session)) = inner.state.as_ref() {
+                if !session.calls_allowed() {
+                    return Err(CoreError::CallsUnavailable.into());
+                }
+            }
             let cbr = call_cbr(&inner);
             (pending, turn, cbr)
         };
@@ -2582,16 +2617,22 @@ mod tests {
     #[test]
     fn vault_create_open_same_identity() {
         let dir = temp_dir("nemo-ffi-vault");
-        let client =
-            NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-                .unwrap();
+        let client = NemoClient::create_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
         let id = client.identity_id_hex().unwrap();
         let mnemonic = client.take_revocation_mnemonic().unwrap();
         assert!(mnemonic.is_some());
         drop(client);
-        let opened =
-            NemoClient::open_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-                .unwrap();
+        let opened = NemoClient::open_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
         assert_eq!(opened.identity_id_hex().unwrap(), id);
         assert!(opened.take_revocation_mnemonic().unwrap().is_none());
         let _ = fs::remove_dir_all(&dir);
@@ -2605,11 +2646,13 @@ mod tests {
         let alice = NemoClient::create_at(
             alice_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         let bob = NemoClient::create_at(
             bob_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         alice.register(base.clone()).unwrap();
@@ -2643,6 +2686,7 @@ mod tests {
         let alice2 = NemoClient::open_at(
             alice_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(alice2.identity_id_hex().unwrap(), alice_id);
@@ -2655,18 +2699,24 @@ mod tests {
         let a = serve_home();
         let b = serve_home();
         let dir = temp_dir("nemo-ffi-rehome");
-        let alice =
-            NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-                .unwrap();
+        let alice = NemoClient::create_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
         alice.register(a.clone()).unwrap();
         let err = alice.register(a).unwrap_err();
         assert!(err.to_string().contains("already registered"));
         alice.register(b.clone()).unwrap();
         alice.mint_share_uri().unwrap();
         drop(alice);
-        let opened =
-            NemoClient::open_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-                .unwrap();
+        let opened = NemoClient::open_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
         assert!(opened
             .register(b)
             .unwrap_err()
@@ -2698,7 +2748,12 @@ mod tests {
     }
 
     fn client_at(dir: &std::path::Path) -> Arc<NemoClient> {
-        NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into()).unwrap()
+        NemoClient::create_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap()
     }
 
     impl NemoClient {
@@ -2760,6 +2815,7 @@ mod tests {
         let alice2 = NemoClient::open_at(
             alice_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         let groups = alice2.list_groups().unwrap();
@@ -2800,6 +2856,7 @@ mod tests {
         let bob2 = NemoClient::open_at(
             bob_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         let _ = alice.admit_join(join).unwrap();
@@ -2955,6 +3012,7 @@ mod tests {
         let alice2 = NemoClient::open_at(
             alice_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(alice2.disappear_secs(bob_id.clone()).unwrap(), 1);
@@ -3110,6 +3168,7 @@ mod tests {
         let bob = NemoClient::create_at(
             bob_dir.to_string_lossy().into_owned(),
             "correct horse".into(),
+            Vec::new(),
         )
         .unwrap();
         let mnemonic = bob.take_revocation_mnemonic().unwrap().unwrap();
@@ -3142,10 +3201,17 @@ mod tests {
     #[test]
     fn wrong_passphrase_does_not_open_vault() {
         let dir = temp_dir("nemo-ffi-bad-pass");
-        let _ = NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-            .unwrap();
-        let err = match NemoClient::open_at(dir.to_string_lossy().into_owned(), "incorrect!!".into())
-        {
+        let _ = NemoClient::create_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let err = match NemoClient::open_at(
+            dir.to_string_lossy().into_owned(),
+            "incorrect!!".into(),
+            Vec::new(),
+        ) {
             Ok(_) => panic!("wrong passphrase opened the vault"),
             Err(e) => e,
         };
@@ -3154,26 +3220,31 @@ mod tests {
     }
 
     #[test]
-    fn privacy_private_survives_unlock_high_is_refused() {
+    fn privacy_private_and_high_survive_unlock() {
         let base = serve_home();
         let dir = temp_dir("nemo-ffi-privacy");
-        let alice =
-            NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-                .unwrap();
+        let alice = NemoClient::create_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
         alice.register(base).unwrap();
         assert_eq!(alice.privacy_mode().unwrap(), "normal");
         alice.set_privacy_mode("private".into()).unwrap();
         assert_eq!(alice.privacy_mode().unwrap(), "private");
-        let high = alice.set_privacy_mode("high".into()).unwrap_err();
-        assert!(
-            high.to_string().to_lowercase().contains("maximum")
-                || high.to_string().contains("privacy")
-        );
+        alice.set_privacy_mode("high".into()).unwrap();
+        assert_eq!(alice.privacy_mode().unwrap(), "high");
         drop(alice);
-        let opened =
-            NemoClient::open_at(dir.to_string_lossy().into_owned(), "correct horse".into())
-                .unwrap();
-        assert_eq!(opened.privacy_mode().unwrap(), "private");
+        let opened = NemoClient::open_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(opened.privacy_mode().unwrap(), "high");
+        opened.set_privacy_mode("maximum".into()).unwrap();
+        assert_eq!(opened.privacy_mode().unwrap(), "maximum");
         let _ = fs::remove_dir_all(&dir);
     }
 

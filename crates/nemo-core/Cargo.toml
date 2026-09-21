@@ -20,6 +20,7 @@ openmls = "0.6.0"
 openmls_basic_credential = "0.3.0"
 openmls_rust_crypto = "0.3.0"
 rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
+dirs = "6"
 tls_codec = { version = "0.4.1", features = ["std"] }
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
@@ -30,9 +31,11 @@ bytes = "1.12.1"
 libopus_sys = { version = "0.3", features = ["bundled", "static"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 webrtc-audio-processing = { version = "2.1", features = ["bundled"] }
+keyring = "3"
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }

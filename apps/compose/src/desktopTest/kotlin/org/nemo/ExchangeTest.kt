@@ -35,8 +35,8 @@ class ExchangeTest {
             val pass = "correct horse"
             val home = "http://$listen"
 
-            val left = NemoClient.createAt(leftDir.absolutePath, pass)
-            val right = NemoClient.createAt(rightDir.absolutePath, pass)
+            val left = NemoClient.createAt(leftDir.absolutePath, pass, ByteArray(0))
+            val right = NemoClient.createAt(rightDir.absolutePath, pass, ByteArray(0))
             left.takeRevocationMnemonic()
             right.takeRevocationMnemonic()
             left.register(home)
@@ -60,8 +60,8 @@ class ExchangeTest {
             left.close()
             right.close()
 
-            val left2 = NemoClient.openAt(leftDir.absolutePath, pass)
-            val right2 = NemoClient.openAt(rightDir.absolutePath, pass)
+            val left2 = NemoClient.openAt(leftDir.absolutePath, pass, ByteArray(0))
+            val right2 = NemoClient.openAt(rightDir.absolutePath, pass, ByteArray(0))
             right2.sendText(leftId, "still there")
             val second = left2.fetchNow()
             assertEquals(1, second.size)
@@ -103,9 +103,9 @@ class ExchangeTest {
             val pass = "correct horse"
             val home = "http://$listen"
 
-            val alice = NemoClient.createAt(aliceDir.absolutePath, pass)
-            val bob = NemoClient.createAt(bobDir.absolutePath, pass)
-            val carol = NemoClient.createAt(carolDir.absolutePath, pass)
+            val alice = NemoClient.createAt(aliceDir.absolutePath, pass, ByteArray(0))
+            val bob = NemoClient.createAt(bobDir.absolutePath, pass, ByteArray(0))
+            val carol = NemoClient.createAt(carolDir.absolutePath, pass, ByteArray(0))
             alice.takeRevocationMnemonic()
             bob.takeRevocationMnemonic()
             carol.takeRevocationMnemonic()
@@ -134,7 +134,7 @@ class ExchangeTest {
             assertEquals("group-bytes", groupFile.fileBytes.decodeToString())
 
             alice.close()
-            val alice2 = NemoClient.openAt(aliceDir.absolutePath, pass)
+            val alice2 = NemoClient.openAt(aliceDir.absolutePath, pass, ByteArray(0))
             alice2.sendGroupText(gid, "after reopen")
             val second = bob.fetchNow()
             assertEquals(1, second.size)

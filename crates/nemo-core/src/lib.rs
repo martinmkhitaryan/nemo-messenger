@@ -7,6 +7,7 @@ pub mod attachment;
 mod audio;
 pub mod bundle;
 pub mod call;
+mod device_bind;
 pub mod discovery;
 pub mod error;
 pub mod group;
@@ -15,6 +16,7 @@ pub mod identity;
 pub mod mailbox;
 pub mod privacy;
 mod store;
+mod tor;
 pub mod vault;
 
 pub use app::{
@@ -42,8 +44,8 @@ pub use identity::{
 };
 pub use mailbox::messages_lost;
 pub use privacy::{
-    hop_for, reject_maximum, EnvelopeSink, Hop, MemSink, PrivacyMode, PrivacyTransport,
-    WakeCoalesce, PRIVATE_BATCH_MAX_MS, PRIVATE_EXTRA_MAX_MS, PRIVATE_EXTRA_MIN_MS,
-    WAKE_COALESCE_MS,
+    calls_allowed, cover_interval_ms, hop_for, reject_maximum, EnvelopeSink, Hop, MemSink,
+    PrivacyMode, PrivacyTransport, WakeCoalesce, PRIVATE_BATCH_MAX_MS, PRIVATE_EXTRA_MAX_MS,
+    PRIVATE_EXTRA_MIN_MS, WAKE_COALESCE_MS,
 };
 pub use vault::Vault;

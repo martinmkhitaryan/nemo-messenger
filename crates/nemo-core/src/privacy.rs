@@ -1,26 +1,34 @@
-//! Privacy transport (phase 6 v1). Does not change envelope bytes.
+//! Privacy transport (phase 6). Does not change envelope bytes.
 //!
-//! Normal and Private ship. High is Private plus a Tor hop flag.
-//! Nice-to-have (not shipped): Tor/Arti, cover traffic, Maximum / constant-rate.
+//! Normal and Private: padding + optional batching.
+//! High: Private timing, client-generated cover, Tor hop when the home is not loopback.
+//! Maximum: constant-rate cover slots, Tor hop, calls unavailable.
 
 use nemo_wire::envelope::{MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::KEY_LEN;
 use rand::RngCore;
 
-use crate::error::{CoreError, Result};
+use crate::error::Result;
 use crate::mailbox;
 
 pub const PRIVATE_EXTRA_MIN_MS: u64 = 20;
 pub const PRIVATE_EXTRA_MAX_MS: u64 = 200;
 pub const PRIVATE_BATCH_MAX_MS: u64 = 5_000;
 pub const WAKE_COALESCE_MS: u64 = 10_000;
+/// High-mode cover jitter (client-generated dummies).
+pub const HIGH_COVER_MIN_MS: u64 = 8_000;
+pub const HIGH_COVER_MAX_MS: u64 = 30_000;
+/// Maximum-mode slot: one envelope (real or dummy) about every 2 s.
+pub const MAXIMUM_SLOT_MS: u64 = 2_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrivacyMode {
     Normal,
     Private,
-    /// Private timing + client→home via Tor when a Tor sink exists.
+    /// Private timing + cover; Tor for client→home when the origin is not loopback.
     High,
+    /// Constant-rate cover slots; Tor when possible; calls unavailable.
+    Maximum,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +95,7 @@ impl<S: EnvelopeSink> PrivacyTransport<S> {
     pub fn send(&mut self, outer: &OuterEnvelope) -> Result<()> {
         let bytes = outer.encode();
         let ready_at_ms = self.now_ms.saturating_add(self.delay_ms());
-        if self.mode == PrivacyMode::Normal {
+        if self.delay_ms() == 0 {
             self.sink.emit(self.hop, bytes)?;
         } else {
             self.pending.push(Pending { bytes, ready_at_ms });
@@ -95,9 +103,9 @@ impl<S: EnvelopeSink> PrivacyTransport<S> {
         Ok(())
     }
 
-    /// Cover sending is specified for High/Maximum; not shipped.
-    pub fn send_cover(&mut self, _outer: &OuterEnvelope) -> Result<()> {
-        Err(CoreError::CoverNotShipped)
+    /// Queue a type-valid dummy. Bytes are not rewritten; the server cannot tell.
+    pub fn send_cover(&mut self, outer: &OuterEnvelope) -> Result<()> {
+        self.send(outer)
     }
 
     /// Fetched mailbox bytes pass through unchanged.
@@ -140,7 +148,7 @@ impl<S: EnvelopeSink> PrivacyTransport<S> {
 
     fn delay_ms(&self) -> u64 {
         match self.mode {
-            PrivacyMode::Normal => 0,
+            PrivacyMode::Normal | PrivacyMode::Maximum => 0,
             PrivacyMode::Private | PrivacyMode::High => extra_delay_ms() + batch_jitter_ms(),
         }
     }
@@ -149,13 +157,26 @@ impl<S: EnvelopeSink> PrivacyTransport<S> {
 pub fn hop_for(mode: PrivacyMode) -> Hop {
     match mode {
         PrivacyMode::Normal | PrivacyMode::Private => Hop::Direct,
-        PrivacyMode::High => Hop::Tor,
+        PrivacyMode::High | PrivacyMode::Maximum => Hop::Tor,
     }
 }
 
-/// Maximum is specified but not shipped (ADR-0021).
+/// Next cover wait in milliseconds, or `None` if this mode does not emit dummies.
+pub fn cover_interval_ms(mode: PrivacyMode) -> Option<u64> {
+    match mode {
+        PrivacyMode::Normal | PrivacyMode::Private => None,
+        PrivacyMode::High => Some(uniform(HIGH_COVER_MIN_MS, HIGH_COVER_MAX_MS)),
+        PrivacyMode::Maximum => Some(MAXIMUM_SLOT_MS),
+    }
+}
+
+pub fn calls_allowed(mode: PrivacyMode) -> bool {
+    !matches!(mode, PrivacyMode::Maximum)
+}
+
+/// Maximum is a shipped mode (ADR-0021 / v1.1 N2).
 pub fn reject_maximum() -> Result<()> {
-    Err(CoreError::MaximumNotShipped)
+    Ok(())
 }
 
 /// Valid dummy in a text bucket. Cover *sending* is not shipped; this exists so

@@ -136,6 +136,28 @@ async fn alice_messages_bob_through_home_http() {
 }
 
 #[tokio::test]
+async fn high_cover_posts_dummy_to_a_contact() {
+    let transport = RouterTransport::single(router(AppState::new()));
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (mut alice, alice_card) = HomeSession::register(transport.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let (mut bob, _) = HomeSession::register(transport, bob_inst, now)
+        .await
+        .unwrap();
+    alice.publish_prekey().await.unwrap();
+    let cap = alice.mint_contact().await.unwrap();
+    bob.add_contact(&alice_card, cap, now).await.unwrap();
+    bob.set_privacy(nemo_core::PrivacyMode::High).unwrap();
+    bob.force_cover_now();
+    assert_eq!(bob.pump_cover().await.unwrap(), 1);
+    let rows = alice.fetch_mailbox().await.unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[tokio::test]
 async fn group_join_through_home_client() {
     let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();

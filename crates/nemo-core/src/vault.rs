@@ -17,7 +17,8 @@ use crate::group::{Group, PendingJoin};
 use crate::home::{HomeState, HostAccept};
 use crate::identity::Installation;
 
-pub const KDF_VERSION: u64 = 1;
+pub const KDF_VERSION: u64 = 2;
+pub const KDF_VERSION_PASSPHRASE_ONLY: u64 = 1;
 pub const M_COST_KIB: u32 = 64 * 1024;
 pub const T_COST: u32 = 3;
 pub const P_COST: u32 = 1;
@@ -42,6 +43,15 @@ pub struct Vault {
 
 impl Vault {
     pub fn create(dir: impl AsRef<Path>, passphrase: &str, install: &Installation) -> Result<Self> {
+        Self::create_bound(dir, passphrase, install, None)
+    }
+
+    pub fn create_bound(
+        dir: impl AsRef<Path>,
+        passphrase: &str,
+        install: &Installation,
+        device_secret: Option<&[u8]>,
+    ) -> Result<Self> {
         check_passphrase(passphrase)?;
         let dir = dir.as_ref();
         fs::create_dir_all(dir).map_err(vault_io)?;
@@ -53,8 +63,11 @@ impl Vault {
 
         let mut salt = [0u8; SALT_LEN];
         rand::rngs::OsRng.fill_bytes(&mut salt);
-        write_kdf(&kdf_path, &salt, M_COST_KIB, T_COST, P_COST)?;
+        write_kdf(&kdf_path, KDF_VERSION, &salt, M_COST_KIB, T_COST, P_COST)?;
         let mut key = derive(passphrase, &salt, M_COST_KIB, T_COST, P_COST)?;
+        let mut device = crate::device_bind::resolve(device_secret, &salt, true)?;
+        mix_device_key(&mut key, &device);
+        zero(&mut device);
         let conn = open_cipher(&db_path, &key)?;
         zero(&mut key);
         conn.execute_batch("CREATE TABLE kv (k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL);")
@@ -68,6 +81,14 @@ impl Vault {
     }
 
     pub fn open(dir: impl AsRef<Path>, passphrase: &str) -> Result<(Self, Installation)> {
+        Self::open_bound(dir, passphrase, None)
+    }
+
+    pub fn open_bound(
+        dir: impl AsRef<Path>,
+        passphrase: &str,
+        device_secret: Option<&[u8]>,
+    ) -> Result<(Self, Installation)> {
         check_passphrase(passphrase)?;
         let dir = dir.as_ref();
         let kdf_path = dir.join(KDF_FILE);
@@ -77,6 +98,11 @@ impl Vault {
         }
         let kdf = read_kdf(&kdf_path)?;
         let mut key = derive(passphrase, &kdf.salt, kdf.m_cost, kdf.t_cost, kdf.p_cost)?;
+        if kdf.version >= KDF_VERSION {
+            let mut device = crate::device_bind::resolve(device_secret, &kdf.salt, false)?;
+            mix_device_key(&mut key, &device);
+            zero(&mut device);
+        }
         let conn = open_cipher(&db_path, &key)?;
         zero(&mut key);
         let vault = Self {
@@ -334,10 +360,17 @@ impl Vault {
 }
 
 struct Kdf {
+    version: u64,
     salt: Vec<u8>,
     m_cost: u32,
     t_cost: u32,
     p_cost: u32,
+}
+
+fn mix_device_key(pass_key: &mut [u8; KEY_LEN], device: &[u8; KEY_LEN]) {
+    for (p, d) in pass_key.iter_mut().zip(device.iter()) {
+        *p ^= *d;
+    }
 }
 
 fn check_passphrase(passphrase: &str) -> Result<()> {
@@ -347,9 +380,16 @@ fn check_passphrase(passphrase: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_kdf(path: &Path, salt: &[u8], m_cost: u32, t_cost: u32, p_cost: u32) -> Result<()> {
+fn write_kdf(
+    path: &Path,
+    version: u64,
+    salt: &[u8],
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+) -> Result<()> {
     let bytes = cbor::encode(&Value::Map(vec![
-        (0, Value::Uint(KDF_VERSION)),
+        (0, Value::Uint(version)),
         (1, Value::Bytes(salt.to_vec())),
         (2, Value::Uint(m_cost as u64)),
         (3, Value::Uint(t_cost as u64)),
@@ -365,7 +405,7 @@ fn read_kdf(path: &Path) -> Result<Kdf> {
     };
     let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
         .map_err(|_| CoreError::VaultCorrupt)?;
-    if version != KDF_VERSION {
+    if version != KDF_VERSION && version != KDF_VERSION_PASSPHRASE_ONLY {
         return Err(CoreError::VaultCorrupt);
     }
     let salt = cbor::expect_bytes(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
@@ -381,6 +421,7 @@ fn read_kdf(path: &Path) -> Result<Kdf> {
     let p_cost = cbor::expect_uint(cbor::map_get(&m, 4).map_err(|_| CoreError::VaultCorrupt)?)
         .map_err(|_| CoreError::VaultCorrupt)? as u32;
     Ok(Kdf {
+        version,
         salt,
         m_cost,
         t_cost,

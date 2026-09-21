@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,7 +19,10 @@ use crate::call::TurnConfig;
 use crate::discovery::{resolve_contact, ContactPin, Discovery, DISCOVERY_REFRESH_SECS};
 use crate::error::{CoreError, Result};
 use crate::identity::Installation;
-use crate::privacy::{private_send_delay_ms, PrivacyMode};
+use crate::privacy::{
+    calls_allowed, cover_interval_ms, dummy_outer, private_send_delay_ms, PrivacyMode,
+    MAXIMUM_SLOT_MS,
+};
 
 pub const FETCH_LIMIT: u64 = 64;
 const CARD_TTL_SECS: u64 = 30 * 24 * 3600;
@@ -47,6 +51,10 @@ pub trait HomeTransport: Send + Sync {
     {
         let _ = origin;
         None
+    }
+    /// Route client→home through Tor SOCKS (High/Maximum, non-loopback).
+    fn set_anonymous(&self, on: bool) {
+        let _ = on;
     }
 }
 
@@ -321,6 +329,8 @@ pub struct HomeSession<T> {
     pub home_base: String,
     pub privacy: PrivacyMode,
     pending_outers: Mutex<Vec<OuterEnvelope>>,
+    cover_next_ms: Mutex<u64>,
+    last_real_ms: Mutex<u64>,
 }
 
 impl<T: HomeTransport> HomeSession<T> {
@@ -356,6 +366,8 @@ impl<T: HomeTransport> HomeSession<T> {
                 home_base: String::new(),
                 privacy: PrivacyMode::Normal,
                 pending_outers: Mutex::new(Vec::new()),
+                cover_next_ms: Mutex::new(0),
+                last_real_ms: Mutex::new(0),
             },
             card,
         ))
@@ -420,6 +432,8 @@ impl<T: HomeTransport> HomeSession<T> {
             home_base: state.home_base,
             privacy: state.privacy,
             pending_outers: Mutex::new(Vec::new()),
+            cover_next_ms: Mutex::new(0),
+            last_real_ms: Mutex::new(0),
         }
     }
 
@@ -435,12 +449,28 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub fn set_privacy(&mut self, mode: PrivacyMode) -> Result<()> {
-        match mode {
-            PrivacyMode::Normal | PrivacyMode::Private => {
-                self.privacy = mode;
-                Ok(())
+        self.privacy = mode;
+        if let Some(wait) = cover_interval_ms(mode) {
+            if let Ok(mut next) = self.cover_next_ms.lock() {
+                *next = now_ms().saturating_add(wait);
             }
-            PrivacyMode::High => Err(CoreError::MaximumNotShipped),
+        }
+        let anonymous = matches!(mode, PrivacyMode::High | PrivacyMode::Maximum)
+            && !crate::tor::is_loopback_origin(&self.home_base);
+        self.transport.set_anonymous(anonymous);
+        Ok(())
+    }
+
+    pub fn calls_allowed(&self) -> bool {
+        calls_allowed(self.privacy)
+    }
+
+    pub fn force_cover_now(&self) {
+        if let Ok(mut next) = self.cover_next_ms.lock() {
+            *next = 0;
+        }
+        if let Ok(mut last) = self.last_real_ms.lock() {
+            *last = 0;
         }
     }
 
@@ -895,10 +925,7 @@ impl<T: HomeTransport> HomeSession<T> {
         outer: &OuterEnvelope,
         batch: bool,
     ) -> Result<EnqueueResult> {
-        if self.privacy == PrivacyMode::High {
-            return Err(CoreError::MaximumNotShipped);
-        }
-        if batch && self.privacy == PrivacyMode::Private {
+        if batch && matches!(self.privacy, PrivacyMode::Private | PrivacyMode::High) {
             self.pending_outers
                 .lock()
                 .map_err(|_| CoreError::Transport("outbox lock".into()))?
@@ -907,7 +934,7 @@ impl<T: HomeTransport> HomeSession<T> {
             tokio::time::sleep(delay).await;
             return self.flush_private_outbox().await;
         }
-        self.post_one_envelope(outer).await
+        self.post_one_envelope(outer, false).await
     }
 
     async fn flush_private_outbox(&self) -> Result<EnqueueResult> {
@@ -923,12 +950,12 @@ impl<T: HomeTransport> HomeSession<T> {
         }
         let mut last = EnqueueResult::Queued;
         for outer in batch {
-            last = self.post_one_envelope(&outer).await?;
+            last = self.post_one_envelope(&outer, false).await?;
         }
         Ok(last)
     }
 
-    async fn post_one_envelope(&self, outer: &OuterEnvelope) -> Result<EnqueueResult> {
+    async fn post_one_envelope(&self, outer: &OuterEnvelope, cover: bool) -> Result<EnqueueResult> {
         let auth = self.owner_header(0, 1)?;
         let res = self
             .transport
@@ -939,6 +966,11 @@ impl<T: HomeTransport> HomeSession<T> {
                 body: outer.encode(),
             })
             .await?;
+        if !cover {
+            if let Ok(mut last) = self.last_real_ms.lock() {
+                *last = now_ms();
+            }
+        }
         let m = expect_map(check_body(&res)?)?;
         match cbor::expect_text(cbor::map_get(&m, 0)?)? {
             "ok" => Ok(EnqueueResult::Local(cbor::expect_uint(cbor::map_get(
@@ -947,6 +979,39 @@ impl<T: HomeTransport> HomeSession<T> {
             "queued" => Ok(EnqueueResult::Queued),
             _ => Err(CoreError::HomeHttp(res.status)),
         }
+    }
+
+    /// Emit a dummy envelope when High/Maximum is due and a contact exists.
+    pub async fn pump_cover(&self) -> Result<usize> {
+        let Some(wait) = cover_interval_ms(self.privacy) else {
+            return Ok(0);
+        };
+        let now = now_ms();
+        {
+            let mut next = self
+                .cover_next_ms
+                .lock()
+                .map_err(|_| CoreError::Transport("cover lock".into()))?;
+            if now < *next {
+                return Ok(0);
+            }
+            *next = now.saturating_add(wait);
+        }
+        if self.privacy == PrivacyMode::Maximum {
+            let last = self
+                .last_real_ms
+                .lock()
+                .map_err(|_| CoreError::Transport("cover lock".into()))?;
+            if now.saturating_sub(*last) < MAXIMUM_SLOT_MS {
+                return Ok(0);
+            }
+        }
+        let Some(contact) = self.contacts.values().find(|c| !c.revoked) else {
+            return Ok(0);
+        };
+        let dummy = dummy_outer(&contact.dest_hpke, contact.delivery_capability)?;
+        self.post_one_envelope(&dummy, true).await?;
+        Ok(1)
     }
 
     pub async fn fetch_mailbox(&mut self) -> Result<Vec<MailboxRow>> {
@@ -1320,6 +1385,13 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_millis() as u64
+}
+
 fn check_empty(res: &HttpResponse) -> Result<()> {
     check_status(res).map(|_| ())
 }
@@ -1355,6 +1427,7 @@ pub struct HttpHome {
     client: reqwest::Client,
     tls: Arc<rustls::ClientConfig>,
     base: String,
+    anonymous: Arc<AtomicBool>,
 }
 
 impl HttpHome {
@@ -1368,7 +1441,12 @@ impl HttpHome {
             .use_preconfigured_tls(tls.as_ref().clone())
             .build()
             .map_err(|e| CoreError::Transport(e.to_string()))?;
-        Ok(Self { client, tls, base })
+        Ok(Self {
+            client,
+            tls,
+            base,
+            anonymous: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// Long-lived `/v1/wakeup`. Returns the next binary frame (must be empty).
@@ -1536,10 +1614,21 @@ impl HomeTransport for HttpHome {
         if origin.is_empty() {
             return None;
         }
-        HttpHome::new(origin).ok()
+        let home = HttpHome::new(origin).ok()?;
+        let anon =
+            self.anonymous.load(Ordering::Relaxed) && !crate::tor::is_loopback_origin(origin);
+        home.anonymous.store(anon, Ordering::Relaxed);
+        Some(home)
+    }
+
+    fn set_anonymous(&self, on: bool) {
+        self.anonymous.store(on, Ordering::Relaxed);
     }
 
     async fn call(&self, req: HttpRequest) -> Result<HttpResponse> {
+        if self.anonymous.load(Ordering::Relaxed) && !crate::tor::is_loopback_origin(&self.base) {
+            return crate::tor::call(&self.base, &req, Arc::clone(&self.tls)).await;
+        }
         let method = req
             .method
             .parse::<reqwest::Method>()
@@ -1572,6 +1661,7 @@ fn privacy_to_u64(mode: PrivacyMode) -> u64 {
         PrivacyMode::Normal => 0,
         PrivacyMode::Private => 1,
         PrivacyMode::High => 2,
+        PrivacyMode::Maximum => 3,
     }
 }
 
@@ -1580,6 +1670,7 @@ fn privacy_from_u64(v: u64) -> Result<PrivacyMode> {
         0 => Ok(PrivacyMode::Normal),
         1 => Ok(PrivacyMode::Private),
         2 => Ok(PrivacyMode::High),
+        3 => Ok(PrivacyMode::Maximum),
         _ => Err(CoreError::VaultCorrupt),
     }
 }

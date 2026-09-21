@@ -16,12 +16,12 @@ Each weakens a security property the project holds as an invariant: identity rec
 
 ## Decision
 
-- **Identity recovery: none.** A lost identity is gone. The only external control over an identity is revocation (ADR-0004).
-- **Cryptographic state recovery: none, ever.** Ratchet and MLS state are never exported, backed up or synchronised. This is a permanent invariant, not a v1 limitation.
-- **Message history backup: none.** No encrypted export, no server-side blob, no archival copy of the vault.
-- **History export: none.** There is no client API, file format, or UI for dumping or restoring messages, chats, attachments, or searchable history. The one-time revocation mnemonic (ADR-0004) is not a history export. Contact-card QR/URI share (ADR-0006) is not a history export.
+- **Identity recovery: prohibited.** A lost identity is gone. The only external control over an identity is revocation (ADR-0004).
+- **Cryptographic state recovery: prohibited, ever.** Ratchet and MLS state are never exported, backed up or synchronised. This is a permanent invariant, not a v1 limitation.
+- **Message history backup: prohibited.** No encrypted export, no server-side blob, no archival copy of the vault.
+- **History export: prohibited.** There is no client API, file format, or UI for dumping or restoring messages, chats, attachments, or searchable history. The one-time revocation mnemonic (ADR-0004) is not a history export. Contact-card QR/URI share (ADR-0006) is not a history export.
 
-This is the product rule, not a v1 deferral. Attachment envelopes (ADR-0019) are transient mailbox/stream ciphertext, not a backup. The local SQLCipher vault (ADR-0034) is at-rest encryption on that device, not a backup.
+This is a permanent prohibition, not a deferral. Attachment envelopes (ADR-0019) are transient mailbox/stream ciphertext, not a backup. The local SQLCipher vault (ADR-0034) is at-rest encryption on that device, not a backup. Do not add an export, backup, or restore path.
 
 ## Pros
 
@@ -51,12 +51,13 @@ Rejected together with any identity hierarchy (ADR-0003).
 
 ## Consequences
 
-- README 53.11 is resolved as a non-goal.
+- README 53.11 is resolved as prohibited.
 - Client UX must state at identity creation that the identity and its history cannot be recovered or exported.
-- The "Non-goals" section of the README lists all three items. Do not add an export or backup path without a new ADR that explicitly supersedes this one.
+- The product-prohibitions section of the README lists all three items. Do not add an export or backup path without a new ADR that explicitly supersedes this one.
 
 ## History
 
 - 2026-09-19 — Accepted. No history backup and no identity recovery in v1.
 - 2026-09-21 — Amendment 1: local history export/import is a non-goal, not a deferred leftover.
 - 2026-09-21 — Amendment 2: no backup and no history export at all; not a v1 limitation. Alternatives that were deferred are rejected.
+- 2026-09-21 — Amendment 3: backup, recovery, and history export are prohibited architecture, not a leftover or a later feature.

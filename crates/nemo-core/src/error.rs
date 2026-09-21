@@ -46,6 +46,8 @@ pub enum CoreError {
     MaximumNotShipped,
     #[error("cover traffic is not shipped in this mode")]
     CoverNotShipped,
+    #[error("calls are unavailable in Maximum privacy mode")]
+    CallsUnavailable,
     #[error("contact is revoked")]
     Revoked,
     #[error("bound invite requires the inviter and a valid invitee proof")]

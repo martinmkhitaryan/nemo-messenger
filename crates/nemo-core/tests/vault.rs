@@ -111,3 +111,18 @@ fn sqlcipher_roundtrip_and_refuse_short_passphrase() {
     assert_eq!(decode_text(&opened).unwrap(), (1, "ping".into()));
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn vault_needs_matching_device_secret() {
+    let dir = temp_dir();
+    let (install, _) = Installation::create().unwrap();
+    let secret = [7u8; 32];
+    Vault::create_bound(&dir, "correct horse", &install, Some(&secret)).unwrap();
+    assert!(matches!(
+        Vault::open_bound(&dir, "correct horse", Some(&[8u8; 32])),
+        Err(CoreError::VaultLocked | CoreError::VaultIo(_) | CoreError::VaultCorrupt)
+    ));
+    let (_vault, loaded) = Vault::open_bound(&dir, "correct horse", Some(&secret)).unwrap();
+    assert_eq!(loaded.identity_id(), install.identity_id());
+    let _ = fs::remove_dir_all(&dir);
+}

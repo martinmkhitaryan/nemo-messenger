@@ -75,18 +75,27 @@ fn high_uses_tor_hop_and_same_timing() {
 }
 
 #[test]
-fn maximum_and_cover_are_not_shipped() {
-    assert!(matches!(
-        reject_maximum(),
-        Err(CoreError::MaximumNotShipped)
-    ));
+fn cover_emits_unchanged_dummy() {
+    assert!(reject_maximum().is_ok());
     let (_server, outer) = sealed();
+    let want = outer.encode();
     let mut t = PrivacyTransport::new(PrivacyMode::High, MemSink::default());
-    assert!(matches!(
-        t.send_cover(&outer),
-        Err(CoreError::CoverNotShipped)
-    ));
-    assert!(t.sink().sent.is_empty());
+    t.send_cover(&outer).unwrap();
+    t.advance(PRIVATE_EXTRA_MAX_MS + PRIVATE_BATCH_MAX_MS)
+        .unwrap();
+    assert_eq!(t.sink().sent, vec![(Hop::Tor, want)]);
+}
+
+#[test]
+fn maximum_is_constant_rate_tor_hop() {
+    assert_eq!(hop_for(PrivacyMode::Maximum), Hop::Tor);
+    assert!(!nemo_core::privacy::calls_allowed(PrivacyMode::Maximum));
+    let (_server, outer) = sealed();
+    let want = outer.encode();
+    let mut t = PrivacyTransport::new(PrivacyMode::Maximum, MemSink::default());
+    t.send(&outer).unwrap();
+    assert_eq!(t.pending_count(), 0);
+    assert_eq!(t.sink().sent, vec![(Hop::Tor, want)]);
 }
 
 #[test]

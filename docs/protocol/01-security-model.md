@@ -79,9 +79,9 @@ These must remain true through every later phase and in any implementation of th
 
 ### 3.4 Recovery
 
-- Identity recovery: none. A lost, wiped, or stolen device is a lost identity. The only off-device control is revocation ([ADR-0004](../decisions/0004-revocation-key.md), [ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
-- Cryptographic-state recovery: none, ever.
-- Message-history backup or export: none. No local dump, no import, no server blob ([ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
+- Identity recovery: prohibited. A lost, wiped, or stolen device is a lost identity. The only off-device control is revocation ([ADR-0004](../decisions/0004-revocation-key.md), [ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
+- Cryptographic-state recovery: prohibited, ever.
+- Message-history backup or export: prohibited. No local dump, no import, no server blob ([ADR-0023](../decisions/0023-no-backup-no-recovery.md)).
 
 ### 3.5 Portability
 
@@ -111,7 +111,7 @@ Same-server delivery (Alice and Bob on one operator) reveals Alice → Bob's cap
 
 **Can:** see IPs, timing, sizes, connection patterns, and correlate ingress and egress.
 
-**Protection:** the optional privacy layer ([ADR-0021](../decisions/0021-privacy-layer-and-modes.md)). Not claimed in Normal mode. Cover traffic and constant-rate modes are deferred; the envelope format must not need a wire change to add them (phase 3).
+**Protection:** the optional privacy layer ([ADR-0021](../decisions/0021-privacy-layer-and-modes.md)). Not claimed in Normal mode. High adds client-generated cover; Maximum adds ~2 s slots. Tor SOCKS is used for client→home when the home is not loopback.
 
 ### 4.4 Stolen or compromised client
 
@@ -232,7 +232,7 @@ Denial of service by a user's own home server is out of scope for confidentialit
 
 The product **does** claim: E2EE of content; server-blind delivery of ciphertext; cryptographic identity not issued by the server; forward secrecy and post-compromise security for 1:1 as provided by PQXDH + Double Ratchet; MLS group confidentiality with commit-driven PCS; sealed sender on envelopes; no identity or state recovery.
 
-The product **does not** claim: multi-device; identity recovery after device loss; protection against a global passive observer in Normal mode; post-quantum groups; anonymous group membership; that disappearing messages bind a malicious recipient; that a stolen live client is harmless before revocation; that TURN hides participation in a call.
+The product **does not** claim: multi-device (a new device is a new identity); identity recovery after device loss; protection against a global passive observer in Normal mode; post-quantum groups; anonymous group membership; that disappearing messages bind a malicious recipient; that a stolen live client is harmless before revocation; that TURN hides participation in a call.
 
 ---
 

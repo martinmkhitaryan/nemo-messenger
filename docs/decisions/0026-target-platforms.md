@@ -10,9 +10,8 @@ Platform choice drives library choice, the push-notification design and the size
 
 ## Decision
 
-- First release targets **Android, Linux and Windows**.
-- **iOS** and **macOS** follow later; nothing in the protocol may assume their absence.
-- **Web** is out of scope for the first release.
+- The product targets **Android, Linux and Windows**.
+- **iOS**, **macOS**, and **web** are out of scope. Nothing in the protocol may assume their absence, and nothing in this tree implements them. A new ADR is required before any of those shells.
 - All protocol, cryptographic and storage logic lives in a **single Rust core** with thin platform shells. Per ADR-0003 each installation is one identity, so the core has no cross-device sync layer.
 
 ## Pros
@@ -25,7 +24,7 @@ Platform choice drives library choice, the push-notification design and the size
 ## Cons
 
 - No iOS at launch excludes a large share of potential users.
-- Desktop and mobile installations are separate identities (ADR-0003), so early testers will feel the multi-device gap immediately.
+- Desktop and mobile installations are separate identities (ADR-0003). That is the product rule, not a gap to close.
 - Windows and Linux background delivery without a platform push service needs its own design (persistent connection or periodic poll).
 
 ## Alternatives considered
@@ -51,3 +50,4 @@ The platforms, “no web in v1”, and “single Rust core with thin shells” r
 
 - 2026-09-19 — Accepted.
 - 2026-09-19 — Amendment 1: media engine may live in the shell (ADR-0028). The Decision section is unchanged.
+- 2026-09-21 — Amendment 2: iOS, macOS, and web are out of scope until a new ADR. Android / Linux / Windows is the product, not a first-release subset.

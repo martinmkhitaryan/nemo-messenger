@@ -58,7 +58,7 @@ deploy         MIT     container, Caddy, PostgreSQL, optional coturn
 - Compose must not persist ratchet or MLS keys. The vault is SQLCipher via `rusqlite` **inside `nemo-core`**. The UI may hold decrypted display rows in memory.
 - **Calls (v1 1:1):** signaling stays in the E2EE conversation in the Rust core (ADR-0024). ICE/DTLS-SRTP/TURN uses `webrtc` 0.20.x (webrtc-rs) with `iceTransportPolicy=relay` and no host or srflx candidates. Echo cancellation, AGC and NS use a WebRTC audio-processing module: on Android the official `org.webrtc` capture/APM path in the Kotlin shell; on desktop `webrtc-audio-processing` + `cpal` + Opus, or libwebrtc if APM quality is not enough. **This amends ADR-0026:** the media engine may live in the shell; signaling and DTLS fingerprint binding stay in the core. Group calls and SFrame remain deferred (ADR-0024).
 - **Push:** FCM HTTP v1 is Android-with-Play-Services only; payload is an opaque wake token (ADR-0020). Desktop and Android without Play Services use a long-lived WebSocket or poll while the application runs. The protocol MUST NOT require Google.
-- **Tor:** optional, via Arti behind the privacy-transport trait (ADR-0021). Not a system `tor` binary.
+- **Tor:** optional, via a SOCKS5 hop to Arti (default `127.0.0.1:9150`, `NEMO_TOR_SOCKS` to override) behind High/Maximum client→home HTTP. Not a system `tor` binary. Loopback homes stay direct.
 
 ### Server (phase 8, after the protocols exist)
 
@@ -72,7 +72,7 @@ deploy         MIT     container, Caddy, PostgreSQL, optional coturn
 
 - One Rust core matches `libsignal` and OpenMLS with no FFI on the crypto path (ADR-0026).
 - The server stays MIT and forkable by self-hosters who never take AGPL.
-- Compose Multiplatform is one UI for the three v1 platforms; UniFFI already emits Swift for iOS later.
+- Compose Multiplatform is one UI for Android, Linux, and Windows. UniFFI Kotlin bindings are the v1 shell.
 - Axum + Tower + sqlx are the boring Tokio default for a mailbox log and long-lived WebSockets; Caddy matches “container + database + reverse proxy” (ADR-0025).
 - Using `libsignal` as primitives keeps Nemo's delivery protocol independent of Signal's servers.
 
@@ -124,3 +124,5 @@ Rejected: UniFFI is the Kotlin/Swift path; flutter_rust_bridge assumes Flutter.
 ## History
 
 - 2026-09-19 — Accepted. Implementation languages and libraries.
+- 2026-09-21 — Amendment: Compose/UniFFI is Android, Linux, and Windows. iOS Swift bindings are out of scope (ADR-0026).
+- 2026-09-21 — Amendment: High/Maximum client→home uses SOCKS5 to Arti, not a system `tor` binary.

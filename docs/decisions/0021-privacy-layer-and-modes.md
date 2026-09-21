@@ -1,4 +1,4 @@
-# ADR-0021: Metadata privacy as a separate, tunable layer; Tor optional; cover traffic deferred
+# ADR-0021: Metadata privacy as a separate, tunable layer; Tor optional; High/Maximum cover ships
 
 - **Status:** Accepted
 - **Date:** 2026-09-19
@@ -22,7 +22,7 @@ Maximum     + near constant-rate traffic, aggressive cover, Tor or privacy relay
 
 - **Tor is supported, never required.** The transport interface abstracts direct, Tor and future relay transports; the same protocol runs over all of them.
 - **Cover traffic is client-generated**, never server-generated as the primary mechanism (the server knows what it generated). Real and dummy envelopes must be indistinguishable to every server.
-- **Cover traffic and constant-rate modes are not in the first release.** The envelope format is fixed so they can be added without a wire change: fixed size buckets, opaque payloads, no field that distinguishes a dummy from a message.
+- **High** sends dummy envelopes to an existing contact on a jittered interval. **Maximum** keeps an approximately 2-second slot (real traffic skips the dummy for that slot) and refuses calls. Client→home HTTP uses a SOCKS5 hop (Arti by default at `127.0.0.1:9150`, `NEMO_TOR_SOCKS` to override) when the home origin is not loopback. Loopback homes stay direct because Tor cannot reach 127.0.0.1.
 - The product does not claim protection against a global passive observer unless the user is in a mode that actually implements the required mechanisms, and the documentation says which mode provides what.
 
 ## Pros
@@ -36,7 +36,7 @@ Maximum     + near constant-rate traffic, aggressive cover, Tor or privacy relay
 
 - Normal mode leaks timing, frequency and IP address to the home server and to the network path. This must be stated plainly.
 - Mode fragmentation: users in different modes have different traffic shapes, which itself is a signal.
-- Cover traffic and constant-rate designs are deferred, so the "Maximum" mode is a promise about the architecture, not a shipped feature.
+- Cover traffic and constant-rate are client-generated. A forgotten Arti SOCKS listener means High/Maximum cannot reach a public home (fail closed, not fall back to Direct).
 - Tor support adds an operational surface (onion services, TCP-only, no calls).
 
 ## Alternatives considered
@@ -62,3 +62,4 @@ Rejected: provides no protection against the server.
 ## History
 
 - 2026-09-19 — Accepted. Metadata privacy as a separate, tunable layer.
+- 2026-09-21 — Amendment 1: High cover traffic and Maximum constant-rate slots ship. Client→home Tor is SOCKS5 to Arti when the home is not loopback.

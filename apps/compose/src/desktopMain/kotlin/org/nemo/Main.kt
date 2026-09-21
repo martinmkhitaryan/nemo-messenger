@@ -66,6 +66,8 @@ actual fun pickLocalFile(): String? {
     return File(dir, name).absolutePath
 }
 
+actual fun deviceVaultSecret(vaultDir: File): ByteArray = ByteArray(0)
+
 @Composable
 actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
     return {

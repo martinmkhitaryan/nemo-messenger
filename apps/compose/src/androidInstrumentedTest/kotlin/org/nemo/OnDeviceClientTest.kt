@@ -21,7 +21,8 @@ class OnDeviceClientTest {
         val dir = File(ctx.cacheDir, "vault-${System.nanoTime()}")
         dir.mkdirs()
         val pass = "correct horse"
-        val client = NemoClient.createAt(dir.absolutePath, pass)
+        val secret = deviceVaultSecret(dir)
+        val client = NemoClient.createAt(dir.absolutePath, pass, secret)
         val id = client.identityIdHex()
         assertEquals(64, id.length)
         val mnemonic = client.takeRevocationMnemonic()
@@ -30,11 +31,11 @@ class OnDeviceClientTest {
         assertNull(client.takeRevocationMnemonic())
         client.close()
 
-        val opened = NemoClient.openAt(dir.absolutePath, pass)
+        val opened = NemoClient.openAt(dir.absolutePath, pass, secret)
         assertEquals(id, opened.identityIdHex())
         opened.close()
 
-        val bad = runCatching { NemoClient.openAt(dir.absolutePath, "incorrect!!") }
+        val bad = runCatching { NemoClient.openAt(dir.absolutePath, "incorrect!!", secret) }
         assertTrue(bad.isFailure)
         dir.deleteRecursively()
     }
@@ -46,8 +47,10 @@ class OnDeviceClientTest {
         val leftDir = File(ctx.cacheDir, "ex-l-${System.nanoTime()}").also { it.mkdirs() }
         val rightDir = File(ctx.cacheDir, "ex-r-${System.nanoTime()}").also { it.mkdirs() }
         val pass = "correct horse"
-        val left = NemoClient.createAt(leftDir.absolutePath, pass)
-        val right = NemoClient.createAt(rightDir.absolutePath, pass)
+        val leftSecret = deviceVaultSecret(leftDir)
+        val rightSecret = deviceVaultSecret(rightDir)
+        val left = NemoClient.createAt(leftDir.absolutePath, pass, leftSecret)
+        val right = NemoClient.createAt(rightDir.absolutePath, pass, rightSecret)
         try {
             left.takeRevocationMnemonic()
             right.takeRevocationMnemonic()
@@ -67,8 +70,8 @@ class OnDeviceClientTest {
             assertEquals("hello file", file[0].fileBytes.decodeToString())
             left.close()
             right.close()
-            val left2 = NemoClient.openAt(leftDir.absolutePath, pass)
-            val right2 = NemoClient.openAt(rightDir.absolutePath, pass)
+            val left2 = NemoClient.openAt(leftDir.absolutePath, pass, leftSecret)
+            val right2 = NemoClient.openAt(rightDir.absolutePath, pass, rightSecret)
             right2.sendText(leftId, "still there")
             assertEquals("still there", left2.fetchNow()[0].text)
             left2.close()
@@ -87,9 +90,9 @@ class OnDeviceClientTest {
         val bobDir = File(ctx.cacheDir, "g-b-${System.nanoTime()}").also { it.mkdirs() }
         val carolDir = File(ctx.cacheDir, "g-c-${System.nanoTime()}").also { it.mkdirs() }
         val pass = "correct horse"
-        val alice = NemoClient.createAt(aliceDir.absolutePath, pass)
-        val bob = NemoClient.createAt(bobDir.absolutePath, pass)
-        val carol = NemoClient.createAt(carolDir.absolutePath, pass)
+        val alice = NemoClient.createAt(aliceDir.absolutePath, pass, deviceVaultSecret(aliceDir))
+        val bob = NemoClient.createAt(bobDir.absolutePath, pass, deviceVaultSecret(bobDir))
+        val carol = NemoClient.createAt(carolDir.absolutePath, pass, deviceVaultSecret(carolDir))
         try {
             alice.takeRevocationMnemonic()
             bob.takeRevocationMnemonic()

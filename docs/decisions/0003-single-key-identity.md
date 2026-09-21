@@ -19,6 +19,7 @@ There is no separate user identity above the device. **One client installation i
 - There is no key hierarchy, no device list, no enrollment protocol, no linking of installations, and no key that is more privileged than the installation's own key.
 - Moving to a new device means creating a new identity and being re-added by every contact. There is no successor certificate. The only off-device control over an identity is revocation (ADR-0004), which kills the identity and cannot authorise a replacement.
 - A lost, wiped or stolen device is a lost identity.
+- This is the product model, not a v1 limitation. Installations are never linked. A second phone, a laptop, or a reinstall is a new identity.
 
 ## Pros
 
@@ -43,7 +44,7 @@ Cold identity key authorises per-device keys; discovery serves a signed, version
 
 ### Peer-linked identities
 
-Two full identities sign a mutual "same person" attestation and clients display them as one contact. No hierarchy, purely additive to this decision. Not adopted now; remains the only compatible way to add multi-device UX later without changing this record.
+Two full identities sign a mutual "same person" attestation and clients display them as one contact. No hierarchy. **Rejected.** A new device is a new identity. Do not add linking, pairing, or a "same person" overlay without a record that supersedes this one.
 
 ## Consequences
 
@@ -55,3 +56,4 @@ Two full identities sign a mutual "same person" attestation and clients display 
 ## History
 
 - 2026-09-19 — Accepted. One identity per installation; no device layer.
+- 2026-09-21 — Amendment 1: one installation = one identity is the product rule, not a deferral. Peer-linked identities are rejected, not a later UX.

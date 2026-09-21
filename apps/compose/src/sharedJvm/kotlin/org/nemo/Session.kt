@@ -104,6 +104,8 @@ internal const val CANNOT_RECOVER =
 
 expect fun pickLocalFile(): String?
 
+expect fun deviceVaultSecret(vaultDir: File): ByteArray
+
 @Composable
 expect fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit
 
@@ -159,7 +161,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var homeUrl by remember { mutableStateOf(defaultHomeUrl()) }
     var registered by remember { mutableStateOf(false) }
     var shareUri by remember { mutableStateOf("") }
-    var privacyPrivate by remember { mutableStateOf(false) }
+    var privacyMode by remember { mutableStateOf("normal") }
     var cardPaste by remember { mutableStateOf("") }
     var cardPreviewFp by remember { mutableStateOf("") }
     var nickname by remember { mutableStateOf("") }
@@ -280,7 +282,11 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 }
                                 val c = withContext(Dispatchers.IO) {
                                     vaultDir.mkdirs()
-                                    NemoClient.createAt(vaultDir.absolutePath, passphrase)
+                                    NemoClient.createAt(
+                                        vaultDir.absolutePath,
+                                        passphrase,
+                                        deviceVaultSecret(vaultDir),
+                                    )
                                 }
                                 mnemonic = withContext(Dispatchers.IO) { c.takeRevocationMnemonic() }
                                 client = c
@@ -304,14 +310,18 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                         onClick = {
                             runIo {
                                 val c = withContext(Dispatchers.IO) {
-                                    NemoClient.openAt(vaultDir.absolutePath, passphrase)
+                                    NemoClient.openAt(
+                                        vaultDir.absolutePath,
+                                        passphrase,
+                                        deviceVaultSecret(vaultDir),
+                                    )
                                 }
                                 client = c
                                 fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                 identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
                                 withContext(Dispatchers.IO) { reloadRoster(c) }
                                 applyIncoming(messages, withContext(Dispatchers.IO) { c.inbox() })
-                                privacyPrivate = withContext(Dispatchers.IO) { c.privacyMode() } == "private"
+                                privacyMode = withContext(Dispatchers.IO) { c.privacyMode() }
                                 registered = true
                                 phase = Phase.Home
                             }
@@ -432,13 +442,13 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         markOutgoing(row)
                                     }
                                 },
-                                privacyPrivate = privacyPrivate,
-                                onPrivacyPrivate = { enabled ->
+                                privacyMode = privacyMode,
+                                onPrivacyMode = { mode ->
                                     runIo {
                                         withContext(Dispatchers.IO) {
-                                            c?.setPrivacyMode(if (enabled) "private" else "normal")
+                                            c?.setPrivacyMode(mode)
                                         }
-                                        privacyPrivate = enabled
+                                        privacyMode = mode
                                     }
                                 },
                             )
@@ -1177,8 +1187,8 @@ private fun SettingsScreen(
     onAdmit: () -> Unit,
     onInviteGroup: () -> Unit,
     onDisappear: () -> Unit,
-    privacyPrivate: Boolean,
-    onPrivacyPrivate: (Boolean) -> Unit,
+    privacyMode: String,
+    onPrivacyMode: (String) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -1223,20 +1233,25 @@ private fun SettingsScreen(
             }
             item {
                 Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text("Private mode")
-                        Text(
-                            "Batch and jitter client→home envelopes. Envelope bytes stay the same.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                Text(
+                    "Envelope bytes never change. High sends dummy envelopes to a contact. Maximum keeps a ~2s slot and turns calls off. Tor is used for client→home when the home is not on loopback.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                listOf(
+                    "normal" to "Normal — padding only",
+                    "private" to "Private — batch and jitter",
+                    "high" to "High — cover traffic",
+                    "maximum" to "Maximum — constant-rate cover, no calls",
+                ).forEach { (id, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(label, modifier = Modifier.weight(1f).padding(end = 12.dp), style = MaterialTheme.typography.bodyMedium)
+                        Switch(checked = privacyMode == id, onCheckedChange = { if (it) onPrivacyMode(id) })
                     }
-                    Switch(checked = privacyPrivate, onCheckedChange = onPrivacyPrivate)
                 }
             }
             item {
