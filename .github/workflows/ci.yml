@@ -45,8 +45,8 @@ jobs:
         shell: pwsh
         run: |
           rustup component add llvm-tools
-          $host = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
-          $toolsBin = Join-Path (rustc --print sysroot) "lib\rustlib\$host\bin"
+          $rustcHost = (rustc -vV | Select-String '^host:').ToString().Split()[-1]
+          $toolsBin = Join-Path (rustc --print sysroot) "lib\rustlib\$rustcHost\bin"
           if (-not (Test-Path $toolsBin)) { throw "rustlib tools bin missing: $toolsBin" }
           $rustObjcopy = Join-Path $toolsBin "rust-objcopy.exe"
           if (-not (Test-Path $rustObjcopy)) {
