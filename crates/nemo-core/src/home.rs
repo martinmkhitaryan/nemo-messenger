@@ -426,6 +426,51 @@ impl<T: HomeTransport> HomeSession<T> {
         }
     }
 
+    /// Stale 1:1 pins (ADR-0004). Returns identities newly marked revoked this pass.
+    pub async fn refresh_idle_discovery(&mut self, now_unix: u64) -> Vec<IdentityId> {
+        let own = self.identity_id();
+        let peers: Vec<_> = self.contacts.keys().copied().collect();
+        let mut newly = Vec::new();
+        for id in peers {
+            if id == own {
+                continue;
+            }
+            let Some(c) = self.contacts.get(&id) else {
+                continue;
+            };
+            if c.revoked {
+                continue;
+            }
+            let stale = now_unix.saturating_sub(c.last_discovery_unix) >= DISCOVERY_REFRESH_SECS;
+            if !stale {
+                continue;
+            }
+            match self.refresh_contact(&id, now_unix).await {
+                Ok(()) => {}
+                Err(CoreError::Revoked) => newly.push(id),
+                Err(_) => {}
+            }
+        }
+        newly
+    }
+
+    pub fn revoked_contact_ids(&self) -> Vec<IdentityId> {
+        self.contacts
+            .iter()
+            .filter(|(_, c)| c.revoked)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Discovery revoke check for an identity that may not be a 1:1 contact.
+    pub async fn identity_is_revoked(&self, identity_id: IdentityId, now_unix: u64) -> bool {
+        matches!(
+            self.check_discovery_not_revoked(identity_id, now_unix)
+                .await,
+            Err(CoreError::Revoked)
+        )
+    }
+
     /// Same stale window as 1:1 `send_to`. Contacts that are revoked fail closed.
     pub async fn refresh_mls_identities(
         &mut self,

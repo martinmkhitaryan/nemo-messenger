@@ -12,6 +12,7 @@ use nemo_core::{
     messages_lost, open_group_file, seal_group_file, AppBody, AppHeader, AppMessage,
     BindingGossipCheck, Call, CoreError, FileMeta, Group, HomeSession, HostAccept, HostGroup,
     HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode, TurnConfig, Vault,
+    DISCOVERY_REFRESH_SECS,
 };
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, TtlBucket};
@@ -113,6 +114,7 @@ struct Inner {
     live_call: Option<Arc<Call>>,
     call_peer: Option<String>,
     call_connected: bool,
+    group_discovery_at: HashMap<[u8; KEY_LEN], u64>,
 }
 
 /// One installation. The shell must not persist ratchet or MLS keys.
@@ -394,6 +396,7 @@ fn empty_inner(
         live_call: None,
         call_peer: None,
         call_connected: false,
+        group_discovery_at: HashMap::new(),
     }
 }
 
@@ -487,6 +490,80 @@ fn refresh_group_members(session: &mut HomeSession<HttpHome>, g: &Group) -> Resu
     let ids = g.member_identity_ids();
     block_on(session.refresh_mls_identities(&ids, now_unix()))?;
     Ok(())
+}
+
+fn idle_maintenance(
+    session: &mut HomeSession<HttpHome>,
+    groups: &mut [LiveGroup],
+    inbox: &mut Vec<DisplayRow>,
+    next_seq: &mut HashMap<String, u64>,
+    group_discovery_at: &mut HashMap<[u8; KEY_LEN], u64>,
+) -> Result<Vec<DisplayRow>, FfiError> {
+    let now = now_unix();
+    let own = session.identity_id();
+    let mut newly: Vec<_> = block_on(session.refresh_idle_discovery(now));
+    let mut to_remove: Vec<_> = newly.clone();
+    to_remove.extend(session.revoked_contact_ids());
+
+    let extras: Vec<_> = groups
+        .iter()
+        .flat_map(|g| g.mls.member_identity_ids())
+        .filter(|id| *id != own && !session.contacts.contains_key(id))
+        .collect();
+    for id in extras {
+        let stale = group_discovery_at
+            .get(&id)
+            .map(|t| now.saturating_sub(*t) >= DISCOVERY_REFRESH_SECS)
+            .unwrap_or(true);
+        if !stale {
+            continue;
+        }
+        if block_on(session.identity_is_revoked(id, now)) {
+            newly.push(id);
+            to_remove.push(id);
+        }
+        group_discovery_at.insert(id, now);
+    }
+
+    let mut rows = Vec::new();
+    let mut seen = HashMap::new();
+    for id in &to_remove {
+        if seen.insert(*id, ()).is_some() {
+            continue;
+        }
+        for g in groups.iter_mut() {
+            let Some(cred) = g.mls.credential_id_for_identity(id) else {
+                continue;
+            };
+            if cred == g.mls.credential_id() {
+                continue;
+            }
+            if let Ok(bundle) = g.mls.remove(session.install.mls_provider(), cred) {
+                let _ = block_on(session.group_append(
+                    g.host.group_id,
+                    &g.host.cred,
+                    MessageType::RemoveBundle,
+                    bundle.encode()?,
+                ));
+            }
+        }
+    }
+    for id in newly {
+        rows.push(push_control(
+            inbox,
+            next_seq,
+            ids::to_hex(&id),
+            0,
+            now,
+            "revoked",
+            String::new(),
+            0,
+        ));
+    }
+    for g in groups.iter_mut() {
+        let _ = flush_mls_update(session, g);
+    }
+    Ok(rows)
 }
 
 fn turn_config(inner: &Inner) -> Result<TurnConfig, FfiError> {
@@ -837,6 +914,7 @@ impl NemoClient {
                 live_call,
                 call_peer,
                 call_connected,
+                group_discovery_at,
                 ..
             } = &mut *inner;
             let session = match state {
@@ -846,7 +924,7 @@ impl NemoClient {
             };
             let last_acked = session.cursor;
             let rows = block_on(session.fetch_mailbox())?;
-            if rows.is_empty() {
+            let mut new_rows = if rows.is_empty() {
                 Vec::new()
             } else {
                 let contacts: Vec<_> = session.contacts.keys().copied().collect();
@@ -1383,7 +1461,15 @@ impl NemoClient {
                     let _ = send_own_binding_gossip(session, peer, now);
                 }
                 new_rows
-            }
+            };
+            new_rows.extend(idle_maintenance(
+                session,
+                groups,
+                inbox,
+                next_seq,
+                group_discovery_at,
+            )?);
+            new_rows
         };
         persist(&inner)?;
         Ok(new_rows)
@@ -1876,6 +1962,23 @@ impl NemoClient {
         inner
             .pending_invites
             .retain(|_, invite| invite.expires_at > now);
+        let extra = {
+            let Inner {
+                state,
+                groups,
+                inbox,
+                next_seq,
+                group_discovery_at,
+                ..
+            } = &mut *inner;
+            match state {
+                Some(ClientState::Registered(session)) => {
+                    idle_maintenance(session, groups, inbox, next_seq, group_discovery_at)?
+                }
+                _ => Vec::new(),
+            }
+        };
+        expired.extend(extra);
         persist(&inner)?;
         Ok(expired)
     }
@@ -2423,6 +2526,26 @@ mod tests {
         NemoClient::create_at(dir.to_string_lossy().into_owned(), "correct horse".into()).unwrap()
     }
 
+    impl NemoClient {
+        fn test_mark_discovery_stale(&self) {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(ClientState::Registered(session)) = inner.state.as_mut() {
+                for c in session.contacts.values_mut() {
+                    c.last_discovery_unix = 0;
+                }
+            }
+            inner.group_discovery_at.clear();
+        }
+
+        fn test_publish_revocation(&self, mnemonic: String, identity_hex: String) {
+            let id = parse_identity_id(&identity_hex).unwrap();
+            let stmt = nemo_core::revocation_from_mnemonic(&mnemonic, id, now_unix()).unwrap();
+            let mut inner = self.inner.lock().unwrap();
+            let session = inner.registered().unwrap();
+            block_on(session.submit_revocation(&stmt)).unwrap();
+        }
+    }
+
     #[test]
     fn group_invite_admit_restart_and_remove() {
         let base = serve_home();
@@ -2797,6 +2920,44 @@ mod tests {
                 assert_eq!(bob.call_state().unwrap(), "idle");
             }
         }
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn idle_refresh_removes_revoked_group_member() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-idle-a");
+        let bob_dir = temp_dir("nemo-ffi-idle-b");
+        let alice = client_at(&alice_dir);
+        let bob = NemoClient::create_at(
+            bob_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+        )
+        .unwrap();
+        let mnemonic = bob.take_revocation_mnemonic().unwrap().unwrap();
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+        let gid = alice.create_group("crew".into()).unwrap();
+        let invite = alice.mint_group_invite(gid).unwrap();
+        let join = bob.accept_group_invite(invite).unwrap();
+        let _ = alice.admit_join(join).unwrap();
+        let _ = bob.fetch_now().unwrap();
+        assert_eq!(alice.list_groups().unwrap()[0].member_count, 2);
+        alice.test_publish_revocation(mnemonic, bob_id);
+        alice.test_mark_discovery_stale();
+        let rows = alice.expire_now().unwrap();
+        assert!(
+            rows.iter().any(|r| r.kind == "revoked"),
+            "idle sweep must surface revocation"
+        );
+        assert_eq!(alice.list_groups().unwrap()[0].member_count, 1);
         drop(alice);
         drop(bob);
         let _ = fs::remove_dir_all(&alice_dir);

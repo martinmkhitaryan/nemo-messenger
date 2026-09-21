@@ -103,17 +103,30 @@ impl Group {
         identity_pk_from_credential(kp.leaf_node().credential())
     }
 
-    /// Commit an Update when the last own Update is at least 7 days old.
+    /// Commit an Update when the last own Update is at least 7 days old, or 24 h
+    /// while the client is online (ADR-0005).
     pub fn maybe_self_update(
         &mut self,
         provider: &MlsProvider,
         now: SystemTime,
     ) -> Result<Option<Vec<u8>>> {
-        if self.needs_scheduled_update(now) {
+        if self.needs_scheduled_update(now) || self.needs_online_update(now) {
             Ok(Some(self.self_update(provider)?))
         } else {
             Ok(None)
         }
+    }
+
+    /// Host `credential_id` for an MLS member's identity, if they are still a leaf.
+    pub fn credential_id_for_identity(&self, identity: &IdentityId) -> Option<[u8; KEY_LEN]> {
+        self.mls.members().find_map(|m| {
+            let pk = identity_pk_from_credential(&m.credential).ok()?;
+            if identity_id(&pk) == *identity {
+                self.credential_ids.get(&m.signature_key).copied()
+            } else {
+                None
+            }
+        })
     }
 
     pub fn mls_group_id(&self) -> Vec<u8> {

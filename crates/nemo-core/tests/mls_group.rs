@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use nemo_core::group::{Group, UPDATE_BEFORE_SEND};
+use nemo_core::group::{Group, UPDATE_BEFORE_SEND, UPDATE_ON_ONLINE};
 use nemo_core::CoreError;
 use nemo_core::{decode_text, encode_text, Installation, Vault};
 use rand::RngCore;
@@ -75,6 +75,18 @@ fn seven_day_stale_commits_update_before_app() {
     alice_group
         .encrypt(alice.mls_provider(), b"after weekly update")
         .unwrap();
+}
+
+#[test]
+fn online_after_a_day_commits_update() {
+    let (alice, _bob, mut alice_group, _bob_group) = two_member_group();
+    alice_group.set_last_own_update_for_test(
+        SystemTime::now() - UPDATE_ON_ONLINE - Duration::from_secs(1),
+    );
+    let handshake = alice_group
+        .maybe_self_update(alice.mls_provider(), SystemTime::now())
+        .unwrap();
+    assert!(handshake.is_some());
 }
 
 #[test]

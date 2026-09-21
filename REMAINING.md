@@ -1,6 +1,6 @@
 # Missing besides Track N
 
-**Status:** working list after call signaling (`4cf55cd`) and binding gossip (`06a75c6`).  
+**Status:** working list after idle discovery / revoke-remove / quiet MLS updates.  
 **Not a specification.** `README.md`, `docs/decisions/`, and `docs/protocol/` win if this file disagrees.  
 **Delete this file** with `IMPLEMENTATION.md` when I12 freeze is done.
 
@@ -10,7 +10,7 @@ Next free ADR is **0036**. Do not invent schema, ICE, or push tables without a r
 
 ## Still open (not Track N)
 
-Protocol types for v1 messages, 1:1 media, groups, vault, and wakeup are in the tree. What is left is **human freeze checks** plus a few README/ADR **MUST**s that run on send today and do not run while the client is merely online.
+Protocol types for v1 messages, 1:1 media, groups, vault, and wakeup are in the tree. R1–R3 idle MUST work is in the fetch/expire loop. What is left is **human freeze checks** plus identity re-home (R4).
 
 ### Freeze checks
 
@@ -26,9 +26,9 @@ Product verification, not missing codecs.
 
 | ID | Item | Where it stops today |
 | --- | --- | --- |
-| R1 | Idle discovery refresh | README / ADR-0004: clients MUST refresh discovery on a coarse interval (hours) for 1:1 contacts **and** every MLS-group identity, without waiting for the next send. `send_to` and group send already refresh when stale (`DISCOVERY_REFRESH_SECS`). `fetch_now` / `expire_now` (the 2 s shell loop) do not walk contacts or group members. |
-| R2 | MLS Remove on revocation | README / ADR-0004: after a valid `RevocationStatement`, clients MUST commit MLS Remove in every shared group. `refresh_contact` marks `revoked` and send fails closed. `remove_group_member` exists (tests use it). FFI does not emit `RemoveBundle` when discovery shows revoke, and the shell has no Remove control. |
-| R3 | Quiet-group MLS Update | README / ADR-0005: clients MUST periodically commit Updates so a quiet group still heals. `maybe_self_update` (7 days) runs on group send / admit / file, not on fetch or online. `UPDATE_ON_ONLINE` is defined and unused by the flush path. |
+| R1 | Idle discovery refresh | **Done** — `expire_now` / `fetch_now` walk stale 1:1 pins and group identities (`DISCOVERY_REFRESH_SECS`). |
+| R2 | MLS Remove on revocation | **Done** — idle sweep emits `RemoveBundle` for each shared group and a `revoked` row. |
+| R3 | Quiet-group MLS Update | **Done** — `maybe_self_update` also fires after `UPDATE_ON_ONLINE` (24 h) and is flushed from the idle path. |
 | R4 | Identity move to another home | README §11: same key, new mailbox, higher binding `seq`, gossip, then `refresh_fanout` under each member credential. The **old** server drops the mailbox when it sees a higher `seq` (implemented). FFI/UI can register once; they cannot re-home, bump `seq`, or call `HomeSession::refresh_fanout`. Group **host** migration stays §52. |
 
 `call_ice` trickle send is not listed: offer/answer wait until ICE gathering completes and put relay candidates in the invite/answer. Receive of `CallIce` already works.
@@ -37,7 +37,7 @@ Product verification, not missing codecs.
 
 ## Shipped (do not re-open as missing)
 
-M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
+M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, idle discovery refresh, MLS Remove on revoke, quiet-group Updates, wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
 
 ---
 

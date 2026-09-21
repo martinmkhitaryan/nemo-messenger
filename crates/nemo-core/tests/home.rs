@@ -355,6 +355,35 @@ async fn revoked_contact_refuses_send() {
 }
 
 #[tokio::test]
+async fn idle_discovery_notices_revocation_without_send() {
+    let transport = RouterTransport {
+        app: router(AppState::new()),
+    };
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, bob_export) = Installation::create().unwrap();
+    let (mut alice, _) = HomeSession::register(transport.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let (mut bob, bob_card) = HomeSession::register(transport, bob_inst, now)
+        .await
+        .unwrap();
+    bob.publish_prekey().await.unwrap();
+    let bob_cap = bob.mint_contact().await.unwrap();
+    alice.add_contact(&bob_card, bob_cap, now).await.unwrap();
+    let stmt = revocation_from_mnemonic(&bob_export.mnemonic, bob.identity_id(), now).unwrap();
+    alice.submit_revocation(&stmt).await.unwrap();
+    alice
+        .contacts
+        .get_mut(&bob.identity_id())
+        .unwrap()
+        .last_discovery_unix = 0;
+    let revoked = alice.refresh_idle_discovery(now).await;
+    assert!(revoked.contains(&bob.identity_id()));
+    assert!(alice.contacts[&bob.identity_id()].revoked);
+}
+
+#[tokio::test]
 async fn revoked_identity_fails_discovery_check() {
     let transport = RouterTransport {
         app: router(AppState::new()),
