@@ -58,7 +58,7 @@ The Android GitHub job also installs SDK packages with `android-actions/setup-an
 sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "emulator"
 ```
 
-Emulator instrumented tests still need a running `nemo-server` on `0.0.0.0:18787` (see below). The Windows job is `cargo build -p nemo-ffi` and only runs on Windows or in GitHub. Linux `cargo build -p nemo-ffi` does not catch this. On a Windows machine, use an “x64 Native Tools” prompt so `cl` is `CC`/`CXX` (sqlcipher’s OpenSSL nmake is `VC-WIN64A`; GNU `clang` rejects `/Zi`). Keep Strawberry Perl’s `c++` off `PATH`, but leave Strawberry `perl` on `PATH` (Git’s MSYS perl cannot run `Configure`). If APM fails with `C1083` on an abseil `.cc` file, the path is over 260 characters; set a short `CARGO_TARGET_DIR`:
+Emulator instrumented tests still need a running `nemo-server` on `0.0.0.0:18787` (see below). The Windows job is `cargo build -p nemo-ffi` and only runs on Windows or in GitHub. Linux `cargo build -p nemo-ffi` does not catch this. On a Windows machine, use an “x64 Native Tools” prompt so `cl` is `CC`/`CXX` (sqlcipher’s OpenSSL nmake is `VC-WIN64A`; GNU `clang` rejects `/Zi`). Keep Strawberry Perl’s `c++` off `PATH`, but leave Strawberry `perl` on `PATH` (Git’s MSYS perl cannot run `Configure`). Use a short `CARGO_TARGET_DIR` (`MAX_PATH`). MSVC needs C++20 for APM designated initializers (`meson setup -Dcpp_std=c++20`):
 
 ```text
 pip install meson ninja

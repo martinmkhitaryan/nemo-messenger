@@ -43,10 +43,9 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
-      # compiles webrtc-audio-processing. One toolchain: MSVC cl (openssl-src
-      # VC-WIN64A) + Strawberry perl (Configure) + no MinGW gcc. Default
-      # target\debug\build\... path is 261 chars for one abseil source and
-      # cl.exe then C1083s (MAX_PATH is 260).
+      # compiles webrtc-audio-processing. MSVC cl + Strawberry perl, no MinGW.
+      # Short CARGO_TARGET_DIR (MAX_PATH). Meson cpp_std=c++20: APM uses
+      # designated initializers that MSVC rejects under C++17 (C7555).
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -80,9 +79,18 @@ jobs:
           if (Test-Path (Join-Path $gitUsr "cp.exe")) {
             $env:Path = "$env:Path;$gitUsr"
           }
+          $mesonReal = (Get-Command meson).Source
           $shim = Join-Path $env:RUNNER_TEMP "build-shims"
           New-Item -ItemType Directory -Force -Path $shim | Out-Null
           Set-Content -Path (Join-Path $shim "nm.cmd") -Value "@echo off`r`nexit /b 0"
+          Set-Content -Path (Join-Path $shim "meson.cmd") -Value @"
+@echo off
+if /I "%~1"=="setup" (
+  "$mesonReal" %* -Dcpp_std=c++20
+) else (
+  "$mesonReal" %*
+)
+"@
           $env:Path = "$shim;$env:Path"
           Write-Host "CC=$env:CC CXX=$env:CXX"
           foreach ($tool in @("cl", "clang", "cc", "c++", "perl", "meson", "ninja", "nm", "cp", "link")) {
