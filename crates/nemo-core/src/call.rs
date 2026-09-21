@@ -2,7 +2,7 @@
 //! Signaling and DTLS fingerprint binding stay in this crate; TURN is coturn.
 
 use std::env;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -146,6 +146,7 @@ pub struct Call {
     call_id: [u8; CALL_ID_LEN],
     local: LocalSignal,
     audio: Arc<AudioEngine>,
+    ice_sent: AtomicUsize,
 }
 
 impl Call {
@@ -255,12 +256,7 @@ impl Call {
             pc.set_local_description(offer).await.map_err(call_err)?;
         }
 
-        wait_flag(
-            &events.gathering_done,
-            Duration::from_secs(15),
-            "ICE gathering",
-        )
-        .await?;
+        wait_first_relay(&events, Duration::from_secs(15)).await?;
         if events.forbidden.load(Ordering::SeqCst) {
             let _ = pc.close().await;
             return Err(CoreError::DirectIceForbidden);
@@ -281,6 +277,7 @@ impl Call {
             .ok_or_else(|| CoreError::Call("missing local SDP".into()))?
             .sdp;
         let dtls_fp = fingerprint_from_sdp(&sdp)?;
+        let ice_len = ice.len();
         Ok(Self {
             pc,
             events,
@@ -294,6 +291,7 @@ impl Call {
                 ice,
             },
             audio,
+            ice_sent: AtomicUsize::new(ice_len),
         })
     }
 
@@ -321,6 +319,35 @@ impl Call {
 
     pub async fn add_remote_ice(&self, ice: &[String]) -> Result<()> {
         add_ice(&*self.pc, ice).await
+    }
+
+    /// Relay candidates gathered after the invite/answer snapshot (`call_ice`).
+    pub fn take_unsent_ice(&self) -> Result<Vec<String>> {
+        if self.events.forbidden.load(Ordering::SeqCst) {
+            return Err(CoreError::DirectIceForbidden);
+        }
+        let ice = self
+            .events
+            .ice
+            .lock()
+            .map_err(|_| CoreError::Call("ice lock".into()))?;
+        let sent = self.ice_sent.load(Ordering::SeqCst);
+        if ice.len() <= sent {
+            return Ok(Vec::new());
+        }
+        let extra = ice[sent..].to_vec();
+        self.ice_sent.store(ice.len(), Ordering::SeqCst);
+        drop(ice);
+        reject_direct_ice(&extra)?;
+        Ok(extra)
+    }
+
+    pub fn ice_gathering_done(&self) -> bool {
+        self.events.gathering_done.load(Ordering::SeqCst)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.events.closed.load(Ordering::SeqCst)
     }
 
     pub async fn wait_connected(&self) -> Result<()> {
@@ -416,6 +443,26 @@ async fn add_ice(pc: &dyn PeerConnection, ice: &[String]) -> Result<()> {
     Ok(())
 }
 
+async fn wait_first_relay(events: &CallEvents, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if events.forbidden.load(Ordering::SeqCst) {
+            return Err(CoreError::DirectIceForbidden);
+        }
+        let n = events.ice.lock().map(|g| g.len()).unwrap_or(0);
+        if n > 0 {
+            return Ok(());
+        }
+        if events.gathering_done.load(Ordering::SeqCst) {
+            return Err(CoreError::Call("no relay ICE candidates".into()));
+        }
+        if Instant::now() >= deadline {
+            return Err(CoreError::Call("ICE gathering timed out".into()));
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn wait_flag(flag: &AtomicBool, timeout: Duration, what: &str) -> Result<()> {
     let deadline = Instant::now() + timeout;
     while !flag.load(Ordering::SeqCst) {
@@ -467,6 +514,41 @@ fn verify_fingerprint(sdp: &str, claimed: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::app::{encode, AppBody, AppHeader, AppMessage};
+
+    fn test_events() -> CallEvents {
+        CallEvents {
+            ice: std::sync::Mutex::new(Vec::new()),
+            forbidden: AtomicBool::new(false),
+            gathering_done: AtomicBool::new(false),
+            connected_done: AtomicBool::new(false),
+            received: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+            audio: AudioEngine::new(false).expect("opus"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_first_relay_returns_when_a_candidate_arrives() {
+        let events = test_events();
+        events
+            .ice
+            .lock()
+            .expect("ice")
+            .push("candidate:1 1 udp 1 192.0.2.1 9 typ relay raddr 0.0.0.0 rport 0".into());
+        wait_first_relay(&events, Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_first_relay_fails_when_gathering_finishes_empty() {
+        let events = test_events();
+        events.gathering_done.store(true, Ordering::SeqCst);
+        let err = wait_first_relay(&events, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Call(msg) if msg.contains("no relay")));
+    }
 
     #[test]
     fn fingerprint_normalizes_colons() {

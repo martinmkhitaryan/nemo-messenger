@@ -120,7 +120,7 @@ struct Inner {
 /// One installation. The shell must not persist ratchet or MLS keys.
 #[derive(uniffi::Object)]
 pub struct NemoClient {
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -161,6 +161,59 @@ fn pump_call(call: Arc<Call>) {
                     break;
                 }
             }
+        }
+    });
+}
+
+fn pump_trickle(inner: Arc<Mutex<Inner>>, call: Arc<Call>, peer_hex: String) {
+    runtime().spawn(async move {
+        loop {
+            if call.is_closed() {
+                break;
+            }
+            let extra = match call.take_unsent_ice() {
+                Ok(ice) if !ice.is_empty() => ice,
+                Ok(_) => {
+                    if call.ice_gathering_done() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+                Err(_) => break,
+            };
+            let now = now_unix();
+            let mut guard = match inner.lock() {
+                Ok(g) => g,
+                Err(_) => break,
+            };
+            let live_id = guard.live_call.as_ref().map(|c| c.call_id());
+            if live_id != Some(call.call_id()) {
+                break;
+            }
+            let Inner {
+                state,
+                inbox,
+                next_seq,
+                ..
+            } = &mut *guard;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                _ => break,
+            };
+            let _ = emit_call(
+                session,
+                inbox,
+                next_seq,
+                peer_hex.clone(),
+                AppBody::CallIce {
+                    call_id: call.call_id(),
+                    ice: extra,
+                },
+                "call_ice",
+                now,
+                false,
+            );
         }
     });
 }
@@ -208,7 +261,8 @@ fn emit_call(
         AppBody::CallRinging { call_id }
         | AppBody::CallReject { call_id }
         | AppBody::CallCancel { call_id }
-        | AppBody::CallEnd { call_id } => ids::to_hex(call_id),
+        | AppBody::CallEnd { call_id }
+        | AppBody::CallIce { call_id, .. } => ids::to_hex(call_id),
         _ => String::new(),
     };
     let ptext = encode(&AppMessage {
@@ -714,11 +768,11 @@ impl NemoClient {
     pub fn create() -> Result<Arc<Self>, FfiError> {
         let (install, export) = Installation::create()?;
         Ok(Arc::new(Self {
-            inner: Mutex::new(empty_inner(
+            inner: Arc::new(Mutex::new(empty_inner(
                 Some(ClientState::Local(install)),
                 None,
                 Some(export.mnemonic),
-            )),
+            ))),
         }))
     }
 
@@ -728,11 +782,11 @@ impl NemoClient {
         let (install, export) = Installation::create()?;
         let vault = Vault::create(&dir, &passphrase, &install)?;
         Ok(Arc::new(Self {
-            inner: Mutex::new(empty_inner(
+            inner: Arc::new(Mutex::new(empty_inner(
                 Some(ClientState::Local(install)),
                 Some(vault),
                 Some(export.mnemonic),
-            )),
+            ))),
         }))
     }
 
@@ -781,7 +835,7 @@ impl NemoClient {
             let _ = block_on(session.restock_publish());
         }
         Ok(Arc::new(Self {
-            inner: Mutex::new(inner),
+            inner: Arc::new(Mutex::new(inner)),
         }))
     }
 
@@ -1188,11 +1242,13 @@ impl NemoClient {
                                 ));
                             }
                             Ok(AppMessage {
-                                body: AppBody::CallIce { ice, .. },
+                                body: AppBody::CallIce { call_id, ice },
                                 ..
                             }) => {
                                 if let Some(call) = live_call.as_ref() {
-                                    let _ = block_on(call.add_remote_ice(&ice));
+                                    if call.call_id() == call_id {
+                                        let _ = block_on(call.add_remote_ice(&ice));
+                                    }
                                 }
                             }
                             Ok(AppMessage {
@@ -2089,10 +2145,11 @@ impl NemoClient {
             block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
         }
         let call = Arc::new(call);
-        pump_call(Arc::clone(&call));
-        inner.live_call = Some(call);
+        inner.live_call = Some(Arc::clone(&call));
         inner.call_peer = Some(peer_id_hex.clone());
         inner.call_connected = false;
+        pump_call(Arc::clone(&call));
+        pump_trickle(Arc::clone(&self.inner), call, peer_id_hex.clone());
         let Inner {
             inbox, next_seq, ..
         } = &mut *inner;
@@ -2143,10 +2200,11 @@ impl NemoClient {
             block_on(session.send_to(&peer, invite_ttl_bucket(), &ptext, now))?;
         }
         let call = Arc::new(call);
-        pump_call(Arc::clone(&call));
-        inner.live_call = Some(call);
+        inner.live_call = Some(Arc::clone(&call));
         inner.call_peer = Some(pending.peer.clone());
         inner.call_connected = true;
+        pump_call(Arc::clone(&call));
+        pump_trickle(Arc::clone(&self.inner), call, pending.peer.clone());
         let Inner {
             inbox, next_seq, ..
         } = &mut *inner;

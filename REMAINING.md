@@ -1,6 +1,6 @@
 # Missing besides Track N
 
-**Status:** working list after identity re-home (R4).  
+**Status:** working list after `call_ice` trickle send.  
 **Not a specification.** `README.md`, `docs/decisions/`, and `docs/protocol/` win if this file disagrees.  
 **Delete this file** with `IMPLEMENTATION.md` when I12 freeze is done.
 
@@ -31,13 +31,13 @@ Product verification, not missing codecs.
 | R3 | Quiet-group MLS Update | **Done** — `maybe_self_update` also fires after `UPDATE_ON_ONLINE` (24 h) and is flushed from the idle path. |
 | R4 | Identity move to another home | **Done** — `POST /v1/binding` maps `observe_binding`; `HomeSession::rehome` mints a higher `seq`, registers on B, restocks, refreshes fan-out on the old host, and notifies A. FFI `register` while already registered moves home, gossips the binding, and sends new contact capabilities. Group **ops stay on the original host** (`HostGroup.host_base`); moving the group itself stays §52. |
 
-`call_ice` trickle send is not listed: offer/answer wait until ICE gathering completes and put relay candidates in the invite/answer. Receive of `CallIce` already works.
+`call_ice` trickle send is **Done**: invite/answer go out after the first relay candidate; later relay candidates are `call_ice`. Receive of `CallIce` already applied them. Direct ICE still refused.
 
 ---
 
 ## Shipped (do not re-open as missing)
 
-M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, idle discovery refresh, MLS Remove on revoke, quiet-group Updates, identity re-home (R4), wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
+M1–M12 leftover ADR MUST, 1:1 call ringing / reject / cancel / hangup / `call_ice` trickle, Private Opus CBR with DTX off, binding-gossip send plus conflict alert, idle discovery refresh, MLS Remove on revoke, quiet-group Updates, identity re-home (R4), wakeup WebSocket + poll, hosted groups, attachments, reactions / delete / disappear, SQLCipher vault, UniFFI Compose shell (desktop + Android 16).
 
 ---
 
