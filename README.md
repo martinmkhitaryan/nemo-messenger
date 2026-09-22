@@ -7,7 +7,8 @@
 **Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)<br>
 **v1.1 nice-to-have (group calls, FCM):** [`docs/v1.1.md`](docs/v1.1.md)<br>
 **v1.2 later (video, key transparency, group migration, …):** [`docs/v1.2.md`](docs/v1.2.md)<br>
-**Manual live-call check:** [`docs/testing.md`](docs/testing.md)
+**Manual live-call check:** [`docs/testing.md`](docs/testing.md)<br>
+**Build and run (home + desktop + Android):** [`deploy/README.md`](deploy/README.md) · [`scripts/`](scripts/)
 
 ---
 

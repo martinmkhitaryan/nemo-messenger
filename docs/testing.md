@@ -43,10 +43,11 @@ cargo deny check
 cargo test --workspace
 cargo test -p nemo-wire -p nemo-server --test no_libsignal
 
-# desktop Compose (needs a JDK 21)
+# desktop Compose (needs a JDK 21 + scripts/dev-env.sh on Linux)
+source scripts/dev-env.sh
 cd apps/compose && ./gradlew --no-daemon desktopTest
 
-# APK (needs Android SDK 36 + NDK r27c + cargo-ndk)
+# APK (needs Android SDK 36 + NDK 27.2.12479018 + cargo-ndk)
 cd apps/compose && ./gradlew --no-daemon assembleDebug
 ```
 
@@ -102,10 +103,12 @@ Open host firewall TCP **8443**, UDP/TCP **3478**, and UDP **49152–49200**.
 
 One window, two panes (`Left` and `Right`). Vaults: `~/.local/share/nemo/left` and `…/right`.
 
+Linux: install native deps once (`./scripts/install-linux-deps.sh`), then `source scripts/dev-env.sh` in each shell so bindgen can find `stddef.h` (see [`deploy/README.md`](../deploy/README.md)).
+
 ```text
-cargo build -p nemo-ffi
-cd apps/compose
-./gradlew run
+source scripts/dev-env.sh
+./scripts/desktop-run.sh
+# equivalent: cd apps/compose && ./gradlew run
 ```
 
 On **each** pane:
@@ -134,24 +137,16 @@ Pass only if the call is audible with a real mic, not silence frames in a unit t
 
 Emulator default home URL is `https://10.0.2.2:8443` (the host). Keep `NEMO_TURN_URL=turn:10.0.2.2:3478` while the emulator is the caller or callee.
 
+One-time SDK/NDK/AVD setup is in [`deploy/README.md`](../deploy/README.md). Then:
+
 ```text
-export ANDROID_HOME=$HOME/Android/Sdk
-export ANDROID_SDK_ROOT=$ANDROID_HOME
-export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
-rustup target add aarch64-linux-android x86_64-linux-android
-cargo install cargo-ndk
-
-"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-  "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" \
-  "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
-
-"$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n nemo \
-  -k "system-images;android-36;google_apis;x86_64" -d pixel --force
-"$ANDROID_HOME/emulator/emulator" -avd nemo
-
-cd apps/compose
-./gradlew installDebug
+source scripts/dev-env.sh
+./scripts/android-install-debug.sh
+# or: ./scripts/android-emulator.sh   # other terminal
+#     cd apps/compose && ./gradlew installDebug
 ```
+
+`android-install-debug.sh` starts the `nemo` AVD if `adb devices` is empty. `No connected devices!` means nothing was booted yet.
 
 Create / unlock / **Connect** like desktop. Pair with the desktop **Right** pane (or a second emulator).
 
@@ -168,9 +163,9 @@ Wipe the vault: uninstall the app, or `adb uninstall org.nemo`.
 USB debugging, Android 16, debug APK.
 
 ```text
-adb devices
-cd apps/compose
-./gradlew installDebug
+source scripts/dev-env.sh
+adb devices   # must show 'device'
+./scripts/android-install-debug.sh
 ```
 
 On the phone, Settings → **Home URL** `https://<LAN-IP>:8443` → **Connect**. Do not leave `10.0.2.2` (that is emulator-only).
@@ -185,6 +180,8 @@ Walk the same checklist as desktop: register, 1:1 text, group invite→accept→
 
 | Symptom | Usual cause |
 | --- | --- |
+| `stddef.h` / bindgen failure building `webrtc-audio-processing-sys` | Missing `clang`/`libclang-dev`, or forgot `source scripts/dev-env.sh` |
+| `No connected devices!` on `installDebug` | Emulator not running / phone not authorized; use `./scripts/android-install-debug.sh` or `adb devices` |
 | Connect fails from a phone | Home URL still `localhost` / `10.0.2.2`, or port 8443 not reachable on LAN |
 | Call rings, no audio | Coturn profile not up; `NEMO_TURN_URL` is still `127.0.0.1` on a phone |
 | TURN 401 | `NEMO_TURN_SECRET` missing on `nemo-server` or not the same as coturn `--static-auth-secret` |

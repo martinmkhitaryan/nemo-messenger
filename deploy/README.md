@@ -39,14 +39,34 @@ docker compose -f deploy/compose.yml up --build
 
 Do not reuse `nemo` on a host that is reachable beyond localhost.
 
+## Build prerequisites (Linux)
+
+Host `nemo-ffi` (desktop and anything that compiles `webrtc-audio-processing`) needs Meson and a working libclang for bindgen. Same packages as CI:
+
+```text
+./scripts/install-linux-deps.sh
+source scripts/dev-env.sh
+```
+
+`dev-env.sh` sets `LIBCLANG_PATH`, `BINDGEN_EXTRA_CLANG_ARGS` (fixes bindgen `stddef.h` not found), and Android SDK/NDK env if present. Source it in every new shell (or add it to your profile).
+
+Also need: **Rust stable**, **JDK 21**, Docker (for this compose file). Android additionally needs the SDK + NDK (below).
+
+Without those clang packages you typically see:
+
+```text
+fatal error: 'stddef.h' file not found
+Unable to generate bindings
+```
+
 ## Two clients on this home
 
 The Compose Multiplatform shell is AGPL (it links libsignal through `nemo-ffi`). JVM run is the supported desktop path; `jpackage` is optional.
 
 ```text
-cargo build -p nemo-ffi
-cd apps/compose
-./gradlew run
+source scripts/dev-env.sh
+./scripts/desktop-run.sh
+# equivalent: cd apps/compose && ./gradlew run
 ```
 
 `./gradlew run` builds `nemo-ffi` first and sets `jna.library.path` to `target/debug`. Create two vaults (two process windows, or two data directories), set **Home server** to `https://localhost:8443`, and Register. Local cargo without Caddy still uses `http://127.0.0.1:8787`.
@@ -61,7 +81,7 @@ cd apps/compose
 gradlew.bat run
 ```
 
-The shell looks for `target/debug/nemo_ffi.dll` on `jna.library.path`. A `.msi` installer is optional; JVM run is the v1 path (ADR-0026 / I11).
+The shell looks for `target/debug/nemo_ffi.dll` on `jna.library.path`. A `.msi` installer is optional; JVM run is the v1 path (ADR-0026 / I11). See [`docs/testing.md`](../docs/testing.md) for MSVC / Meson notes.
 
 Optional native installer (needs a JDK with `jpackage`, and still needs `libnemo_ffi.so` on `jna.library.path`):
 
@@ -76,25 +96,28 @@ cd apps/compose
 
 ## Android debug APK
 
-The Compose module is one Gradle project for desktop JVM and Android (ADR-0028). Desktop: `cd apps/compose && ./gradlew run` or `./gradlew desktopTest`. Android needs the SDK + NDK (not a cloud vendor API):
+The Compose module is one Gradle project for desktop JVM and Android (ADR-0028). Desktop: `./scripts/desktop-run.sh` or `cd apps/compose && ./gradlew desktopTest`. Android needs the SDK + NDK (not a cloud vendor API):
 
 ```text
-export ANDROID_HOME=$HOME/Android/Sdk
-export ANDROID_SDK_ROOT=$ANDROID_HOME
-export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
+source scripts/dev-env.sh
+# one-time SDK packages (paths match apps/compose ndkVersion):
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
   "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" \
   "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk
-cd apps/compose
-./gradlew assembleDebug
-# emulator (create identity, show fingerprint):
+
+# one-time AVD
 "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n nemo \
   -k "system-images;android-36;google_apis;x86_64" -d pixel --force
-"$ANDROID_HOME/emulator/emulator" -avd nemo
-./gradlew installDebug
+
+# build + install (starts the 'nemo' AVD if nothing is connected)
+./scripts/android-install-debug.sh
 ```
+
+Or manually: `./scripts/android-emulator.sh` in one terminal, then `cd apps/compose && ./gradlew installDebug`. APK-only (no device): `./gradlew assembleDebug`.
+
+`installDebug` fails with `No connected devices!` when adb sees nothing — start the emulator or plug in a phone with USB debugging (`adb devices` should list a `device`, not only `offline`).
 
 CI on GitHub Actions runs `assembleDebug` with `nttld/setup-ndk` (r27c) and uploads the APK. The native library is `libnemo_ffi.so` via JNA (`arm64-v8a` and `x86_64`).
 
