@@ -569,6 +569,61 @@ impl<T: HomeTransport> HomeSession<T> {
         Ok(())
     }
 
+    /// Apply an inbound contact capability. With `intro`, upgrade a provisional
+    /// sealed-sender peer into a writable `StoredContact` (README §20).
+    pub fn apply_contact_capability(
+        &mut self,
+        session_peer: IdentityId,
+        contact_capability: [u8; KEY_LEN],
+        intro: Option<crate::CapabilityIntro>,
+        now_unix: u64,
+    ) -> Result<IdentityId> {
+        let Some(intro) = intro else {
+            let contact = self
+                .contacts
+                .get_mut(&session_peer)
+                .ok_or(CoreError::UnknownContact)?;
+            contact.delivery_capability = contact_capability;
+            return Ok(session_peer);
+        };
+
+        let real = intro.identity_id;
+        if nemo_wire::identity_id(&intro.identity_public_key) != real {
+            return Err(CoreError::IdentityMismatch);
+        }
+
+        if session_peer != real {
+            self.install.rematerialize_peer(&session_peer, &real);
+            if let Some(prev) = self.contacts.remove(&session_peer) {
+                self.contacts.entry(real).or_insert(prev);
+            }
+        }
+
+        let home_origin = self
+            .contacts
+            .get(&real)
+            .map(|c| c.home_origin.clone())
+            .unwrap_or_default();
+
+        self.contacts.insert(
+            real,
+            StoredContact {
+                pin: ContactPin {
+                    identity_id: real,
+                    identity_public_key: intro.identity_public_key,
+                    revocation_public_key: intro.revocation_public_key,
+                    seq: intro.binding_seq,
+                },
+                delivery_capability: contact_capability,
+                dest_hpke: intro.dest_hpke,
+                last_discovery_unix: now_unix,
+                revoked: false,
+                home_origin,
+            },
+        );
+        Ok(real)
+    }
+
     pub async fn refresh_contact(&mut self, peer: &IdentityId, now_unix: u64) -> Result<()> {
         let origin = self
             .contacts

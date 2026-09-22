@@ -120,6 +120,14 @@ On **each** pane:
 
 Add the other pane: **+** → **New chat** → paste the `nemo:1:…` URI (or **Scan QR** and pick a screenshot of the QR). Confirm the fingerprint, set a name, **Add**.
 
+Only the initiator needs the card. After they send, the other pane can reply in the same chat (in-session contact capability). You do **not** need to add Left on Right for text to work both ways.
+
+To wipe a pane and create a fresh identity: on the unlock screen choose **Create a new identity** and confirm the delete, or from a shell:
+
+```text
+rm -rf ~/.local/share/nemo/left ~/.local/share/nemo/right
+```
+
 Then:
 
 | Check | How |

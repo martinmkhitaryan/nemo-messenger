@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::http::Request;
 use http_body_util::BodyExt;
-use nemo_core::app::{decode_text, encode_text};
+use nemo_core::app::{decode, decode_text, encode_text};
 use nemo_core::discovery::resolve_contact;
 use nemo_core::home::{
     EnqueueResult, HomeSession, HomeTransport, HttpHome, HttpRequest, HttpResponse,
@@ -599,4 +599,105 @@ async fn add_contact_fetches_discovery_and_prekey_on_peer_home() {
     let stored = &alice.contacts[&bob.identity_id()];
     assert_eq!(stored.home_origin, "http://home-b");
     assert_eq!(stored.dest_hpke, bob.hpke_public());
+}
+
+#[tokio::test]
+async fn bob_replies_after_capability_intro_without_card() {
+    use nemo_core::{encode, AppBody, AppHeader, AppMessage, CapabilityIntro};
+
+    let transport = RouterTransport::single(router(AppState::new()));
+    let now = now_unix();
+    let (alice_inst, _) = Installation::create().unwrap();
+    let (bob_inst, _) = Installation::create().unwrap();
+    let (mut alice, _) = HomeSession::register(transport.clone(), alice_inst, now)
+        .await
+        .unwrap();
+    let (mut bob, bob_card) = HomeSession::register(transport, bob_inst, now)
+        .await
+        .unwrap();
+    bob.publish_prekey().await.unwrap();
+    alice.publish_prekey().await.unwrap();
+    let bob_cap = bob.mint_contact().await.unwrap();
+    alice.add_contact(&bob_card, bob_cap, now).await.unwrap();
+
+    let alice_cap = alice.mint_contact().await.unwrap();
+    let intro = encode(&AppMessage {
+        header: AppHeader {
+            conv_seq: 0,
+            sent_at: now,
+            reply_to: None,
+        },
+        body: AppBody::Capability {
+            contact_capability: alice_cap,
+            intro: Some(CapabilityIntro {
+                identity_id: alice.identity_id(),
+                identity_public_key: alice.install.identity_public_key(),
+                revocation_public_key: alice.install.revocation_public_key(),
+                dest_hpke: alice.hpke_public(),
+                binding_seq: alice.install.binding_seq(),
+            }),
+        },
+    })
+    .unwrap();
+    alice
+        .send_to(&bob.identity_id(), TtlBucket::DEFAULT, &intro, now)
+        .await
+        .unwrap();
+
+    let hello = encode_text(1, now, "hello bob").unwrap();
+    alice
+        .send_to(&bob.identity_id(), TtlBucket::DEFAULT, &hello, now)
+        .await
+        .unwrap();
+
+    let rows = bob.fetch_mailbox().await.unwrap();
+    assert!(rows.len() >= 2);
+    let contacts: Vec<_> = bob.contacts.keys().copied().collect();
+    let mut real_peer = None;
+    for row in &rows {
+        let (peer, pt) = bob
+            .install
+            .decrypt_incoming(&row.inner, &contacts)
+            .await
+            .unwrap();
+        match decode(&pt) {
+            Ok(AppMessage {
+                body: AppBody::Capability {
+                    contact_capability,
+                    intro,
+                },
+                ..
+            }) => {
+                real_peer = Some(
+                    bob.apply_contact_capability(peer, contact_capability, intro, now)
+                        .unwrap(),
+                );
+            }
+            Ok(AppMessage {
+                body: AppBody::Text { .. },
+                ..
+            }) => {}
+            _ => {}
+        }
+    }
+    bob.ack().await.unwrap();
+
+    let alice_id = real_peer.expect("capability intro");
+    assert_eq!(alice_id, alice.identity_id());
+    assert!(bob.contacts.contains_key(&alice_id));
+
+    let reply = encode_text(1, now, "hello alice").unwrap();
+    bob.send_to(&alice_id, TtlBucket::DEFAULT, &reply, now)
+        .await
+        .unwrap();
+
+    let rows = alice.fetch_mailbox().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    let opened = alice
+        .install
+        .decrypt_incoming(&rows[0].inner, &[bob.identity_id()])
+        .await
+        .unwrap();
+    assert_eq!(opened.0, bob.identity_id());
+    assert_eq!(decode_text(&opened.1).unwrap(), (1, "hello alice".into()));
 }

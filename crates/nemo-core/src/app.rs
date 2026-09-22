@@ -15,6 +15,16 @@ pub const EMOJI_MAX_BYTES: usize = 32;
 pub const CALL_ID_LEN: usize = 16;
 pub const CONTACT_CAP_LEN: usize = KEY_LEN;
 
+/// Sender self-description inside a contact-capability message so the peer can reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapabilityIntro {
+    pub identity_id: IdentityId,
+    pub identity_public_key: [u8; KEY_LEN],
+    pub revocation_public_key: [u8; KEY_LEN],
+    pub dest_hpke: [u8; KEY_LEN],
+    pub binding_seq: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppHeader {
     pub conv_seq: u64,
@@ -52,6 +62,8 @@ pub enum AppBody {
     },
     Capability {
         contact_capability: [u8; CONTACT_CAP_LEN],
+        /// When set, the receiver may create a `StoredContact` and reply (README §20).
+        intro: Option<CapabilityIntro>,
     },
     BindingGossip {
         identity_id: IdentityId,
@@ -227,8 +239,18 @@ fn extra_fields(body: &AppBody, pairs: &mut Vec<(u64, Value)>) {
         }
         AppBody::Delete { target } => pairs.push((5, Value::Uint(*target))),
         AppBody::ProtocolAck { upto } => pairs.push((5, Value::Uint(*upto))),
-        AppBody::Capability { contact_capability } => {
-            pairs.push((5, Value::Bytes(contact_capability.to_vec())))
+        AppBody::Capability {
+            contact_capability,
+            intro,
+        } => {
+            pairs.push((5, Value::Bytes(contact_capability.to_vec())));
+            if let Some(intro) = intro {
+                pairs.push((6, Value::Bytes(intro.identity_id.to_vec())));
+                pairs.push((7, Value::Bytes(intro.identity_public_key.to_vec())));
+                pairs.push((8, Value::Bytes(intro.revocation_public_key.to_vec())));
+                pairs.push((9, Value::Bytes(intro.dest_hpke.to_vec())));
+                pairs.push((10, Value::Uint(intro.binding_seq)));
+            }
         }
         AppBody::BindingGossip {
             identity_id,
@@ -299,9 +321,23 @@ fn parse_body(msg_type: &str, m: &[(u64, Value)]) -> Result<AppBody> {
         "protocol_ack" => AppBody::ProtocolAck {
             upto: cbor::expect_uint(cbor::map_get(m, 5)?)?,
         },
-        "capability" => AppBody::Capability {
-            contact_capability: fixed(cbor::expect_bytes(cbor::map_get(m, 5)?)?)?,
-        },
+        "capability" => {
+            let contact_capability = fixed(cbor::expect_bytes(cbor::map_get(m, 5)?)?)?;
+            let intro = match cbor::map_get_opt(m, 6) {
+                Some(v) => Some(CapabilityIntro {
+                    identity_id: fixed(cbor::expect_bytes(v)?)?,
+                    identity_public_key: fixed(cbor::expect_bytes(cbor::map_get(m, 7)?)?)?,
+                    revocation_public_key: fixed(cbor::expect_bytes(cbor::map_get(m, 8)?)?)?,
+                    dest_hpke: fixed(cbor::expect_bytes(cbor::map_get(m, 9)?)?)?,
+                    binding_seq: cbor::expect_uint(cbor::map_get(m, 10)?)?,
+                }),
+                None => None,
+            };
+            AppBody::Capability {
+                contact_capability,
+                intro,
+            }
+        }
         "binding_gossip" => AppBody::BindingGossip {
             identity_id: fixed(cbor::expect_bytes(cbor::map_get(m, 5)?)?)?,
             seq: cbor::expect_uint(cbor::map_get(m, 6)?)?,
@@ -547,10 +583,30 @@ mod tests {
         assert_eq!(
             roundtrip(AppBody::Capability {
                 contact_capability: cap,
+                intro: None,
             })
             .body,
             AppBody::Capability {
                 contact_capability: cap,
+                intro: None,
+            }
+        );
+        let intro = CapabilityIntro {
+            identity_id: [4u8; KEY_LEN],
+            identity_public_key: [5u8; KEY_LEN],
+            revocation_public_key: [6u8; KEY_LEN],
+            dest_hpke: [7u8; KEY_LEN],
+            binding_seq: 2,
+        };
+        assert_eq!(
+            roundtrip(AppBody::Capability {
+                contact_capability: cap,
+                intro: Some(intro.clone()),
+            })
+            .body,
+            AppBody::Capability {
+                contact_capability: cap,
+                intro: Some(intro),
             }
         );
         let gossip = AppBody::BindingGossip {

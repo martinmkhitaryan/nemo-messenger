@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
@@ -155,6 +156,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var client by remember { mutableStateOf<NemoClient?>(null) }
     var passphrase by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
+    var confirmWipe by remember { mutableStateOf(false) }
     var mnemonic by remember { mutableStateOf<String?>(null) }
     var fingerprint by remember { mutableStateOf("") }
     var identityHex by remember { mutableStateOf("") }
@@ -327,7 +329,45 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             }
                         },
                     ) { Text("Unlock") }
-                    TextButton(onClick = { phase = Phase.Create }) { Text("Create a new identity") }
+                    TextButton(onClick = { confirmWipe = true }) {
+                        Text("Create a new identity")
+                    }
+                    if (confirmWipe) {
+                        AlertDialog(
+                            onDismissRequest = { confirmWipe = false },
+                            title = { Text("Replace this identity?") },
+                            text = {
+                                Text(
+                                    "This deletes the keys and history on this pane permanently. " +
+                                        "There is no recovery. Contacts must add the new identity again.",
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        confirmWipe = false
+                                        wipeVaultDir(vaultDir)
+                                        client = null
+                                        mnemonic = null
+                                        fingerprint = ""
+                                        identityHex = ""
+                                        registered = false
+                                        shareUri = ""
+                                        messages.clear()
+                                        contacts.clear()
+                                        groups.clear()
+                                        outgoing.clear()
+                                        passphrase = ""
+                                        confirm = ""
+                                        phase = Phase.Create
+                                    },
+                                ) { Text("Delete and create new") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { confirmWipe = false }) { Text("Cancel") }
+                            },
+                        )
+                    }
                 }
                 Phase.Mnemonic -> OnboardScaffold(
                     title = "Recovery phrase",
@@ -1379,6 +1419,14 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit) 
 }
 
 private fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
+
+/** Wipe a pane vault so [`NemoClient.createAt`] can run again. */
+internal fun wipeVaultDir(dir: File) {
+    if (!dir.isDirectory) return
+    dir.listFiles()?.forEach { child ->
+        if (child.isDirectory) child.deleteRecursively() else child.delete()
+    }
+}
 
 internal fun previewLine(row: DisplayRow): String = when {
     row.hidden && row.kind == "expired" -> "Message expired"

@@ -10,9 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nemo_core::{
     classify_binding_gossip, decode, encode, encode_text, invite_ttl_bucket, mailbox,
     messages_lost, open_group_file, seal_group_file, AppBody, AppHeader, AppMessage,
-    BindingGossipCheck, Call, CoreError, FileMeta, Group, HomeSession, HostAccept, HostGroup,
-    HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode, TurnConfig, Vault,
-    DISCOVERY_REFRESH_SECS,
+    BindingGossipCheck, Call, CapabilityIntro, CoreError, FileMeta, Group, HomeSession,
+    HostAccept, HostGroup, HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode,
+    TurnConfig, Vault, DISCOVERY_REFRESH_SECS,
 };
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, TtlBucket};
@@ -122,6 +122,8 @@ struct Inner {
     call_peer: Option<String>,
     call_connected: bool,
     group_discovery_at: HashMap<[u8; KEY_LEN], u64>,
+    /// Peers we already sent a capability intro to (avoid minting a token every send).
+    intro_sent: std::collections::HashSet<[u8; KEY_LEN]>,
 }
 
 /// One installation. The shell must not persist ratchet or MLS keys.
@@ -352,10 +354,59 @@ fn send_own_contact_capability(
         },
         body: AppBody::Capability {
             contact_capability: cap,
+            intro: Some(CapabilityIntro {
+                identity_id: session.identity_id(),
+                identity_public_key: session.install.identity_public_key(),
+                revocation_public_key: session.install.revocation_public_key(),
+                dest_hpke: session.hpke_public(),
+                binding_seq: session.install.binding_seq(),
+            }),
         },
     })?;
     block_on(session.send_to(&peer, TtlBucket::DEFAULT, &ptext, now))?;
     Ok(())
+}
+
+fn ensure_intro_sent(
+    session: &mut HomeSession<HttpHome>,
+    intro_sent: &mut std::collections::HashSet<[u8; KEY_LEN]>,
+    peer: nemo_wire::ids::IdentityId,
+    now: u64,
+) -> Result<(), FfiError> {
+    if intro_sent.contains(&peer) {
+        return Ok(());
+    }
+    send_own_contact_capability(session, peer, now)?;
+    intro_sent.insert(peer);
+    Ok(())
+}
+
+fn remap_conv_id(
+    inbox: &mut [DisplayRow],
+    next_seq: &mut HashMap<String, u64>,
+    nicknames: &mut HashMap<String, String>,
+    disappear: &mut HashMap<String, u64>,
+    from: &str,
+    to: &str,
+) {
+    if from == to {
+        return;
+    }
+    for row in inbox.iter_mut() {
+        if row.conv_id == from {
+            row.conv_id = to.to_string();
+        }
+    }
+    if let Some(seq) = next_seq.remove(from) {
+        let entry = next_seq.entry(to.to_string()).or_insert(0);
+        *entry = (*entry).max(seq);
+    }
+    if let Some(nick) = nicknames.remove(from) {
+        nicknames.entry(to.to_string()).or_insert(nick);
+    }
+    if let Some(secs) = disappear.remove(from) {
+        disappear.entry(to.to_string()).or_insert(secs);
+    }
 }
 
 fn send_own_binding_gossip(
@@ -478,6 +529,7 @@ fn empty_inner(
         call_peer: None,
         call_connected: false,
         group_discovery_at: HashMap::new(),
+        intro_sent: std::collections::HashSet::new(),
     }
 }
 
@@ -999,9 +1051,21 @@ impl NemoClient {
         let card = parse_card(&card_or_uri)?;
         let cap = parse_delivery_cap(&card_or_uri, &card)?;
         let peer = ids::to_hex(&card.identity_id());
+        let peer_id = card.identity_id();
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-        let session = inner.registered()?;
-        block_on(session.add_contact(&card, cap, now_unix()))?;
+        let now = now_unix();
+        {
+            let Inner {
+                state, intro_sent, ..
+            } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            block_on(session.add_contact(&card, cap, now))?;
+            let _ = ensure_intro_sent(session, intro_sent, peer_id, now);
+        }
         if !nickname.is_empty() {
             inner.nicknames.insert(peer.clone(), nickname);
         }
@@ -1025,8 +1089,16 @@ impl NemoClient {
         let ptext = encode_text(seq, now, &text)?;
         let ttl = ttl_for(&inner.disappear, &peer_id_hex);
         {
-            let session = inner.registered()?;
+            let Inner {
+                state, intro_sent, ..
+            } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
             block_on(session.send_to(&peer, ttl, &ptext, now))?;
+            let _ = ensure_intro_sent(session, intro_sent, peer, now);
             let _ = send_own_binding_gossip(session, peer, now);
         }
         let row = DisplayRow {
@@ -1058,6 +1130,7 @@ impl NemoClient {
                 pending,
                 inbox,
                 next_seq,
+                nicknames,
                 disappear,
                 pending_invites,
                 live_call,
@@ -1141,11 +1214,36 @@ impl NemoClient {
                                 ));
                             }
                             Ok(AppMessage {
-                                body: AppBody::Capability { contact_capability },
+                                body: AppBody::Capability {
+                                    contact_capability,
+                                    intro,
+                                },
                                 ..
                             }) => {
-                                if let Some(contact) = session.contacts.get_mut(&peer) {
-                                    contact.delivery_capability = contact_capability;
+                                let from_hex = ids::to_hex(&peer);
+                                match session.apply_contact_capability(
+                                    peer,
+                                    contact_capability,
+                                    intro,
+                                    now_unix(),
+                                ) {
+                                    Ok(real) => {
+                                        let real_hex = ids::to_hex(&real);
+                                        remap_conv_id(
+                                            inbox,
+                                            next_seq,
+                                            nicknames,
+                                            disappear,
+                                            &from_hex,
+                                            &real_hex,
+                                        );
+                                        for row in new_rows.iter_mut() {
+                                            if row.conv_id == from_hex {
+                                                row.conv_id = real_hex.clone();
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {}
                                 }
                             }
                             Ok(AppMessage {
@@ -1596,21 +1694,7 @@ impl NemoClient {
                     if !session.contacts.contains_key(&peer) {
                         continue;
                     }
-                    if let Ok(cap) = block_on(session.mint_contact()) {
-                        if let Ok(bytes) = encode(&AppMessage {
-                            header: AppHeader {
-                                conv_seq: 0,
-                                sent_at: now,
-                                reply_to: None,
-                            },
-                            body: AppBody::Capability {
-                                contact_capability: cap,
-                            },
-                        }) {
-                            let _ =
-                                block_on(session.send_to(&peer, TtlBucket::DEFAULT, &bytes, now));
-                        }
-                    }
+                    let _ = send_own_contact_capability(session, peer, now);
                     let _ = send_own_binding_gossip(session, peer, now);
                 }
                 new_rows
@@ -1887,8 +1971,16 @@ impl NemoClient {
             },
         })?;
         {
-            let session = inner.registered()?;
+            let Inner {
+                state, intro_sent, ..
+            } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
             block_on(session.send_attachment(&peer, TtlBucket::DEFAULT, &ptext, now))?;
+            let _ = ensure_intro_sent(session, intro_sent, peer, now);
             let _ = send_own_binding_gossip(session, peer, now);
         }
         let Inner {

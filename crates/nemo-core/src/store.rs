@@ -240,6 +240,28 @@ impl SignalStore {
         names
     }
 
+    /// Move DR session + known identity from one peer address to another.
+    ///
+    /// Used when a provisional sealed-sender peer is upgraded to a real
+    /// `identity_id` after an in-session contact capability intro.
+    pub fn rematerialize_peer(&mut self, from: &ProtocolAddress, to: &ProtocolAddress) {
+        if from == to {
+            return;
+        }
+        if let Some(session) = self.session_store.sessions.remove(from) {
+            self.session_store
+                .sessions
+                .entry(to.clone())
+                .or_insert(session);
+        }
+        if let Some(identity) = self.identity_store.known.remove(from) {
+            self.identity_store
+                .known
+                .entry(to.clone())
+                .or_insert(identity);
+        }
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>> {
         Ok(cbor::encode(&self.to_cbor()?))
     }

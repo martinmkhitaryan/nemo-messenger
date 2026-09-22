@@ -549,6 +549,17 @@ fn address_for(id: &IdentityId) -> ProtocolAddress {
     ProtocolAddress::new(hex_bytes(id), bundle::device_id())
 }
 
+impl Installation {
+    /// Move Double Ratchet state from a provisional peer id to the real identity.
+    pub fn rematerialize_peer(&mut self, from: &IdentityId, to: &IdentityId) {
+        if from == to {
+            return;
+        }
+        self.store
+            .rematerialize_peer(&address_for(from), &address_for(to));
+    }
+}
+
 fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(DEVICE_NAME_HEX_LEN);

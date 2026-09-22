@@ -21,7 +21,7 @@ pub mod vault;
 
 pub use app::{
     decode, decode_text, encode, encode_text, invite_ttl_bucket, random_call_id, reject_direct_ice,
-    AppBody, AppHeader, AppMessage, FileMeta, CALL_ID_LEN,
+    AppBody, AppHeader, AppMessage, CapabilityIntro, FileMeta, CALL_ID_LEN,
 };
 pub use attachment::{open_group_file, seal_group_file};
 pub use call::{Call, LocalSignal, TurnConfig};
