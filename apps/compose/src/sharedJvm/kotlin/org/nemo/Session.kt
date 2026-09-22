@@ -174,6 +174,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var memberCred by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf("") }
     var disappearSecs by remember { mutableStateOf("0") }
+    var contactNickname by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf(Sheet.None) }
     var showSettings by remember { mutableStateOf(false) }
@@ -419,6 +420,11 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         }
                                     }
                                 }
+                                LaunchedEffect(chat?.id) {
+                                    if (chat != null && !chat.isGroup) {
+                                        contactNickname = contacts[chat.id] ?: chat.title
+                                    }
+                                }
                                 SettingsScreen(
                                 fingerprint = fingerprint,
                                 identityHex = identityHex,
@@ -431,6 +437,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 memberCred = memberCred,
                                 disappearSecs = disappearSecs,
                                 onDisappearSecs = { disappearSecs = it },
+                                contactNickname = contactNickname,
+                                onContactNickname = { contactNickname = it },
                                 selected = chat,
                                 busy = busy,
                                 onBack = { showSettings = false },
@@ -469,6 +477,23 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         }
                                         copyToClipboard(uri)
                                         snackbar.showSnackbar("Invite copied")
+                                    }
+                                },
+                                onSaveNickname = {
+                                    val id = chat?.id ?: return@SettingsScreen
+                                    if (chat.isGroup) return@SettingsScreen
+                                    runIo {
+                                        val name = contactNickname.trim()
+                                        withContext(Dispatchers.IO) {
+                                            c?.setNickname(id, name)
+                                        }
+                                        if (name.isEmpty()) {
+                                            contacts.remove(id)
+                                        } else {
+                                            contacts[id] = name
+                                        }
+                                        selected = chat.copy(title = name.ifBlank { shortId(id) })
+                                        snackbar.showSnackbar("Contact name saved")
                                     }
                                 },
                                 onDisappear = {
@@ -1219,6 +1244,8 @@ private fun SettingsScreen(
     memberCred: String,
     disappearSecs: String,
     onDisappearSecs: (String) -> Unit,
+    contactNickname: String,
+    onContactNickname: (String) -> Unit,
     selected: ChatTarget?,
     busy: Boolean,
     onBack: () -> Unit,
@@ -1226,6 +1253,7 @@ private fun SettingsScreen(
     onShare: () -> Unit,
     onAdmit: () -> Unit,
     onInviteGroup: () -> Unit,
+    onSaveNickname: () -> Unit,
     onDisappear: () -> Unit,
     privacyMode: String,
     onPrivacyMode: (String) -> Unit,
@@ -1247,6 +1275,30 @@ private fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 32.dp, top = 8.dp),
         ) {
+            if (selected != null && !selected.isGroup) {
+                item {
+                    Text("Contact name", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        "Local nickname only. Not shared with the other person.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = contactNickname,
+                        onValueChange = onContactNickname,
+                        label = { Text("Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Button(
+                        enabled = !busy,
+                        onClick = onSaveNickname,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Save name")
+                    }
+                }
+            }
             item {
                 Text("Identity", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Text("Fingerprint", style = MaterialTheme.typography.labelSmall)

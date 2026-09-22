@@ -2114,6 +2114,19 @@ impl NemoClient {
             .collect())
     }
 
+    /// Local display name only. Empty clears the nickname (chat falls back to a short id).
+    pub fn set_nickname(&self, identity_id_hex: String, nickname: String) -> Result<(), FfiError> {
+        let _ = parse_identity_id(&identity_id_hex)?;
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        if nickname.is_empty() {
+            inner.nicknames.remove(&identity_id_hex);
+        } else {
+            inner.nicknames.insert(identity_id_hex, nickname);
+        }
+        persist(&inner)?;
+        Ok(())
+    }
+
     pub fn list_groups(&self) -> Result<Vec<GroupRow>, FfiError> {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         Ok(inner
@@ -3100,6 +3113,17 @@ mod tests {
 
         alice.set_disappear(bob_id.clone(), 1).unwrap();
         let _ = bob.fetch_now().unwrap();
+        alice.set_nickname(bob_id.clone(), "Bobby".into()).unwrap();
+        assert_eq!(
+            alice
+                .list_contacts()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.identity_id == bob_id)
+                .unwrap()
+                .nickname,
+            "Bobby"
+        );
         drop(alice);
         let alice2 = NemoClient::open_at(
             alice_dir.to_string_lossy().into_owned(),
@@ -3108,6 +3132,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(alice2.disappear_secs(bob_id.clone()).unwrap(), 1);
+        assert_eq!(
+            alice2
+                .list_contacts()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.identity_id == bob_id)
+                .unwrap()
+                .nickname,
+            "Bobby"
+        );
 
         alice2
             .send_text(bob_id.clone(), "ephemeral".into())

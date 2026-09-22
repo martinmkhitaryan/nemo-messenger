@@ -800,6 +800,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -886,6 +888,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_send_text(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_set_nickname(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode(
 ): Short
@@ -1032,6 +1036,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Pointer,`peerIdHex`: R
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`seconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_set_nickname(`ptr`: Pointer,`identityIdHex`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(`ptr`: Pointer,`mode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_start_call(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1272,6 +1278,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear() != 33112.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_nickname() != 53565.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode() != 15075.toShort()) {
@@ -1784,6 +1793,11 @@ public interface NemoClientInterface {
     fun `sendText`(`peerIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow
     
     fun `setDisappear`(`convId`: kotlin.String, `seconds`: kotlin.ULong): DisplayRow
+    
+    /**
+     * Local display name only. Empty clears the nickname (chat falls back to a short id).
+     */
+    fun `setNickname`(`identityIdHex`: kotlin.String, `nickname`: kotlin.String)
     
     fun `setPrivacyMode`(`mode`: kotlin.String)
     
@@ -2349,6 +2363,21 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Local display name only. Empty clears the nickname (chat falls back to a short id).
+     */
+    @Throws(FfiException::class)override fun `setNickname`(`identityIdHex`: kotlin.String, `nickname`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_set_nickname(
+        it, FfiConverterString.lower(`identityIdHex`),FfiConverterString.lower(`nickname`),_status)
+}
+    }
+    
     
 
     
