@@ -97,7 +97,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: |
           $env:Path = ($env:Path.Split(';') | Where-Object {
-            $_ -and ($_ -notmatch 'mingw|msys64|Strawberry[\\/]+c[\\/]')
+            $_ -and ($_ -notmatch 'mingw|msys64|Strawberry[\\/]+c[\\/]|Program Files[\\/]LLVM([\\/]|$)')
           }) -join ';'
           $strawberryPerl = "C:\Strawberry\perl\bin"
           $strawberryPerlExe = Join-Path $strawberryPerl "perl.exe"
@@ -111,12 +111,29 @@ jobs:
           $env:CXX = "cl"
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -property installationPath
-          $clangBin = Join-Path $vs "VC\Tools\Llvm\x64\bin"
-          $libclang = Join-Path $clangBin "libclang.dll"
-          if (-not (Test-Path $libclang)) {
-            throw "libclang.dll not found for bindgen (VS LLVM): $libclang"
+          # Prefer one consistent clang+libclang pair. Mixing VS libclang with
+          # standalone LLVM 20 headers (`C:\Program Files\LLVM\...\xmmintrin.h`)
+          # makes bindgen fail on __builtin_ia32_* during APM codegen.
+          $clangCandidates = @(
+            "C:\Program Files\LLVM\bin",
+            (Join-Path $vs "VC\Tools\Llvm\x64\bin")
+          )
+          $clangBin = $null
+          foreach ($cand in $clangCandidates) {
+            if (Test-Path (Join-Path $cand "libclang.dll")) {
+              $clangBin = $cand
+              break
+            }
+          }
+          if (-not $clangBin) {
+            throw "libclang.dll not found for bindgen (VS LLVM or Program Files\LLVM)"
           }
           $env:LIBCLANG_PATH = $clangBin
+          $env:Path = "$clangBin;$env:Path"
+          # Force x86_64 MSVC target so SSE/AVX builtins in intrinsics headers resolve.
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "--target=x86_64-pc-windows-msvc"
+          Write-Host "bindgen clang: $clangBin"
+          Write-Host "BINDGEN_EXTRA_CLANG_ARGS=$env:BINDGEN_EXTRA_CLANG_ARGS"
           $gitUsr = "C:\Program Files\Git\usr\bin"
           $gitCp = Join-Path $gitUsr "cp.exe"
           if (-not (Test-Path $gitCp)) {
