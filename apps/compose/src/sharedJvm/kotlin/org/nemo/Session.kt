@@ -1,5 +1,11 @@
 package org.nemo
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -24,19 +31,27 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
@@ -75,22 +90,37 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
@@ -99,6 +129,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
 internal const val CANNOT_RECOVER =
     "This identity cannot be recovered or exported. If you lose the passphrase, the keys and history are gone."
@@ -134,8 +165,63 @@ private data class ChatTarget(
     val isGroup: Boolean,
 )
 
+/** Telegram-style ticks for outgoing bubbles (peer read receipts are off by default). */
+internal enum class OutgoingStatus {
+    Pending,
+    Sent,
+    Delivered,
+    Failed,
+}
+
+private val localMsgSeq = AtomicLong(0)
+
+internal fun messageListKey(row: DisplayRow): String =
+    if (row.fetchToken.startsWith("local:")) row.fetchToken
+    else "${row.convId}:${row.convSeq}:${row.kind}:${row.target}"
+
+internal fun outgoingMapKey(row: DisplayRow): String =
+    if (row.fetchToken.startsWith("local:")) row.fetchToken
+    else "${row.convId}:${row.convSeq}:${row.kind}"
+
+private fun newLocalId(): String = "local:${System.nanoTime()}-${localMsgSeq.incrementAndGet()}"
+
+private fun nowUnixSecs(): ULong = (System.currentTimeMillis() / 1000L).toULong()
+
+private fun optimisticTextRow(chatId: String, text: String, localId: String): DisplayRow = DisplayRow(
+    convId = chatId,
+    convSeq = 0UL,
+    text = text,
+    sentAt = nowUnixSecs(),
+    fileName = "",
+    fileMime = "",
+    fileBytes = byteArrayOf(),
+    fetchToken = localId,
+    kind = "",
+    emoji = "",
+    target = 0UL,
+    hidden = false,
+    displayedAt = nowUnixSecs(),
+)
+
+private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray, localId: String): DisplayRow =
+    DisplayRow(
+        convId = chatId,
+        convSeq = 0UL,
+        text = "",
+        sentAt = nowUnixSecs(),
+        fileName = fileName,
+        fileMime = "application/octet-stream",
+        fileBytes = bytes,
+        fetchToken = localId,
+        kind = "",
+        emoji = "",
+        target = 0UL,
+        hidden = false,
+        displayedAt = nowUnixSecs(),
+    )
+
 private val AvatarPalette = listOf(
-    Color(0xFF0F766E),
+    Color(0xFF3390EC),
     Color(0xFF0369A1),
     Color(0xFF7C3AED),
     Color(0xFFB45309),
@@ -183,6 +269,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var chatMenu by remember { mutableStateOf(false) }
     val messages = remember { mutableStateListOf<DisplayRow>() }
     val outgoing = remember { mutableStateMapOf<String, Boolean>() }
+    val outgoingStatus = remember { mutableStateMapOf<String, OutgoingStatus>() }
     val contacts = remember { mutableStateMapOf<String, String>() }
     val groups = remember { mutableStateMapOf<String, String>() }
 
@@ -200,8 +287,10 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         }
     }
 
-    fun markOutgoing(row: DisplayRow) {
-        outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
+    fun markOutgoing(row: DisplayRow, status: OutgoingStatus = OutgoingStatus.Sent) {
+        val key = outgoingMapKey(row)
+        outgoing[key] = true
+        outgoingStatus[key] = status
     }
 
     fun reloadRoster(c: NemoClient) {
@@ -269,13 +358,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                     title = "Create identity",
                     subtitle = CANNOT_RECOVER,
                 ) {
-                    PassField("Passphrase (min 8)", passphrase) { passphrase = it }
-                    PassField("Confirm", confirm) { confirm = it }
-                    Spacer(Modifier.height(12.dp))
-                    Button(
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth().testTag("create-identity"),
-                        onClick = {
+                    val createIdentity: () -> Unit = {
+                        if (!busy) {
                             runIo {
                                 if (passphrase.length < 8) {
                                     throw IllegalArgumentException("Passphrase must be at least 8 characters")
@@ -295,7 +379,24 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 client = c
                                 phase = Phase.Mnemonic
                             }
-                        },
+                        }
+                    }
+                    PassField(
+                        label = "Passphrase (min 8)",
+                        value = passphrase,
+                        onChange = { passphrase = it },
+                    )
+                    PassField(
+                        label = "Confirm",
+                        value = confirm,
+                        onChange = { confirm = it },
+                        onSubmit = createIdentity,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth().testTag("create-identity"),
+                        onClick = createIdentity,
                     ) { Text("Create identity") }
                     if (File(vaultDir, "kdf.cbor").isFile) {
                         TextButton(onClick = { phase = Phase.Locked }) { Text("Unlock existing instead") }
@@ -305,12 +406,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                     title = "Welcome back",
                     subtitle = "Unlock this vault. There is no recovery if the passphrase is wrong.",
                 ) {
-                    PassField("Passphrase", passphrase) { passphrase = it }
-                    Spacer(Modifier.height(12.dp))
-                    Button(
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
+                    val unlock: () -> Unit = {
+                        if (!busy) {
                             runIo {
                                 val c = withContext(Dispatchers.IO) {
                                     NemoClient.openAt(
@@ -328,7 +425,19 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 registered = true
                                 phase = Phase.Home
                             }
-                        },
+                        }
+                    }
+                    PassField(
+                        label = "Passphrase",
+                        value = passphrase,
+                        onChange = { passphrase = it },
+                        onSubmit = unlock,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = unlock,
                     ) { Text("Unlock") }
                     TextButton(onClick = { confirmWipe = true }) {
                         Text("Create a new identity")
@@ -358,6 +467,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         contacts.clear()
                                         groups.clear()
                                         outgoing.clear()
+                                        outgoingStatus.clear()
                                         passphrase = ""
                                         confirm = ""
                                         phase = Phase.Create
@@ -404,7 +514,16 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                     val c = client
                     val pickFile = rememberPickFile { path ->
                         val chat = selected ?: return@rememberPickFile
-                        attachFilePath(c, chat, path, messages, outgoing, snackbar, runIo = { runIo(it) })
+                        attachFilePath(
+                            c,
+                            chat,
+                            path,
+                            messages,
+                            outgoing,
+                            outgoingStatus,
+                            snackbar,
+                            scope,
+                        )
                     }
                     var micAction by remember { mutableStateOf<(() -> Unit)?>(null) }
                     val requestMic = rememberEnsureMic { micAction?.invoke() }
@@ -543,15 +662,26 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             chat = chat,
                                             messages = messages.filter { it.convId == chat.id },
                                             outgoing = outgoing,
+                                            outgoingStatus = outgoingStatus,
                                             draft = draft,
                                             onDraft = { draft = it },
-                                            busy = busy,
                                             showBack = false,
                                             onBack = { selected = null },
                                             onSettings = { showSettings = true },
                                             chatMenu = chatMenu,
                                             onChatMenu = { chatMenu = it },
-                                            onSend = { sendChat(c, chat, draft, messages, outgoing, runIo = { runIo(it) }) { draft = "" } },
+                                            onSend = {
+                                                sendChat(
+                                                    c,
+                                                    chat,
+                                                    draft,
+                                                    messages,
+                                                    outgoing,
+                                                    outgoingStatus,
+                                                    scope,
+                                                    snackbar,
+                                                ) { draft = "" }
+                                            },
                                             onAttach = { pickFile() },
                                             onCall = {
                                                 micAction = {
@@ -624,15 +754,26 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 chat = chat,
                                 messages = messages.filter { it.convId == chat.id },
                                 outgoing = outgoing,
+                                outgoingStatus = outgoingStatus,
                                 draft = draft,
                                 onDraft = { draft = it },
-                                busy = busy,
                                 showBack = true,
                                 onBack = { selected = null },
                                 onSettings = { showSettings = true },
                                 chatMenu = chatMenu,
                                 onChatMenu = { chatMenu = it },
-                                onSend = { sendChat(c, chat, draft, messages, outgoing, runIo = { runIo(it) }) { draft = "" } },
+                                onSend = {
+                                    sendChat(
+                                        c,
+                                        chat,
+                                        draft,
+                                        messages,
+                                        outgoing,
+                                        outgoingStatus,
+                                        scope,
+                                        snackbar,
+                                    ) { draft = "" }
+                                },
                                 onAttach = { pickFile() },
                                 onCall = {
                                     micAction = {
@@ -853,19 +994,41 @@ private fun sendChat(
     draft: String,
     messages: MutableList<DisplayRow>,
     outgoing: MutableMap<String, Boolean>,
-    runIo: (suspend () -> Unit) -> Unit,
+    outgoingStatus: MutableMap<String, OutgoingStatus>,
+    scope: CoroutineScope,
+    snackbar: SnackbarHostState,
     clear: () -> Unit,
 ) {
     val text = draft.trim()
     if (text.isEmpty()) return
     clear()
-    runIo {
-        val row = withContext(Dispatchers.IO) {
-            if (chat.isGroup) client?.sendGroupText(chat.id, text)
-            else client?.sendText(chat.id, text)
-        } ?: return@runIo
-        messages.add(row)
-        outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
+    val localId = newLocalId()
+    val pending = optimisticTextRow(chat.id, text, localId)
+    messages.add(pending)
+    outgoing[localId] = true
+    outgoingStatus[localId] = OutgoingStatus.Pending
+    scope.launch {
+        try {
+            val row = withContext(Dispatchers.IO) {
+                if (chat.isGroup) client?.sendGroupText(chat.id, text)
+                else client?.sendText(chat.id, text)
+            } ?: throw IllegalStateException("Send failed")
+            val idx = messages.indexOfFirst { it.fetchToken == localId }
+            if (idx >= 0) {
+                messages[idx] = row.copy(fetchToken = localId)
+            }
+            // Drop a duplicate if fetch raced in the same seq without the local key.
+            val dupes = messages.withIndex().filter { (i, m) ->
+                i != idx && m.convId == row.convId && m.convSeq == row.convSeq && m.kind == row.kind &&
+                    !m.fetchToken.startsWith("local:")
+            }.map { it.index }.sortedDescending()
+            for (i in dupes) messages.removeAt(i)
+            // Network send finished. ✓✓ until real protocol_ack lands in the shell.
+            outgoingStatus[localId] = OutgoingStatus.Delivered
+        } catch (e: Throwable) {
+            outgoingStatus[localId] = OutgoingStatus.Failed
+            snackbar.showSnackbar(e.message ?: e.toString())
+        }
     }
 }
 
@@ -875,22 +1038,50 @@ private fun attachFilePath(
     path: String,
     messages: MutableList<DisplayRow>,
     outgoing: MutableMap<String, Boolean>,
+    outgoingStatus: MutableMap<String, OutgoingStatus>,
     snackbar: SnackbarHostState,
-    runIo: (suspend () -> Unit) -> Unit,
+    scope: CoroutineScope,
 ) {
-    runIo {
-        val f = File(path)
-        if (!f.isFile) throw IllegalArgumentException("File not found")
-        val row = withContext(Dispatchers.IO) {
-            if (chat.isGroup) {
-                client?.sendGroupFile(chat.id, f.name, "application/octet-stream", f.readBytes())
-            } else {
-                client?.sendFile(chat.id, f.name, "application/octet-stream", f.readBytes())
+    val f = File(path)
+    if (!f.isFile) {
+        scope.launch { snackbar.showSnackbar("File not found") }
+        return
+    }
+    val bytes = try {
+        f.readBytes()
+    } catch (e: Throwable) {
+        scope.launch { snackbar.showSnackbar(e.message ?: e.toString()) }
+        return
+    }
+    val localId = newLocalId()
+    val pending = optimisticFileRow(chat.id, f.name, bytes, localId)
+    messages.add(pending)
+    outgoing[localId] = true
+    outgoingStatus[localId] = OutgoingStatus.Pending
+    scope.launch {
+        try {
+            val row = withContext(Dispatchers.IO) {
+                if (chat.isGroup) {
+                    client?.sendGroupFile(chat.id, f.name, "application/octet-stream", bytes)
+                } else {
+                    client?.sendFile(chat.id, f.name, "application/octet-stream", bytes)
+                }
+            } ?: throw IllegalStateException("Send failed")
+            val idx = messages.indexOfFirst { it.fetchToken == localId }
+            if (idx >= 0) {
+                messages[idx] = row.copy(fetchToken = localId)
             }
-        } ?: return@runIo
-        messages.add(row)
-        outgoing["${row.convId}:${row.convSeq}:${row.kind}"] = true
-        snackbar.showSnackbar("Sent ${f.name}")
+            val dupes = messages.withIndex().filter { (i, m) ->
+                i != idx && m.convId == row.convId && m.convSeq == row.convSeq && m.kind == row.kind &&
+                    !m.fetchToken.startsWith("local:")
+            }.map { it.index }.sortedDescending()
+            for (i in dupes) messages.removeAt(i)
+            outgoingStatus[localId] = OutgoingStatus.Delivered
+            snackbar.showSnackbar("Sent ${f.name}")
+        } catch (e: Throwable) {
+            outgoingStatus[localId] = OutgoingStatus.Failed
+            snackbar.showSnackbar(e.message ?: e.toString())
+        }
     }
 }
 
@@ -1028,13 +1219,16 @@ private fun ChatRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val bg = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent
+    val bg = when {
+        selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        else -> Color.Transparent
+    }
     Row(
         Modifier
             .fillMaxWidth()
             .background(bg)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar(chat.title, chat.isGroup)
@@ -1049,9 +1243,15 @@ private fun ChatRow(
                     modifier = Modifier.weight(1f),
                 )
                 if (time.isNotEmpty()) {
-                    Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        time,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
+            Spacer(Modifier.height(2.dp))
             Text(
                 preview,
                 style = MaterialTheme.typography.bodyMedium,
@@ -1069,9 +1269,9 @@ private fun ChatThread(
     chat: ChatTarget,
     messages: List<DisplayRow>,
     outgoing: Map<String, Boolean>,
+    outgoingStatus: Map<String, OutgoingStatus>,
     draft: String,
     onDraft: (String) -> Unit,
-    busy: Boolean,
     showBack: Boolean,
     onBack: () -> Unit,
     onSettings: () -> Unit,
@@ -1089,8 +1289,37 @@ private fun ChatThread(
     val listState = rememberLazyListState()
     val dark = isSystemInDarkTheme()
     val wallpaper = if (dark) NemoChatDark else NemoChatLight
-    LaunchedEffect(messages.size, chat.id) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    val canSend = draft.isNotBlank()
+    val sendScale by animateFloatAsState(
+        targetValue = if (canSend) 1f else 0.88f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+        label = "sendScale",
+    )
+    var stickToBottom by remember(chat.id) { mutableStateOf(true) }
+    val lastKey = messages.lastOrNull()?.let { messageListKey(it) }
+    val knownKeys = remember(chat.id) { mutableSetOf<String>() }
+    var seedDone by remember(chat.id) { mutableStateOf(false) }
+    LaunchedEffect(chat.id, messages.size) {
+        if (!seedDone) {
+            knownKeys.clear()
+            knownKeys.addAll(messages.map { messageListKey(it) })
+            seedDone = true
+        }
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@snapshotFlow true
+            last.index >= info.totalItemsCount - 2
+        }.distinctUntilChanged().collect { nearBottom ->
+            stickToBottom = nearBottom
+        }
+    }
+    // Scroll only when the last message identity changes — not on tick/status updates.
+    LaunchedEffect(lastKey, chat.id) {
+        if (messages.isNotEmpty() && stickToBottom) {
+            listState.scrollToItem(messages.lastIndex)
+        }
     }
     Scaffold(
         containerColor = wallpaper,
@@ -1135,30 +1364,84 @@ private fun ChatThread(
                         DropdownMenuItem(text = { Text("Chat settings") }, onClick = { onChatMenu(false); onSettings() })
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                ),
             )
         },
         bottomBar = {
-            Surface(tonalElevation = 2.dp) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                shadowElevation = 6.dp,
+            ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(8.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .padding(horizontal = 6.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.Bottom,
                 ) {
                     IconButton(onClick = onAttach) {
-                        Icon(Icons.Filled.AttachFile, contentDescription = "Attach")
+                        Icon(
+                            Icons.Filled.AttachFile,
+                            contentDescription = "Attach",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = onDraft,
+                    Surface(
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("Message") },
-                        shape = RoundedCornerShape(24.dp),
-                        maxLines = 5,
-                    )
-                    Spacer(Modifier.width(8.dp))
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (dark) 0.55f else 0.85f),
+                        tonalElevation = 0.dp,
+                    ) {
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = onDraft,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                    if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
+                                        return@onPreviewKeyEvent false
+                                    }
+                                    // Shift+Enter → newline; Enter → send.
+                                    if (event.isShiftPressed) return@onPreviewKeyEvent false
+                                    if (canSend) onSend()
+                                    true
+                                },
+                            textStyle = TextStyle(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 16.sp,
+                                lineHeight = 22.sp,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            maxLines = 5,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(
+                                onSend = { if (canSend) onSend() },
+                            ),
+                            decorationBox = { inner ->
+                                Box {
+                                    if (draft.isEmpty()) {
+                                        Text(
+                                            "Message",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 16.sp,
+                                        )
+                                    }
+                                    inner()
+                                }
+                            },
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
                     FilledIconButton(
                         onClick = onSend,
-                        enabled = !busy && draft.isNotBlank(),
+                        enabled = canSend,
+                        modifier = Modifier.scale(sendScale).size(46.dp),
+                        shape = CircleShape,
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                     }
@@ -1166,16 +1449,67 @@ private fun ChatThread(
             }
         },
     ) { padding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            items(messages, key = { "${it.convId}:${it.convSeq}:${it.kind}:${it.target}" }) { row ->
-                val mine = outgoing["${row.convId}:${row.convSeq}:${row.kind}"] == true
-                MessageBubble(row, mine, onReact = { onReact(row) }, onDelete = { onDelete(row) })
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            ChatWallpaper(dark = dark, modifier = Modifier.fillMaxSize())
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+            ) {
+                itemsIndexed(
+                    messages,
+                    key = { _, it -> messageListKey(it) },
+                ) { index, row ->
+                    val key = outgoingMapKey(row)
+                    val mine = outgoing[key] == true
+                    val prevMine = messages.getOrNull(index - 1)?.let { prev ->
+                        outgoing[outgoingMapKey(prev)] == true
+                    }
+                    val nextMine = messages.getOrNull(index + 1)?.let { next ->
+                        outgoing[outgoingMapKey(next)] == true
+                    }
+                    val clusteredAbove = prevMine == mine
+                    val clusteredBelow = nextMine == mine
+                    val gap = if (clusteredAbove) 2.dp else 8.dp
+                    val listKey = messageListKey(row)
+                    val animateEnter = remember(listKey) {
+                        val neu = seedDone && listKey !in knownKeys
+                        if (neu) knownKeys.add(listKey)
+                        neu
+                    }
+                    MessageBubble(
+                        row = row,
+                        mine = mine,
+                        status = if (mine) outgoingStatus[key] else null,
+                        clusteredAbove = clusteredAbove,
+                        clusteredBelow = clusteredBelow,
+                        animateEnter = animateEnter,
+                        onReact = { onReact(row) },
+                        onDelete = { onDelete(row) },
+                        modifier = Modifier.padding(top = gap),
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun ChatWallpaper(dark: Boolean, modifier: Modifier = Modifier) {
+    val base = if (dark) NemoChatDark else NemoChatLight
+    val dot = if (dark) NemoPatternDotDark else NemoPatternDotLight
+    Canvas(modifier.background(base)) {
+        val step = 28.dp.toPx()
+        var y = step * 0.5f
+        var row = 0
+        while (y < size.height + step) {
+            var x = if (row % 2 == 0) step * 0.35f else step * 0.85f
+            while (x < size.width + step) {
+                drawCircle(color = dot, radius = 1.6.dp.toPx(), center = Offset(x, y))
+                x += step
+            }
+            y += step * 0.72f
+            row++
         }
     }
 }
@@ -1184,43 +1518,93 @@ private fun ChatThread(
 private fun MessageBubble(
     row: DisplayRow,
     mine: Boolean,
+    status: OutgoingStatus?,
+    clusteredAbove: Boolean,
+    clusteredBelow: Boolean,
+    animateEnter: Boolean,
     onReact: () -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
     val dark = isSystemInDarkTheme()
+    val enter = remember { Animatable(if (animateEnter) 0f else 1f) }
+    LaunchedEffect(Unit) {
+        if (animateEnter) {
+            enter.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+            )
+        }
+    }
     val bg = when {
         mine && dark -> NemoOutgoingDark
         mine -> NemoOutgoingLight
         dark -> NemoIncomingDark
-        else -> Color.White
+        else -> NemoIncomingLight
     }
-    val shape = RoundedCornerShape(
-        topStart = 16.dp,
-        topEnd = 16.dp,
-        bottomStart = if (mine) 16.dp else 4.dp,
-        bottomEnd = if (mine) 4.dp else 16.dp,
-    )
+    val corner = 18.dp
+    val tight = 6.dp
+    val tail = 4.dp
+    val shape = if (mine) {
+        RoundedCornerShape(
+            topStart = corner,
+            topEnd = if (clusteredAbove) tight else corner,
+            bottomStart = corner,
+            bottomEnd = if (clusteredBelow) tight else tail,
+        )
+    } else {
+        RoundedCornerShape(
+            topStart = if (clusteredAbove) tight else corner,
+            topEnd = corner,
+            bottomStart = if (clusteredBelow) tight else tail,
+            bottomEnd = corner,
+        )
+    }
+    val shadow = if (dark) NemoBubbleShadowDark else NemoBubbleShadowLight
+    val metaColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+    val t = enter.value
+    val slidePx = (1f - t) * if (mine) 28f else -28f
     Row(
-        Modifier.fillMaxWidth(),
+        modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = t
+                translationX = slidePx
+                scaleX = 0.94f + 0.06f * t
+                scaleY = 0.94f + 0.06f * t
+            },
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
     ) {
         Box {
             Column(
                 Modifier
                     .widthIn(max = 320.dp)
+                    .shadow(2.dp, shape, ambientColor = shadow, spotColor = shadow)
                     .clip(shape)
                     .background(bg)
                     .clickable { menu = true }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
             ) {
-                Text(bubbleText(row), style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    formatTime(row.sentAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.End),
+                    bubbleText(row),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (mine && dark) Color(0xFFE8F4FF) else MaterialTheme.colorScheme.onSurface,
                 )
+                Row(
+                    Modifier.align(Alignment.End).padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        formatTime(row.sentAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = metaColor,
+                    )
+                    if (mine && status != null) {
+                        DeliveryTicks(status = status, tint = metaColor)
+                    }
+                }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("React 👍") }, onClick = { menu = false; onReact() })
@@ -1228,6 +1612,27 @@ private fun MessageBubble(
             }
         }
     }
+}
+
+@Composable
+private fun DeliveryTicks(status: OutgoingStatus, tint: Color) {
+    val (icon, description) = when (status) {
+        OutgoingStatus.Pending -> Icons.Filled.AccessTime to "Sending"
+        OutgoingStatus.Sent -> Icons.Filled.Done to "Sent"
+        OutgoingStatus.Delivered -> Icons.Filled.DoneAll to "Delivered"
+        OutgoingStatus.Failed -> Icons.Filled.ErrorOutline to "Failed"
+    }
+    val color = when (status) {
+        OutgoingStatus.Failed -> MaterialTheme.colorScheme.error
+        OutgoingStatus.Delivered -> MaterialTheme.colorScheme.primary
+        else -> tint
+    }
+    Icon(
+        icon,
+        contentDescription = description,
+        modifier = Modifier.size(14.dp),
+        tint = color,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1458,15 +1863,36 @@ private fun Avatar(title: String, isGroup: Boolean, size: androidx.compose.ui.un
 }
 
 @Composable
-private fun PassField(label: String, value: String, onChange: (String) -> Unit) {
+private fun PassField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    onSubmit: (() -> Unit)? = null,
+) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(label) },
         visualTransformation = PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth().testTag(label),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(label)
+            .onPreviewKeyEvent { event ->
+                if (onSubmit == null) return@onPreviewKeyEvent false
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (event.key != Key.Enter && event.key != Key.NumPadEnter) return@onPreviewKeyEvent false
+                onSubmit()
+                true
+            },
         singleLine = true,
         shape = RoundedCornerShape(12.dp),
+        keyboardOptions = KeyboardOptions(
+            imeAction = if (onSubmit != null) ImeAction.Go else ImeAction.Done,
+        ),
+        keyboardActions = KeyboardActions(
+            onGo = { onSubmit?.invoke() },
+            onDone = { onSubmit?.invoke() },
+        ),
     )
 }
 
