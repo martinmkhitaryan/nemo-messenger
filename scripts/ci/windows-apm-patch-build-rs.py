@@ -7,6 +7,9 @@ import pathlib
 import subprocess
 import sys
 
+# Unique marker so warm runners re-apply after the edition-2018 objcopy fix.
+PATCH_MARKER = "Nemo Windows CI: objcopy PathBuf (edition-safe)"
+
 
 def cargo_home() -> pathlib.Path:
     raw = os.environ.get("CARGO_HOME")
@@ -46,42 +49,111 @@ def main() -> None:
             "no webrtc-audio-processing-sys-2.1.0 build.rs looked like upstream/patched APM"
         )
 
-    # Already patched (e.g. warm cargo cache on a reused runner).
-    if "skip prefix on MSVC" in text and "flag_if_supported" in text and "{name}.lib" in text:
+    # Fully patched with the edition-safe objcopy helper.
+    if (
+        "skip prefix on MSVC" in text
+        and "flag_if_supported" in text
+        and "{name}.lib" in text
+        and PATCH_MARKER in text
+    ):
         print(f"APM build.rs already patched: {path}")
         return
 
     orig = text
 
-    text = require_replace(
-        text,
-        '        .flag("-std=c++17")\n        .flag("-Wno-unused-parameter")',
-        '        .std("c++17")\n        .flag_if_supported("-Wno-unused-parameter")',
-        "CC flags",
-    )
+    # Older Nemo patch used into_iter()+unwrap_or_else which fails on edition 2018
+    # (array into_iter yields &PathBuf). Replace that block before other anchors.
+    buggy_objcopy = """\
+    let bin = sysroot.join("lib").join("rustlib").join(host).join("bin");
+    let candidates = [
+        bin.join("rust-objcopy.exe"),
+        bin.join("rust-objcopy"),
+        bin.join("llvm-objcopy.exe"),
+        bin.join("llvm-objcopy"),
+    ];
+    let objcopy = candidates.into_iter().find(|p| p.exists()).unwrap_or_else(|| bin.join("rust-objcopy"));
+    if !objcopy.exists() {
+        println!("cargo:warning=rust-objcopy not found under {:?}", bin);
+        println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
+    }
+    Ok(objcopy)
+"""
 
-    text = require_replace(
-        text,
-        "    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;",
-        """\
+    fixed_objcopy = f"""\
+    // {PATCH_MARKER}
+    let bin = sysroot.join("lib").join("rustlib").join(host).join("bin");
+    let candidates = [
+        bin.join("rust-objcopy.exe"),
+        bin.join("rust-objcopy"),
+        bin.join("llvm-objcopy.exe"),
+        bin.join("llvm-objcopy"),
+    ];
+    let mut objcopy = bin.join("rust-objcopy");
+    for cand in candidates {{
+        if cand.exists() {{
+            objcopy = cand;
+            break;
+        }}
+    }}
+    if !objcopy.exists() {{
+        println!("cargo:warning=rust-objcopy not found under {{:?}}", bin);
+        println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
+    }}
+    Ok(objcopy)
+"""
+
+    upstream_objcopy = """\
+    let objcopy = sysroot.join("lib").join("rustlib").join(host).join("bin").join("rust-objcopy");
+
+    // Optional: verification
+    if !objcopy.exists() {
+        println!("cargo:warning=rust-objcopy not found at {:?}", objcopy);
+        println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
+    }
+
+    Ok(objcopy)
+"""
+
+    if buggy_objcopy in text:
+        text = require_replace(text, buggy_objcopy, fixed_objcopy, "buggy determine_objcopy_path")
+    elif upstream_objcopy in text:
+        text = require_replace(text, upstream_objcopy, fixed_objcopy, "determine_objcopy_path")
+    elif PATCH_MARKER not in text:
+        raise SystemExit("APM determine_objcopy_path anchor not found (upstream changed?)")
+
+    # Remaining MSVC link patches (skip if a previous run already applied them).
+    if 'flag("-std=c++17")' in text:
+        text = require_replace(
+            text,
+            '        .flag("-std=c++17")\n        .flag("-Wno-unused-parameter")',
+            '        .std("c++17")\n        .flag_if_supported("-Wno-unused-parameter")',
+            "CC flags",
+        )
+
+    if "skip prefix on MSVC" not in text:
+        text = require_replace(
+            text,
+            "    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;",
+            """\
     // Nemo Windows CI: skip prefix on MSVC (nm/objcopy + lib*.a vs *.lib).
     let renamed_symbols = if cfg!(target_env = "msvc") {
         Vec::new()
     } else {
         webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?
     };""",
-        "prefix_library_symbols",
-    )
+            "prefix_library_symbols",
+        )
 
-    text = require_replace(
-        text,
-        """\
+    if "{name}.lib" not in text:
+        text = require_replace(
+            text,
+            """\
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static={LIB_NAME}");
         println!("cargo:rustc-link-lib=absl_strings");
     } else {
 """,
-        """\
+            """\
     if cfg!(feature = "bundled") {
         if cfg!(target_env = "msvc") {
             for dir in &lib_dirs {
@@ -121,39 +193,8 @@ def main() -> None:
         }
     } else {
 """,
-        "bundled link",
-    )
-
-    text = require_replace(
-        text,
-        """\
-    let objcopy = sysroot.join("lib").join("rustlib").join(host).join("bin").join("rust-objcopy");
-
-    // Optional: verification
-    if !objcopy.exists() {
-        println!("cargo:warning=rust-objcopy not found at {:?}", objcopy);
-        println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
-    }
-
-    Ok(objcopy)
-""",
-        """\
-    let bin = sysroot.join("lib").join("rustlib").join(host).join("bin");
-    let candidates = [
-        bin.join("rust-objcopy.exe"),
-        bin.join("rust-objcopy"),
-        bin.join("llvm-objcopy.exe"),
-        bin.join("llvm-objcopy"),
-    ];
-    let objcopy = candidates.into_iter().find(|p| p.exists()).unwrap_or_else(|| bin.join("rust-objcopy"));
-    if !objcopy.exists() {
-        println!("cargo:warning=rust-objcopy not found under {:?}", bin);
-        println!("cargo:warning=Ensure the 'llvm-tools' component is installed: 'rustup component add llvm-tools'");
-    }
-    Ok(objcopy)
-""",
-        "determine_objcopy_path",
-    )
+            "bundled link",
+        )
 
     if text == orig:
         raise SystemExit("APM build.rs patch produced no changes")
@@ -163,6 +204,8 @@ def main() -> None:
         raise SystemExit("APM MSVC prefix skip patch missing")
     if "{name}.lib" not in text:
         raise SystemExit("APM .lib mirror patch missing")
+    if PATCH_MARKER not in text:
+        raise SystemExit("APM edition-safe objcopy patch missing")
 
     path.write_text(text, encoding="utf-8", newline="\n")
     print(f"Patched MSVC APM build.rs: {path}")
