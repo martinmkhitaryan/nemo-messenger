@@ -9,6 +9,7 @@ import sys
 
 # Unique marker so warm runners re-apply after the edition-2018 objcopy fix.
 PATCH_MARKER = "Nemo Windows CI: objcopy PathBuf (edition-safe)"
+WINMM_LINK = 'println!("cargo:rustc-link-lib=winmm")'
 
 
 def cargo_home() -> pathlib.Path:
@@ -49,12 +50,13 @@ def main() -> None:
             "no webrtc-audio-processing-sys-2.1.0 build.rs looked like upstream/patched APM"
         )
 
-    # Fully patched with the edition-safe objcopy helper.
+    # Fully patched with the edition-safe objcopy helper and winmm.
     if (
         "skip prefix on MSVC" in text
         and "flag_if_supported" in text
         and "{name}.lib" in text
         and PATCH_MARKER in text
+        and WINMM_LINK in text
     ):
         print(f"APM build.rs already patched: {path}")
         return
@@ -190,10 +192,41 @@ def main() -> None:
                     }
                 }
             }
+            // system_time.cc → timeGetTime (winmm).
+            println!("cargo:rustc-link-lib=winmm");
         }
     } else {
 """,
             "bundled link",
+        )
+
+    # Warm cache may already have the MSVC absl/lib mirrors without winmm.
+    if "skip prefix on MSVC" in text and WINMM_LINK not in text:
+        text = require_replace(
+            text,
+            """\
+                        if stem.starts_with("absl_") && stem != "absl_strings" {
+                            println!("cargo:rustc-link-lib={stem}");
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+""",
+            """\
+                        if stem.starts_with("absl_") && stem != "absl_strings" {
+                            println!("cargo:rustc-link-lib={stem}");
+                        }
+                    }
+                }
+            }
+            // system_time.cc → timeGetTime (winmm).
+            println!("cargo:rustc-link-lib=winmm");
+        }
+    } else {
+""",
+            "winmm link",
         )
 
     if text == orig:
@@ -206,6 +239,8 @@ def main() -> None:
         raise SystemExit("APM .lib mirror patch missing")
     if PATCH_MARKER not in text:
         raise SystemExit("APM edition-safe objcopy patch missing")
+    if WINMM_LINK not in text:
+        raise SystemExit("APM winmm link patch missing")
 
     path.write_text(text, encoding="utf-8", newline="\n")
     print(f"Patched MSVC APM build.rs: {path}")
