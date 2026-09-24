@@ -13,11 +13,11 @@ This document is the HTTP and storage mapping of phases 1–5. It MUST NOT add a
 ## 1. Process
 
 ```text
-client  --HTTPS-->  Caddy (TLS)  --HTTP-->  127.0.0.1:8787  nemo-server
+client  --HTTPS-->  Caddy (TLS)  --HTTP-->  0.0.0.0:8787  nemo-server
 peer    --mTLS-->   s2s_port (not this listener; ADR-0032)
 ```
 
-- Default bind: `127.0.0.1:8787`. Override: `NEMO_LISTEN`.
+- Default bind: `0.0.0.0:8787`. Override: `NEMO_LISTEN`.
 - Reference deploy: container + PostgreSQL + Caddy + optional coturn ([ADR-0028](../decisions/0028-implementation-languages-and-libraries.md)).
 - This implementation serves from in-memory `HomeServer` / `GroupHost`. When `DATABASE_URL` is set, that state is loaded from the SQL below at start and flushed after successful mutating HTTP requests. Unset `DATABASE_URL` keeps the prototype in-memory runtime.
 

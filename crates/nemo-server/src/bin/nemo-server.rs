@@ -1,12 +1,12 @@
-//! Listen on localhost. Caddy (or another reverse proxy) terminates TLS.
-//! S2S mTLS is a separate port (ADR-0032).
+//! Listen on all interfaces by default (`0.0.0.0`). Caddy (or another reverse proxy) terminates TLS.
+//! Override with `NEMO_LISTEN`. S2S mTLS is a separate port (ADR-0032).
 
 use std::path::Path;
 
 #[tokio::main]
 async fn main() {
     nemo_server::tls_install();
-    let addr = std::env::var("NEMO_LISTEN").unwrap_or_else(|_| "127.0.0.1:8787".into());
+    let addr = std::env::var("NEMO_LISTEN").unwrap_or_else(|_| "0.0.0.0:8787".into());
     let host = std::env::var("NEMO_HOST").unwrap_or_else(|_| "local".into());
     let s2s_port: u16 = std::env::var("NEMO_S2S_PORT")
         .ok()

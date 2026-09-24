@@ -1,4 +1,4 @@
-//! Local HTTP (phase 8). Caddy terminates TLS; this process listens on localhost.
+//! Local HTTP (phase 8). Caddy terminates TLS; this process binds `NEMO_LISTEN` (default `0.0.0.0:8787`).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};

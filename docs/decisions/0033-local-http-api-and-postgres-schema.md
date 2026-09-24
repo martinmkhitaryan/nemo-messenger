@@ -14,7 +14,7 @@ This record freezes the v1 client-to-home HTTP surface and the Postgres schema. 
 
 ### Listen and TLS
 
-- `nemo-server` listens on **plain HTTP** at `127.0.0.1:8787` (override `NEMO_LISTEN`).
+- `nemo-server` listens on **plain HTTP** at `0.0.0.0:8787` (override `NEMO_LISTEN`).
 - **Caddy** (or an operator equivalent) terminates TLS in front of that port. The Rust process MUST NOT present a Web PKI certificate for client HTTPS.
 - Federation **MUST NOT** share this port. S2S remains mTLS on `s2s_port` ([ADR-0032](0032-server-signing-key-and-federation-tls.md)). The in-process pump is valid until that listener exists.
 

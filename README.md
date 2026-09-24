@@ -2113,7 +2113,7 @@ Caddy (TLS)
 optional coturn
 ```
 
-The reference listen address is plain HTTP on `127.0.0.1:8787` (`NEMO_LISTEN`); Caddy terminates TLS ([ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)). nginx is an operator alternative, not the default. The server should not require a central SaaS service to operate. FCM, when used, is an operator-supplied credential for Android wake-up, not a protocol dependency.
+The reference listen address is plain HTTP on `0.0.0.0:8787` (`NEMO_LISTEN`); Caddy terminates TLS ([ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)). nginx is an operator alternative, not the default. The server should not require a central SaaS service to operate. FCM, when used, is an operator-supplied credential for Android wake-up, not a protocol dependency.
 
 Possible deployment models:
 

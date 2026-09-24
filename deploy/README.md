@@ -1,6 +1,6 @@
 # Reference deploy
 
-MIT. Caddy terminates TLS; `nemo-server` listens on localhost (or `0.0.0.0` in the container). PostgreSQL is started with the frozen DDL ([ADR-0033](../docs/decisions/0033-local-http-api-and-postgres-schema.md)). With `DATABASE_URL` set, the process loads that schema on start and write-throughs after successful mutating requests. Unset `DATABASE_URL` to keep the in-memory engine.
+MIT. Caddy terminates TLS; `nemo-server` listens on `0.0.0.0:8787` by default (`NEMO_LISTEN`). PostgreSQL is started with the frozen DDL ([ADR-0033](../docs/decisions/0033-local-http-api-and-postgres-schema.md)). With `DATABASE_URL` set, the process loads that schema on start and write-throughs after successful mutating requests. Unset `DATABASE_URL` to keep the in-memory engine.
 
 There is no cloud vendor API. Operators run this compose file (or an equivalent Caddy + Postgres + `nemo-server` layout) on their own machines.
 
@@ -69,7 +69,7 @@ source scripts/dev-env.sh
 # equivalent: cd apps/compose && ./gradlew run
 ```
 
-`./gradlew run` builds `nemo-ffi` first and sets `jna.library.path` to `target/debug`. Create two vaults (two process windows, or two data directories), set **Home server** to `https://localhost:8443`, and Register. Local cargo without Caddy still uses `http://127.0.0.1:8787`.
+`./gradlew run` builds `nemo-ffi` first and sets `jna.library.path` to `target/debug`. Create two vaults (two process windows, or two data directories), set **Home server** to `https://localhost:8443`, and Register. Local cargo without Caddy still uses `http://0.0.0.0:8787` (reachable as `http://<LAN-IP>:8787` from a phone).
 
 ### Windows JVM run
 
