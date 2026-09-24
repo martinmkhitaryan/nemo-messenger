@@ -211,6 +211,7 @@ private fun optimisticTextRow(chatId: String, text: String, localId: String): Di
     target = 0UL,
     hidden = false,
     displayedAt = nowUnixSecs(),
+    outgoing = true,
 )
 
 private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray, localId: String): DisplayRow =
@@ -228,6 +229,7 @@ private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray
         target = 0UL,
         hidden = false,
         displayedAt = nowUnixSecs(),
+        outgoing = true,
     )
 
 private val AvatarPalette = listOf(
@@ -332,9 +334,9 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
             delay(2_000)
             try {
                 val rows = withContext(Dispatchers.IO) { c.fetchNow() }
-                applyIncoming(messages, rows)
+                applyIncoming(messages, rows, outgoing, outgoingStatus)
                 val expired = withContext(Dispatchers.IO) { c.expireNow() }
-                applyIncoming(messages, expired)
+                applyIncoming(messages, expired, outgoing, outgoingStatus)
                 val contactRows = withContext(Dispatchers.IO) { c.listContacts() }
                 val groupRows = withContext(Dispatchers.IO) { c.listGroups() }
                 contacts.clear()
@@ -353,7 +355,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
             try {
                 withContext(Dispatchers.IO) { c.waitWakeup() }
                 val rows = withContext(Dispatchers.IO) { c.fetchNow() }
-                applyIncoming(messages, rows)
+                applyIncoming(messages, rows, outgoing, outgoingStatus)
             } catch (_: Throwable) {
                 delay(2_000)
             }
@@ -430,7 +432,12 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                 identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
                                 withContext(Dispatchers.IO) { reloadRoster(c) }
-                                applyIncoming(messages, withContext(Dispatchers.IO) { c.inbox() })
+                                applyIncoming(
+                                    messages,
+                                    withContext(Dispatchers.IO) { c.inbox() },
+                                    outgoing,
+                                    outgoingStatus,
+                                )
                                 privacyMode = withContext(Dispatchers.IO) { c.privacyMode() }
                                 registered = true
                                 phase = Phase.Home
@@ -753,7 +760,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     val r = withContext(Dispatchers.IO) {
                                                         c?.deleteMessage(chat.id, row.convSeq)
                                                     } ?: return@runIo
-                                                    applyIncoming(messages, listOf(r))
+                                                    applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
                                                 }
                                             },
                                         )
@@ -845,7 +852,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         val r = withContext(Dispatchers.IO) {
                                             c?.deleteMessage(chat.id, row.convSeq)
                                         } ?: return@runIo
-                                        applyIncoming(messages, listOf(r))
+                                        applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
                                     }
                                 },
                             )
@@ -1562,12 +1569,12 @@ private fun ChatThread(
                     key = { _, it -> messageListKey(it) },
                 ) { index, row ->
                     val key = outgoingMapKey(row)
-                    val mine = outgoing[key] == true
+                    val mine = row.outgoing || outgoing[key] == true
                     val prevMine = messages.getOrNull(index - 1)?.let { prev ->
-                        outgoing[outgoingMapKey(prev)] == true
+                        prev.outgoing || outgoing[outgoingMapKey(prev)] == true
                     }
                     val nextMine = messages.getOrNull(index + 1)?.let { next ->
-                        outgoing[outgoingMapKey(next)] == true
+                        next.outgoing || outgoing[outgoingMapKey(next)] == true
                     }
                     val clusteredAbove = prevMine == mine
                     val clusteredBelow = nextMine == mine
@@ -2113,7 +2120,12 @@ private fun formatTime(sentAt: ULong): String {
     }
 }
 
-internal fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<DisplayRow>) {
+internal fun applyIncoming(
+    messages: MutableList<DisplayRow>,
+    rows: List<DisplayRow>,
+    outgoing: MutableMap<String, Boolean>? = null,
+    outgoingStatus: MutableMap<String, OutgoingStatus>? = null,
+) {
     for (row in rows) {
         if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
             stopCallAudio()
@@ -2129,6 +2141,13 @@ internal fun applyIncoming(messages: MutableList<DisplayRow>, rows: List<Display
         }
         if (messages.none { it.convId == row.convId && it.convSeq == row.convSeq && it.kind == row.kind }) {
             messages.add(row)
+        }
+        if (row.outgoing && outgoing != null) {
+            val key = outgoingMapKey(row)
+            outgoing[key] = true
+            if (outgoingStatus != null && outgoingStatus[key] == null) {
+                outgoingStatus[key] = OutgoingStatus.Delivered
+            }
         }
     }
 }

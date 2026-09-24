@@ -80,5 +80,6 @@ class UiDisplayTest {
         target = target,
         hidden = hidden,
         displayedAt = 1UL,
+        outgoing = false,
     )
 }

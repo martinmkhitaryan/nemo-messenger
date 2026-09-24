@@ -11,8 +11,8 @@ use nemo_core::{
     classify_binding_gossip, decode, encode, encode_text, invite_ttl_bucket, mailbox,
     messages_lost, open_group_file, seal_group_file, AppBody, AppHeader, AppMessage,
     BindingGossipCheck, Call, CapabilityIntro, CoreError, FileMeta, Group, HomeSession,
-    HostAccept, HostGroup, HttpHome, Installation, LocalSignal, PendingJoin, PrivacyMode,
-    TurnConfig, Vault, DISCOVERY_REFRESH_SECS,
+    HostAccept, HostGroup, HttpHome, InboxRow, Installation, LocalSignal, PendingJoin,
+    PrivacyMode, TurnConfig, Vault, DISCOVERY_REFRESH_SECS,
 };
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, TtlBucket};
@@ -57,6 +57,8 @@ pub struct DisplayRow {
     pub target: u64,
     pub hidden: bool,
     pub displayed_at: u64,
+    /// True if this installation authored the row (survives vault reload).
+    pub outgoing: bool,
 }
 
 /// Hosted MLS group the shell can list. No signing keys.
@@ -286,7 +288,7 @@ fn emit_call(
     block_on(session.send_to_now(&peer, invite_ttl_bucket(), &ptext, now))?;
     if echo {
         Ok(push_control(
-            inbox, next_seq, peer_hex, seq, now, kind, id_hex, 0,
+            inbox, next_seq, peer_hex, seq, now, kind, id_hex, 0, true
         ))
     } else {
         Ok(DisplayRow {
@@ -303,6 +305,7 @@ fn emit_call(
             target: 0,
             hidden: false,
             displayed_at: now,
+            outgoing: true,
         })
     }
 }
@@ -477,7 +480,7 @@ fn apply_binding_gossip(
         sent_at,
         "binding_conflict",
         ids::to_hex(&identity_id),
-        0,
+        0, false
     ))
 }
 
@@ -490,6 +493,14 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
             vault.save_home(&session.install, &session.snapshot())?;
             vault.save_groups(&session.install, inner.groups.iter().map(|g| &g.mls))?;
             vault.save_display(&inner.nicknames, &inner.disappear)?;
+            vault.save_inbox(
+                &inner
+                    .inbox
+                    .iter()
+                    .map(to_inbox_row)
+                    .collect::<Vec<_>>(),
+                &inner.next_seq,
+            )?;
             let pending: Vec<_> = inner
                 .pending
                 .iter()
@@ -502,10 +513,77 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
         Some(ClientState::Local(install)) => {
             vault.save(install)?;
             vault.save_display(&inner.nicknames, &inner.disappear)?;
+            vault.save_inbox(
+                &inner
+                    .inbox
+                    .iter()
+                    .map(to_inbox_row)
+                    .collect::<Vec<_>>(),
+                &inner.next_seq,
+            )?;
         }
         None => return Err(FfiError::Core("busy".into())),
     }
     Ok(())
+}
+
+fn to_inbox_row(row: &DisplayRow) -> InboxRow {
+    InboxRow {
+        conv_id: row.conv_id.clone(),
+        conv_seq: row.conv_seq,
+        text: row.text.clone(),
+        sent_at: row.sent_at,
+        file_name: row.file_name.clone(),
+        file_mime: row.file_mime.clone(),
+        file_bytes: row.file_bytes.clone(),
+        fetch_token: row.fetch_token.clone(),
+        kind: row.kind.clone(),
+        emoji: row.emoji.clone(),
+        target: row.target,
+        hidden: row.hidden,
+        displayed_at: row.displayed_at,
+        outgoing: row.outgoing,
+    }
+}
+
+fn from_inbox_row(row: InboxRow) -> DisplayRow {
+    DisplayRow {
+        conv_id: row.conv_id,
+        conv_seq: row.conv_seq,
+        text: row.text,
+        sent_at: row.sent_at,
+        file_name: row.file_name,
+        file_mime: row.file_mime,
+        file_bytes: row.file_bytes,
+        fetch_token: row.fetch_token,
+        kind: row.kind,
+        emoji: row.emoji,
+        target: row.target,
+        hidden: row.hidden,
+        displayed_at: row.displayed_at,
+        outgoing: row.outgoing,
+    }
+}
+
+/// Apply disappear timers to in-memory rows. Returns true if any row changed.
+fn apply_expire_inbox(inner: &mut Inner) -> bool {
+    let now = now_unix();
+    let timers = inner.disappear.clone();
+    let mut changed = false;
+    for row in inner.inbox.iter_mut() {
+        if row.hidden {
+            continue;
+        }
+        let secs = timers.get(&row.conv_id).copied().unwrap_or(0);
+        if secs > 0 && now.saturating_sub(row.displayed_at) >= secs {
+            row.hidden = true;
+            row.kind = "expired".into();
+            row.text.clear();
+            row.file_bytes.clear();
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn empty_inner(
@@ -690,7 +768,7 @@ fn idle_maintenance(
             now,
             "revoked",
             String::new(),
-            0,
+            0, false
         ));
     }
     for g in groups.iter_mut() {
@@ -892,6 +970,10 @@ impl NemoClient {
             inner.nicknames = nicks;
             inner.disappear = timers;
         }
+        if let Ok((rows, seqs)) = inner.vault.as_ref().unwrap().load_inbox() {
+            inner.inbox = rows.into_iter().map(from_inbox_row).collect();
+            inner.next_seq = seqs;
+        }
         let invites = inner
             .vault
             .as_ref()
@@ -911,6 +993,9 @@ impl NemoClient {
         };
         for (gid, pending, host) in pending_rows {
             inner.pending.insert(gid, PendingEntry { pending, host });
+        }
+        if apply_expire_inbox(&mut inner) {
+            persist(&inner)?;
         }
         if let Some(ClientState::Registered(session)) = inner.state.as_mut() {
             let _ = block_on(session.restock_publish());
@@ -1115,6 +1200,7 @@ impl NemoClient {
             target: 0,
             hidden: false,
             displayed_at: now,
+            outgoing: true,
         };
         inner.inbox.push(row.clone());
         persist(&inner)?;
@@ -1162,7 +1248,7 @@ impl NemoClient {
                             now_unix(),
                             "lost",
                             String::new(),
-                            0,
+                            0, false
                         ));
                     }
                 }
@@ -1190,7 +1276,7 @@ impl NemoClient {
                                     ids::to_hex(&peer),
                                     header.conv_seq,
                                     text,
-                                    header.sent_at,
+                                    header.sent_at, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1210,7 +1296,7 @@ impl NemoClient {
                                     header.sent_at,
                                     meta,
                                     enc_file,
-                                    String::new(),
+                                    String::new(), false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1258,7 +1344,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "reaction",
                                     emoji,
-                                    target,
+                                    target, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1274,7 +1360,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "deleted",
                                     String::new(),
-                                    target,
+                                    target, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1291,7 +1377,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "disappear",
                                     seconds.to_string(),
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1344,7 +1430,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "call_invite",
                                     hex,
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1376,7 +1462,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "call_answer",
                                     ids::to_hex(&call_id),
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1401,7 +1487,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "call_ringing",
                                     ids::to_hex(&call_id),
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1417,7 +1503,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "call_end",
                                     ids::to_hex(&call_id),
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1434,7 +1520,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "call_reject",
                                     ids::to_hex(&call_id),
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1451,7 +1537,7 @@ impl NemoClient {
                                     header.sent_at,
                                     "call_cancel",
                                     ids::to_hex(&call_id),
-                                    0,
+                                    0, false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1554,7 +1640,7 @@ impl NemoClient {
                                             ids::to_hex(&host.group_id),
                                             header.conv_seq,
                                             text,
-                                            header.sent_at,
+                                            header.sent_at, false
                                         ));
                                     }
                                     Ok(AppMessage {
@@ -1580,7 +1666,7 @@ impl NemoClient {
                                                     header.sent_at,
                                                     meta,
                                                     bytes,
-                                                    ids::to_hex(&token),
+                                                    ids::to_hex(&token), false
                                                 ));
                                             }
                                         }
@@ -1597,7 +1683,7 @@ impl NemoClient {
                                             header.sent_at,
                                             "reaction",
                                             emoji,
-                                            target,
+                                            target, false
                                         ));
                                     }
                                     Ok(AppMessage {
@@ -1614,7 +1700,7 @@ impl NemoClient {
                                             header.sent_at,
                                             "deleted",
                                             String::new(),
-                                            target,
+                                            target, false
                                         ));
                                     }
                                     Ok(AppMessage {
@@ -1631,7 +1717,7 @@ impl NemoClient {
                                             header.sent_at,
                                             "disappear",
                                             seconds.to_string(),
-                                            0,
+                                            0, false
                                         ));
                                     }
                                     Ok(AppMessage {
@@ -1908,6 +1994,7 @@ impl NemoClient {
                 target: 0,
                 hidden: false,
                 displayed_at: now,
+                outgoing: true,
             }
         };
         inner.inbox.push(row.clone());
@@ -1995,6 +2082,7 @@ impl NemoClient {
             meta,
             bytes,
             String::new(),
+            true,
         );
         persist(&inner)?;
         Ok(row)
@@ -2072,6 +2160,7 @@ impl NemoClient {
                 target: 0,
                 hidden: false,
                 displayed_at: now,
+                outgoing: true,
             }
         };
         inner.inbox.push(row.clone());
@@ -2201,9 +2290,9 @@ impl NemoClient {
 
     pub fn expire_now(&self) -> Result<Vec<DisplayRow>, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-        let now = now_unix();
-        let timers = inner.disappear.clone();
         let mut expired = Vec::new();
+        let timers = inner.disappear.clone();
+        let now = now_unix();
         for row in inner.inbox.iter_mut() {
             if row.hidden {
                 continue;
@@ -2312,6 +2401,7 @@ impl NemoClient {
             "call_invite",
             ids::to_hex(&local.call_id),
             0,
+            true,
         ))
     }
 
@@ -2372,6 +2462,7 @@ impl NemoClient {
             "call_answer",
             ids::to_hex(&local.call_id),
             0,
+            true,
         ))
     }
 
@@ -2492,6 +2583,7 @@ fn push_text(
     conv_seq: u64,
     text: String,
     sent_at: u64,
+    outgoing: bool,
 ) -> DisplayRow {
     let seq = *next_seq.get(&conv_id).unwrap_or(&0);
     if conv_seq > seq {
@@ -2511,6 +2603,7 @@ fn push_text(
         target: 0,
         hidden: false,
         displayed_at: sent_at,
+        outgoing,
     };
     inbox.push(row.clone());
     row
@@ -2525,6 +2618,7 @@ fn push_file(
     meta: FileMeta,
     file_bytes: Vec<u8>,
     fetch_token: String,
+    outgoing: bool,
 ) -> DisplayRow {
     let seq = *next_seq.get(&conv_id).unwrap_or(&0);
     if conv_seq > seq {
@@ -2544,6 +2638,7 @@ fn push_file(
         target: 0,
         hidden: false,
         displayed_at: sent_at,
+        outgoing,
     };
     inbox.push(row.clone());
     row
@@ -2577,6 +2672,7 @@ fn push_control(
     kind: &str,
     emoji: String,
     target: u64,
+    outgoing: bool,
 ) -> DisplayRow {
     let seq = *next_seq.get(&conv_id).unwrap_or(&0);
     if conv_seq > seq {
@@ -2600,6 +2696,7 @@ fn push_control(
         target,
         hidden: kind == "deleted",
         displayed_at: sent_at,
+        outgoing,
     };
     inbox.push(row.clone());
     row
@@ -2657,6 +2754,7 @@ fn send_app(
         kind,
         emoji,
         target,
+        true,
     ))
 }
 
@@ -2847,6 +2945,7 @@ mod tests {
             target: 0,
             hidden: false,
             displayed_at: 1,
+            outgoing: false,
         };
         assert_eq!(row.conv_id.len(), 64);
         let _ = row.text;
@@ -3074,6 +3173,94 @@ mod tests {
     }
 
     #[test]
+    fn inbox_history_survives_reopen() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-hist-a");
+        let bob_dir = temp_dir("nemo-ffi-hist-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+
+        bob.send_text(alice_id.clone(), "persist-me".into()).unwrap();
+        let got = alice.fetch_now().unwrap();
+        assert_eq!(got[0].text, "persist-me");
+
+        bob.send_file(
+            alice_id.clone(),
+            "note.txt".into(),
+            "text/plain".into(),
+            b"hello file".to_vec(),
+        )
+        .unwrap();
+        let files = alice.fetch_now().unwrap();
+        assert!(files.iter().any(|r| r.file_bytes == b"hello file"));
+
+        drop(alice);
+        drop(bob);
+
+        let alice2 = NemoClient::open_at(
+            alice_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let inbox = alice2.inbox().unwrap();
+        assert!(
+            inbox.iter().any(|r| r.text == "persist-me" && !r.hidden && !r.outgoing),
+            "text row missing after reopen"
+        );
+        assert!(
+            inbox.iter().any(|r| r.file_bytes == b"hello file" && !r.outgoing),
+            "file bytes missing after reopen"
+        );
+
+        alice2
+            .send_text(bob_id.clone(), "after-reopen".into())
+            .unwrap();
+        let bob2 = NemoClient::open_at(
+            bob_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let again = bob2.fetch_now().unwrap();
+        assert!(again.iter().any(|r| r.text == "after-reopen" && !r.outgoing));
+        // Outgoing row on alice survives with a higher conv_seq than pre-reopen traffic.
+        let sent = alice2.inbox().unwrap();
+        assert!(sent.iter().any(|r| r.text == "after-reopen" && r.outgoing));
+
+        drop(alice2);
+        let alice3 = NemoClient::open_at(
+            alice_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let reloaded = alice3.inbox().unwrap();
+        assert!(
+            reloaded.iter().any(|r| r.text == "after-reopen" && r.outgoing),
+            "outgoing flag must survive vault reload"
+        );
+        assert!(
+            reloaded.iter().any(|r| r.text == "persist-me" && !r.outgoing),
+            "incoming rows must stay non-outgoing after reload"
+        );
+
+        drop(alice3);
+        drop(bob2);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
     fn react_delete_disappear_survive_reopen() {
         let base = serve_home();
         let alice_dir = temp_dir("nemo-ffi-i8a");
@@ -3142,18 +3329,38 @@ mod tests {
                 .nickname,
             "Bobby"
         );
+        // Rows may already be expired if disappear=1 and wall time advanced since displayed_at.
+        assert!(
+            !alice2.inbox().unwrap().is_empty(),
+            "alice inbox empty after reopen"
+        );
+
+        drop(bob);
+        let bob2 = NemoClient::open_at(
+            bob_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(
+            bob2.inbox()
+                .unwrap()
+                .iter()
+                .any(|r| r.conv_seq == sent.conv_seq && r.hidden),
+            "deleted target missing after reopen"
+        );
 
         alice2
             .send_text(bob_id.clone(), "ephemeral".into())
             .unwrap();
-        let ep = bob.fetch_now().unwrap();
+        let ep = bob2.fetch_now().unwrap();
         assert!(ep.iter().any(|r| r.text == "ephemeral"));
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let expired = bob.expire_now().unwrap();
+        let expired = bob2.expire_now().unwrap();
         assert!(expired.iter().any(|r| r.kind == "expired"));
 
         drop(alice2);
-        drop(bob);
+        drop(bob2);
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
     }

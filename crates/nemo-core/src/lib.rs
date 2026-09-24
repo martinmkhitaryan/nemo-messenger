@@ -48,4 +48,4 @@ pub use privacy::{
     PrivacyMode, PrivacyTransport, WakeCoalesce, PRIVATE_BATCH_MAX_MS, PRIVATE_EXTRA_MAX_MS,
     PRIVATE_EXTRA_MIN_MS, WAKE_COALESCE_MS,
 };
-pub use vault::Vault;
+pub use vault::{InboxRow, Vault};

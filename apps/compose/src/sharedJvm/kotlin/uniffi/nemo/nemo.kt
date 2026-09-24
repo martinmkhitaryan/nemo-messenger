@@ -2597,7 +2597,11 @@ data class DisplayRow (
     var `emoji`: kotlin.String, 
     var `target`: kotlin.ULong, 
     var `hidden`: kotlin.Boolean, 
-    var `displayedAt`: kotlin.ULong
+    var `displayedAt`: kotlin.ULong, 
+    /**
+     * True if this installation authored the row (survives vault reload).
+     */
+    var `outgoing`: kotlin.Boolean
 ) {
     
     companion object
@@ -2622,6 +2626,7 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterULong.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -2638,7 +2643,8 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterString.allocationSize(value.`emoji`) +
             FfiConverterULong.allocationSize(value.`target`) +
             FfiConverterBoolean.allocationSize(value.`hidden`) +
-            FfiConverterULong.allocationSize(value.`displayedAt`)
+            FfiConverterULong.allocationSize(value.`displayedAt`) +
+            FfiConverterBoolean.allocationSize(value.`outgoing`)
     )
 
     override fun write(value: DisplayRow, buf: ByteBuffer) {
@@ -2655,6 +2661,7 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterULong.write(value.`target`, buf)
             FfiConverterBoolean.write(value.`hidden`, buf)
             FfiConverterULong.write(value.`displayedAt`, buf)
+            FfiConverterBoolean.write(value.`outgoing`, buf)
     }
 }
 

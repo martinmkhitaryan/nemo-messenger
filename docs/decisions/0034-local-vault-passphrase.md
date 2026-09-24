@@ -90,7 +90,7 @@ Rejected by ADR-0004: the phrase exists to kill a stolen device from outside it.
 
 - `nemo-core` grows a vault module. `nemo-server` stays unaware of it.
 - Identity creation UX: show the revocation phrase **and** choose a vault passphrase; state that both are unrecoverable.
-- MLS groups, contact nicknames, and message display rows may share this SQLCipher file in later slices; they are not in the v1 identity snapshot.
+- MLS groups, contact nicknames, and message display rows share this SQLCipher file (`groups`, `display`, `inbox` keys). The identity snapshot still excludes the revocation mnemonic.
 - Raising Argon2 parameters is a `kdf.cbor` version bump plus a re-encrypt; old files keep their stored parameters.
 
 ## History
@@ -98,3 +98,4 @@ Rejected by ADR-0004: the phrase exists to kill a stolen device from outside it.
 - 2026-09-20 — Accepted. Application passphrase, Argon2id, SQLCipher raw key, mnemonic never stored.
 - 2026-09-20 — Amendment 1: MLS group sidecar is persisted in the same SQLCipher file (`groups` key). Pending joins and minted bound invites are also vault-backed. The identity snapshot still excludes the revocation mnemonic.
 - 2026-09-21 — Amendment 2: new vaults mix a device-held secret into the SQLCipher key (`kdf.cbor` version 2). Version 1 files still open.
+- 2026-09-25 — Amendment 3: decrypted message display rows and per-conversation `next_seq` live under vault key `inbox` (CBOR); reopen loads them with the vault.

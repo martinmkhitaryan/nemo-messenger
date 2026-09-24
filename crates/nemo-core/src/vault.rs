@@ -33,8 +33,28 @@ const MLS_KEY: &str = "mls_storage";
 const GROUPS_KEY: &str = "groups";
 const HOME_KEY: &str = "home";
 const DISPLAY_KEY: &str = "display";
+const INBOX_KEY: &str = "inbox";
 const PENDING_KEY: &str = "pending_joins";
 const INVITES_KEY: &str = "minted_invites";
+
+/// Decrypted chat row stored in the vault (ADR-0034). Not crypto state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboxRow {
+    pub conv_id: String,
+    pub conv_seq: u64,
+    pub text: String,
+    pub sent_at: u64,
+    pub file_name: String,
+    pub file_mime: String,
+    pub file_bytes: Vec<u8>,
+    pub fetch_token: String,
+    pub kind: String,
+    pub emoji: String,
+    pub target: u64,
+    pub hidden: bool,
+    pub displayed_at: u64,
+    pub outgoing: bool,
+}
 
 pub struct Vault {
     dir: PathBuf,
@@ -251,6 +271,72 @@ impl Vault {
         Ok((nicknames, disappear))
     }
 
+    /// Decrypted display rows + per-conversation seq counters.
+    pub fn save_inbox(
+        &self,
+        rows: &[InboxRow],
+        next_seq: &HashMap<String, u64>,
+    ) -> Result<()> {
+        let mut encoded_rows = Vec::with_capacity(rows.len());
+        for row in rows {
+            encoded_rows.push(encode_inbox_row(row));
+        }
+        let mut seqs = Vec::new();
+        let mut keys: Vec<_> = next_seq.keys().cloned().collect();
+        keys.sort();
+        for k in keys {
+            seqs.push(Value::Array(vec![
+                Value::Text(k.clone()),
+                Value::Uint(next_seq[&k]),
+            ]));
+        }
+        self.put(
+            INBOX_KEY,
+            &cbor::encode(&Value::Map(vec![
+                (0, Value::Uint(1)),
+                (1, Value::Array(encoded_rows)),
+                (2, Value::Array(seqs)),
+            ])),
+        )
+    }
+
+    pub fn load_inbox(&self) -> Result<(Vec<InboxRow>, HashMap<String, u64>)> {
+        let Some(bytes) = self.get_opt(INBOX_KEY)? else {
+            return Ok((Vec::new(), HashMap::new()));
+        };
+        let Value::Map(m) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
+            return Err(CoreError::VaultCorrupt);
+        };
+        let version = cbor::expect_uint(cbor::map_get(&m, 0).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?;
+        if version != 1 {
+            return Err(CoreError::VaultCorrupt);
+        }
+        let mut rows = Vec::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 1).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            rows.push(decode_inbox_row(item)?);
+        }
+        let mut next_seq = HashMap::new();
+        for item in cbor::expect_array(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+        {
+            let Value::Array(row) = item else {
+                return Err(CoreError::VaultCorrupt);
+            };
+            if row.len() != 2 {
+                return Err(CoreError::VaultCorrupt);
+            }
+            let k = cbor::expect_text(&row[0])
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_owned();
+            let seq = cbor::expect_uint(&row[1]).map_err(|_| CoreError::VaultCorrupt)?;
+            next_seq.insert(k, seq);
+        }
+        Ok((rows, next_seq))
+    }
+
     pub fn save_pending(
         &self,
         entries: &[([u8; nemo_wire::ids::KEY_LEN], &PendingJoin, &HostAccept)],
@@ -378,6 +464,65 @@ fn check_passphrase(passphrase: &str) -> Result<()> {
         return Err(CoreError::WeakPassphrase);
     }
     Ok(())
+}
+
+fn encode_inbox_row(row: &InboxRow) -> Value {
+    Value::Map(vec![
+        (0, Value::Text(row.conv_id.clone())),
+        (1, Value::Uint(row.conv_seq)),
+        (2, Value::Text(row.text.clone())),
+        (3, Value::Uint(row.sent_at)),
+        (4, Value::Text(row.file_name.clone())),
+        (5, Value::Text(row.file_mime.clone())),
+        (6, Value::Bytes(row.file_bytes.clone())),
+        (7, Value::Text(row.fetch_token.clone())),
+        (8, Value::Text(row.kind.clone())),
+        (9, Value::Text(row.emoji.clone())),
+        (10, Value::Uint(row.target)),
+        (11, Value::Uint(if row.hidden { 1 } else { 0 })),
+        (12, Value::Uint(row.displayed_at)),
+        (13, Value::Uint(if row.outgoing { 1 } else { 0 })),
+    ])
+}
+
+fn decode_inbox_row(item: &Value) -> Result<InboxRow> {
+    let Value::Map(m) = item else {
+        return Err(CoreError::VaultCorrupt);
+    };
+    let text = |k: u64| -> Result<String> {
+        Ok(cbor::expect_text(cbor::map_get(&m, k).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+            .to_owned())
+    };
+    let uint = |k: u64| -> Result<u64> {
+        cbor::expect_uint(cbor::map_get(&m, k).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)
+    };
+    let bytes = |k: u64| -> Result<Vec<u8>> {
+        Ok(cbor::expect_bytes(cbor::map_get(&m, k).map_err(|_| CoreError::VaultCorrupt)?)
+            .map_err(|_| CoreError::VaultCorrupt)?
+            .to_vec())
+    };
+    Ok(InboxRow {
+        conv_id: text(0)?,
+        conv_seq: uint(1)?,
+        text: text(2)?,
+        sent_at: uint(3)?,
+        file_name: text(4)?,
+        file_mime: text(5)?,
+        file_bytes: bytes(6)?,
+        fetch_token: text(7)?,
+        kind: text(8)?,
+        emoji: text(9)?,
+        target: uint(10)?,
+        hidden: uint(11)? != 0,
+        displayed_at: uint(12)?,
+        // Missing key → false (vaults written before outgoing was stored).
+        outgoing: match cbor::map_get(&m, 13) {
+            Ok(v) => cbor::expect_uint(v).map_err(|_| CoreError::VaultCorrupt)? != 0,
+            Err(_) => false,
+        },
+    })
 }
 
 fn write_kdf(
