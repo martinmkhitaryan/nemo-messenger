@@ -13,8 +13,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -30,7 +33,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val vault = File(filesDir, "vault")
         setContent {
-            NemoTheme {
+            var themeMode by remember { mutableStateOf(loadThemeMode()) }
+            NemoTheme(
+                mode = themeMode,
+                onModeChange = {
+                    themeMode = it
+                    saveThemeMode(it)
+                },
+            ) {
                 SessionPane(
                     label = "Nemo",
                     vaultDir = vault,

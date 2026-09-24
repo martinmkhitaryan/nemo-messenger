@@ -9,7 +9,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -63,11 +62,13 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -84,6 +85,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -98,9 +100,13 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -1155,24 +1161,49 @@ private fun ChatListPane(
         },
         floatingActionButton = {
             Box {
-                FloatingActionButton(onClick = onAdd) {
+                FloatingActionButton(
+                    onClick = onAdd,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ) {
                     Icon(Icons.Filled.Add, contentDescription = "New chat")
                 }
-                DropdownMenu(expanded = addMenu, onDismissRequest = onAddDismiss) {
+                DropdownMenu(
+                    expanded = addMenu,
+                    onDismissRequest = onAddDismiss,
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 8.dp,
+                ) {
                     DropdownMenuItem(
                         text = { Text("New chat") },
-                        leadingIcon = { Icon(Icons.Filled.PersonAdd, null) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.PersonAdd, null, tint = MaterialTheme.colorScheme.primary)
+                        },
                         onClick = onAddContact,
+                        colors = MenuDefaults.itemColors(
+                            leadingIconColor = MaterialTheme.colorScheme.primary,
+                        ),
                     )
                     DropdownMenuItem(
                         text = { Text("New group") },
-                        leadingIcon = { Icon(Icons.Filled.Group, null) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Group, null, tint = MaterialTheme.colorScheme.primary)
+                        },
                         onClick = onNewGroup,
+                        colors = MenuDefaults.itemColors(
+                            leadingIconColor = MaterialTheme.colorScheme.primary,
+                        ),
                     )
                     DropdownMenuItem(
                         text = { Text("Join group") },
-                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, null) },
+                        leadingIcon = {
+                            Icon(Icons.AutoMirrored.Filled.Chat, null, tint = MaterialTheme.colorScheme.primary)
+                        },
                         onClick = onJoinGroup,
+                        colors = MenuDefaults.itemColors(
+                            leadingIconColor = MaterialTheme.colorScheme.primary,
+                        ),
                     )
                 }
             }
@@ -1287,7 +1318,7 @@ private fun ChatThread(
     onDelete: (DisplayRow) -> Unit,
 ) {
     val listState = rememberLazyListState()
-    val dark = isSystemInDarkTheme()
+    val dark = nemoDarkTheme()
     val wallpaper = if (dark) NemoChatDark else NemoChatLight
     val canSend = draft.isNotBlank()
     val sendScale by animateFloatAsState(
@@ -1353,7 +1384,13 @@ private fun ChatThread(
                     IconButton(onClick = { onChatMenu(true) }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "More")
                     }
-                    DropdownMenu(expanded = chatMenu, onDismissRequest = { onChatMenu(false) }) {
+                    DropdownMenu(
+                        expanded = chatMenu,
+                        onDismissRequest = { onChatMenu(false) },
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 0.dp,
+                        shadowElevation = 8.dp,
+                    ) {
                         DropdownMenuItem(text = { Text("Answer call") }, onClick = { onChatMenu(false); onAnswer() })
                         DropdownMenuItem(text = { Text("Decline call") }, onClick = { onChatMenu(false); onDecline() })
                         DropdownMenuItem(
@@ -1527,7 +1564,7 @@ private fun MessageBubble(
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
-    val dark = isSystemInDarkTheme()
+    val dark = nemoDarkTheme()
     val enter = remember { Animatable(if (animateEnter) 0f else 1f) }
     LaunchedEffect(Unit) {
         if (animateEnter) {
@@ -1537,12 +1574,21 @@ private fun MessageBubble(
             )
         }
     }
-    val bg = when {
-        mine && dark -> NemoOutgoingDark
-        mine -> NemoOutgoingLight
-        dark -> NemoIncomingDark
-        else -> NemoIncomingLight
+    // Window-Y of this bubble + root height → sample one continuous screen gradient.
+    var windowY by remember { mutableFloatStateOf(0f) }
+    var rootHeight by remember { mutableFloatStateOf(1f) }
+    val outgoingBrush = if (mine) {
+        val stops = if (dark) NemoOutgoingGradientDark else NemoOutgoingGradientLight
+        val h = rootHeight.coerceAtLeast(1f)
+        Brush.verticalGradient(
+            colors = stops,
+            startY = -windowY,
+            endY = -windowY + h,
+        )
+    } else {
+        null
     }
+    val incomingBg = if (dark) NemoIncomingDark else NemoIncomingLight
     val corner = 18.dp
     val tight = 6.dp
     val tail = 4.dp
@@ -1562,7 +1608,15 @@ private fun MessageBubble(
         )
     }
     val shadow = if (dark) NemoBubbleShadowDark else NemoBubbleShadowLight
-    val metaColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+    val metaColor = if (mine && dark) {
+        Color(0xFFB8D4E8).copy(alpha = 0.9f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+    }
+    val bodyColor = when {
+        mine && dark -> Color(0xFFE8F4FF)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
     val t = enter.value
     val slidePx = (1f - t) * if (mine) 28f else -28f
     Row(
@@ -1580,16 +1634,28 @@ private fun MessageBubble(
             Column(
                 Modifier
                     .widthIn(max = 320.dp)
+                    .onGloballyPositioned { coords ->
+                        if (mine) {
+                            windowY = coords.positionInWindow().y
+                            rootHeight = coords.findRootCoordinates().size.height.toFloat()
+                        }
+                    }
                     .shadow(2.dp, shape, ambientColor = shadow, spotColor = shadow)
                     .clip(shape)
-                    .background(bg)
+                    .then(
+                        if (outgoingBrush != null) {
+                            Modifier.background(outgoingBrush)
+                        } else {
+                            Modifier.background(incomingBg)
+                        },
+                    )
                     .clickable { menu = true }
                     .padding(horizontal = 12.dp, vertical = 7.dp),
             ) {
                 Text(
                     bubbleText(row),
                     style = MaterialTheme.typography.bodyLarge,
-                    color = if (mine && dark) Color(0xFFE8F4FF) else MaterialTheme.colorScheme.onSurface,
+                    color = bodyColor,
                 )
                 Row(
                     Modifier.align(Alignment.End).padding(top = 2.dp),
@@ -1606,7 +1672,13 @@ private fun MessageBubble(
                     }
                 }
             }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenu(
+                expanded = menu,
+                onDismissRequest = { menu = false },
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+                shadowElevation = 8.dp,
+            ) {
                 DropdownMenuItem(text = { Text("React 👍") }, onClick = { menu = false; onReact() })
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })
             }
@@ -1701,6 +1773,28 @@ private fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("Save name")
+                    }
+                }
+            }
+            item {
+                Text("Appearance", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "Light and dark use Nemo’s blue chat theme. System follows the OS.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val themeMode = LocalThemeMode.current
+                val onThemeMode = LocalOnThemeModeChange.current
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    NemoThemeMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = themeMode == mode,
+                            onClick = { onThemeMode(mode) },
+                            label = { Text(mode.label) },
+                        )
                     }
                 }
             }

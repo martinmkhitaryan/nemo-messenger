@@ -10,6 +10,8 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -19,9 +21,27 @@ import androidx.compose.ui.unit.sp
 /** Telegram-like brand blue (not WhatsApp green). */
 internal val NemoBlue = Color(0xFF3390EC)
 internal val NemoBlueBright = Color(0xFF5CA8F5)
-/** Soft sky outgoing bubble. */
+/** Soft sky outgoing bubble (flat fallback). */
 internal val NemoOutgoingLight = Color(0xFFD5E8F7)
 internal val NemoOutgoingDark = Color(0xFF2B5278)
+/**
+ * Screen-space outgoing bubble gradient (Telegram-style).
+ * Colors are sampled by window Y so stacked bubbles share one continuous ribbon.
+ */
+internal val NemoOutgoingGradientLight = listOf(
+    Color(0xFFB8D9F8),
+    Color(0xFFC5D4F5),
+    Color(0xFFD2C8F0),
+    Color(0xFFC4E4F2),
+    Color(0xFFB5D8F0),
+)
+internal val NemoOutgoingGradientDark = listOf(
+    Color(0xFF1A4F7A),
+    Color(0xFF2A4580),
+    Color(0xFF3A3D72),
+    Color(0xFF1E5C6E),
+    Color(0xFF245A88),
+)
 internal val NemoIncomingLight = Color(0xFFFFFFFF)
 internal val NemoIncomingDark = Color(0xFF182533)
 internal val NemoChatLight = Color(0xFFD9E3EC)
@@ -31,6 +51,33 @@ internal val NemoBubbleShadowLight = Color(0x1A000000)
 internal val NemoBubbleShadowDark = Color(0x40000000)
 internal val NemoPatternDotLight = Color(0x14000000)
 internal val NemoPatternDotDark = Color(0x14FFFFFF)
+
+internal enum class NemoThemeMode {
+    System,
+    Light,
+    Dark,
+    ;
+
+    fun resolveDark(systemDark: Boolean): Boolean = when (this) {
+        System -> systemDark
+        Light -> false
+        Dark -> true
+    }
+
+    val label: String
+        get() = when (this) {
+            System -> "System"
+            Light -> "Light"
+            Dark -> "Dark"
+        }
+}
+
+internal val LocalThemeMode = staticCompositionLocalOf { NemoThemeMode.System }
+internal val LocalOnThemeModeChange = staticCompositionLocalOf<(NemoThemeMode) -> Unit> { {} }
+
+internal expect fun loadThemeMode(): NemoThemeMode
+
+internal expect fun saveThemeMode(mode: NemoThemeMode)
 
 /** Soft entrance for new bubbles — not snappy. */
 internal val MessageFadeSpec = tween<Float>(durationMillis = 320)
@@ -48,12 +95,20 @@ private val NemoTypography = Typography(
     labelSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp),
 )
 
+/** Cool blue-gray surfaces — avoid greenish Material defaults on menus/FABs. */
 private val LightColors = lightColorScheme(
     primary = NemoBlue,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD6EBFF),
     onPrimaryContainer = Color(0xFF0B3A66),
     secondary = Color(0xFF4FA3E3),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFD6EBFF),
+    onSecondaryContainer = Color(0xFF0B3A66),
+    tertiary = Color(0xFF5B8DEF),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFE0E8FF),
+    onTertiaryContainer = Color(0xFF1A2F5C),
     surface = Color.White,
     onSurface = Color(0xFF0F172A),
     surfaceVariant = Color(0xFFE8EEF4),
@@ -62,6 +117,11 @@ private val LightColors = lightColorScheme(
     onBackground = Color(0xFF0F172A),
     outline = Color(0xFFC5D0DB),
     error = Color(0xFFB42318),
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF5F8FB),
+    surfaceContainer = Color(0xFFF0F4F8),
+    surfaceContainerHigh = Color(0xFFE8EEF4),
+    surfaceContainerHighest = Color(0xFFDEE6EF),
 )
 
 private val DarkColors = darkColorScheme(
@@ -70,6 +130,13 @@ private val DarkColors = darkColorScheme(
     primaryContainer = Color(0xFF1E4F7A),
     onPrimaryContainer = Color(0xFFD6EBFF),
     secondary = Color(0xFF7EC8F8),
+    onSecondary = Color(0xFF062033),
+    secondaryContainer = Color(0xFF1E4F7A),
+    onSecondaryContainer = Color(0xFFD6EBFF),
+    tertiary = Color(0xFF9BB5F5),
+    onTertiary = Color(0xFF0E1A33),
+    tertiaryContainer = Color(0xFF2A3A5C),
+    onTertiaryContainer = Color(0xFFD6E0FF),
     surface = Color(0xFF17212B),
     onSurface = Color(0xFFE8EEF2),
     surfaceVariant = Color(0xFF242F3D),
@@ -78,14 +145,32 @@ private val DarkColors = darkColorScheme(
     onBackground = Color(0xFFE8EEF2),
     outline = Color(0xFF2F3C4A),
     error = Color(0xFFF97066),
+    surfaceContainerLowest = Color(0xFF0B141A),
+    surfaceContainerLow = Color(0xFF152028),
+    surfaceContainer = Color(0xFF17212B),
+    surfaceContainerHigh = Color(0xFF1F2C38),
+    surfaceContainerHighest = Color(0xFF242F3D),
 )
 
 @Composable
-internal fun NemoTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    MaterialTheme(
-        colorScheme = if (dark) DarkColors else LightColors,
-        typography = NemoTypography,
-        content = content,
-    )
+internal fun nemoDarkTheme(): Boolean =
+    LocalThemeMode.current.resolveDark(isSystemInDarkTheme())
+
+@Composable
+internal fun NemoTheme(
+    mode: NemoThemeMode,
+    onModeChange: (NemoThemeMode) -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val dark = mode.resolveDark(isSystemInDarkTheme())
+    CompositionLocalProvider(
+        LocalThemeMode provides mode,
+        LocalOnThemeModeChange provides onModeChange,
+    ) {
+        MaterialTheme(
+            colorScheme = if (dark) DarkColors else LightColors,
+            typography = NemoTypography,
+            content = content,
+        )
+    }
 }

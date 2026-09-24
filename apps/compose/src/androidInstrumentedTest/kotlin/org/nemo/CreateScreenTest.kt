@@ -30,7 +30,7 @@ class CreateScreenTest {
         )
         dir.mkdirs()
         compose.setContent {
-            NemoTheme {
+            NemoTheme(mode = NemoThemeMode.System, onModeChange = {}) {
                 SessionPane(label = "Nemo", vaultDir = dir, modifier = Modifier.fillMaxSize())
             }
         }

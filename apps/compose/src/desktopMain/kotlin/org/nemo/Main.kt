@@ -5,7 +5,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -29,7 +33,14 @@ fun main() {
             title = "Nemo",
             state = rememberWindowState(width = 1280.dp, height = 800.dp),
         ) {
-            NemoTheme {
+            var themeMode by remember { mutableStateOf(loadThemeMode()) }
+            NemoTheme(
+                mode = themeMode,
+                onModeChange = {
+                    themeMode = it
+                    saveThemeMode(it)
+                },
+            ) {
                 Row(Modifier.fillMaxSize()) {
                     SessionPane(
                         label = "Left",
