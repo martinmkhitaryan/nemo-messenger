@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -31,6 +32,7 @@ fun main() {
         Window(
             onCloseRequest = ::exitApplication,
             title = "Nemo",
+            icon = painterResource("nemo_logo.png"),
             state = rememberWindowState(width = 1280.dp, height = 800.dp),
         ) {
             var themeMode by remember { mutableStateOf(loadThemeMode()) }

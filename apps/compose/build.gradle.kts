@@ -120,6 +120,7 @@ compose.desktop {
             linux {
                 debMaintainer = "nemo"
                 menuGroup = "Network"
+                iconFile.set(project.file("src/desktopMain/resources/nemo_logo_512.png"))
             }
         }
     }
