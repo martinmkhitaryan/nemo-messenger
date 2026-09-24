@@ -19,19 +19,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -88,7 +84,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -101,7 +96,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -119,7 +113,6 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -134,7 +127,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.semantics.password
 import androidx.compose.ui.semantics.semantics
-import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -278,6 +270,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var joinUri by remember { mutableStateOf("") }
     var joinPaste by remember { mutableStateOf("") }
     var memberCred by remember { mutableStateOf("") }
+    var draft by remember { mutableStateOf("") }
     var disappearSecs by remember { mutableStateOf("0") }
     var contactNickname by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -370,7 +363,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     }
 
     Surface(modifier) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().imePadding()) {
             SnackbarHost(snackbar)
             when (phase) {
                 Phase.Create -> OnboardScaffold(
@@ -684,25 +677,27 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                     } else {
                                         ChatThread(
                                             chat = chat,
-                                            messages = messages,
+                                            messages = messages.filter { it.convId == chat.id },
                                             outgoing = outgoing,
                                             outgoingStatus = outgoingStatus,
+                                            draft = draft,
+                                            onDraft = { draft = it },
                                             showBack = false,
                                             onBack = { selected = null },
                                             onSettings = { showSettings = true },
                                             chatMenu = chatMenu,
                                             onChatMenu = { chatMenu = it },
-                                            onSend = { text ->
+                                            onSend = {
                                                 sendChat(
                                                     c,
                                                     chat,
-                                                    text,
+                                                    draft,
                                                     messages,
                                                     outgoing,
                                                     outgoingStatus,
                                                     scope,
                                                     snackbar,
-                                                ) { }
+                                                ) { draft = "" }
                                             },
                                             onAttach = { pickFile() },
                                             onCall = {
@@ -774,25 +769,27 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             }
                             chat != null -> ChatThread(
                                 chat = chat,
-                                messages = messages,
+                                messages = messages.filter { it.convId == chat.id },
                                 outgoing = outgoing,
                                 outgoingStatus = outgoingStatus,
+                                draft = draft,
+                                onDraft = { draft = it },
                                 showBack = true,
                                 onBack = { selected = null },
                                 onSettings = { showSettings = true },
                                 chatMenu = chatMenu,
                                 onChatMenu = { chatMenu = it },
-                                onSend = { text ->
+                                onSend = {
                                     sendChat(
                                         c,
                                         chat,
-                                        text,
+                                        draft,
                                         messages,
                                         outgoing,
                                         outgoingStatus,
                                         scope,
                                         snackbar,
-                                    ) { }
+                                    ) { draft = "" }
                                 },
                                 onAttach = { pickFile() },
                                 onCall = {
@@ -1067,18 +1064,18 @@ private fun attachFilePath(
         scope.launch { snackbar.showSnackbar("File not found") }
         return
     }
+    val bytes = try {
+        f.readBytes()
+    } catch (e: Throwable) {
+        scope.launch { snackbar.showSnackbar(e.message ?: e.toString()) }
+        return
+    }
+    val localId = newLocalId()
+    val pending = optimisticFileRow(chat.id, f.name, bytes, localId)
+    messages.add(pending)
+    outgoing[localId] = true
+    outgoingStatus[localId] = OutgoingStatus.Pending
     scope.launch {
-        val bytes = try {
-            withContext(Dispatchers.IO) { f.readBytes() }
-        } catch (e: Throwable) {
-            snackbar.showSnackbar(e.message ?: e.toString())
-            return@launch
-        }
-        val localId = newLocalId()
-        val pending = optimisticFileRow(chat.id, f.name, bytes, localId)
-        messages.add(pending)
-        outgoing[localId] = true
-        outgoingStatus[localId] = OutgoingStatus.Pending
         try {
             val row = withContext(Dispatchers.IO) {
                 if (chat.isGroup) {
@@ -1160,7 +1157,6 @@ private fun ChatListPane(
 ) {
     Scaffold(
         modifier = modifier,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text(if (label == "Nemo") "Chats" else "$label · Chats", fontWeight = FontWeight.SemiBold) },
@@ -1316,12 +1312,14 @@ private fun ChatThread(
     messages: List<DisplayRow>,
     outgoing: Map<String, Boolean>,
     outgoingStatus: Map<String, OutgoingStatus>,
+    draft: String,
+    onDraft: (String) -> Unit,
     showBack: Boolean,
     onBack: () -> Unit,
     onSettings: () -> Unit,
     chatMenu: Boolean,
     onChatMenu: (Boolean) -> Unit,
-    onSend: (String) -> Unit,
+    onSend: () -> Unit,
     onAttach: () -> Unit,
     onCall: () -> Unit,
     onAnswer: () -> Unit,
@@ -1333,24 +1331,20 @@ private fun ChatThread(
     val listState = rememberLazyListState()
     val dark = nemoDarkTheme()
     val wallpaper = if (dark) NemoChatDark else NemoChatLight
-    val threadMessages by remember(chat.id) {
-        derivedStateOf { messages.filter { it.convId == chat.id } }
-    }
+    val canSend = draft.isNotBlank()
+    val sendScale by animateFloatAsState(
+        targetValue = if (canSend) 1f else 0.88f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+        label = "sendScale",
+    )
     var stickToBottom by remember(chat.id) { mutableStateOf(true) }
-    val lastKey = threadMessages.lastOrNull()?.let { messageListKey(it) }
+    val lastKey = messages.lastOrNull()?.let { messageListKey(it) }
     val knownKeys = remember(chat.id) { mutableSetOf<String>() }
     var seedDone by remember(chat.id) { mutableStateOf(false) }
-    val density = LocalDensity.current
-    var freezeGradient by remember { mutableStateOf(false) }
-    LaunchedEffect(density) {
-        snapshotFlow { WindowInsets.ime.getBottom(density) > 0 }
-            .distinctUntilChanged()
-            .collect { freezeGradient = it }
-    }
-    LaunchedEffect(chat.id, threadMessages.size) {
+    LaunchedEffect(chat.id, messages.size) {
         if (!seedDone) {
             knownKeys.clear()
-            knownKeys.addAll(threadMessages.map { messageListKey(it) })
+            knownKeys.addAll(messages.map { messageListKey(it) })
             seedDone = true
         }
     }
@@ -1365,13 +1359,12 @@ private fun ChatThread(
     }
     // Scroll only when the last message identity changes — not on tick/status updates.
     LaunchedEffect(lastKey, chat.id) {
-        if (threadMessages.isNotEmpty() && stickToBottom) {
-            listState.scrollToItem(threadMessages.lastIndex)
+        if (messages.isNotEmpty() && stickToBottom) {
+            listState.scrollToItem(messages.lastIndex)
         }
     }
     Scaffold(
         containerColor = wallpaper,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             val pillColor = MaterialTheme.colorScheme.surface.copy(alpha = if (dark) 0.82f else 0.92f)
             val pillShape = RoundedCornerShape(22.dp)
@@ -1473,11 +1466,85 @@ private fun ChatThread(
             }
         },
         bottomBar = {
-            MessageComposer(
-                dark = dark,
-                onSend = onSend,
-                onAttach = onAttach,
-            )
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                shadowElevation = 6.dp,
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        // Clear Android gesture / nav bar; still lift for the IME.
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .padding(horizontal = 6.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    IconButton(onClick = onAttach) {
+                        Icon(
+                            Icons.Filled.AttachFile,
+                            contentDescription = "Attach",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Surface(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (dark) 0.55f else 0.85f),
+                        tonalElevation = 0.dp,
+                    ) {
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = onDraft,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                    if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
+                                        return@onPreviewKeyEvent false
+                                    }
+                                    // Shift+Enter → newline; Enter → send.
+                                    if (event.isShiftPressed) return@onPreviewKeyEvent false
+                                    if (canSend) onSend()
+                                    true
+                                },
+                            textStyle = TextStyle(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 16.sp,
+                                lineHeight = 22.sp,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            maxLines = 5,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(
+                                onSend = { if (canSend) onSend() },
+                            ),
+                            decorationBox = { inner ->
+                                Box {
+                                    if (draft.isEmpty()) {
+                                        Text(
+                                            "Message",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 16.sp,
+                                        )
+                                    }
+                                    inner()
+                                }
+                            },
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    FilledIconButton(
+                        onClick = onSend,
+                        enabled = canSend,
+                        modifier = Modifier.scale(sendScale).size(46.dp),
+                        shape = CircleShape,
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                    }
+                }
+            }
         },
     ) { padding ->
         // Draw under the transparent top bar; keep messages readable via list top inset.
@@ -1498,15 +1565,15 @@ private fun ChatThread(
                 ),
             ) {
                 itemsIndexed(
-                    threadMessages,
+                    messages,
                     key = { _, it -> messageListKey(it) },
                 ) { index, row ->
                     val key = outgoingMapKey(row)
                     val mine = row.outgoing || outgoing[key] == true
-                    val prevMine = threadMessages.getOrNull(index - 1)?.let { prev ->
+                    val prevMine = messages.getOrNull(index - 1)?.let { prev ->
                         prev.outgoing || outgoing[outgoingMapKey(prev)] == true
                     }
-                    val nextMine = threadMessages.getOrNull(index + 1)?.let { next ->
+                    val nextMine = messages.getOrNull(index + 1)?.let { next ->
                         next.outgoing || outgoing[outgoingMapKey(next)] == true
                     }
                     val clusteredAbove = prevMine == mine
@@ -1525,7 +1592,6 @@ private fun ChatThread(
                         clusteredAbove = clusteredAbove,
                         clusteredBelow = clusteredBelow,
                         animateEnter = animateEnter,
-                        freezeGradient = freezeGradient,
                         onReact = { onReact(row) },
                         onDelete = { onDelete(row) },
                         modifier = Modifier.padding(top = gap),
@@ -1536,129 +1602,24 @@ private fun ChatThread(
     }
 }
 
-/** Owns draft so keystrokes do not recompose [ChatThread] / [SessionPane]. */
-@Composable
-private fun MessageComposer(
-    dark: Boolean,
-    onSend: (String) -> Unit,
-    onAttach: () -> Unit,
-) {
-    var draft by remember { mutableStateOf("") }
-    val canSend = draft.isNotBlank()
-    val sendScale by animateFloatAsState(
-        targetValue = if (canSend) 1f else 0.88f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
-        label = "sendScale",
-    )
-    fun send() {
-        val text = draft
-        if (text.isBlank()) return
-        draft = ""
-        onSend(text)
-    }
-    Surface(
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-        shadowElevation = 6.dp,
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
-                .padding(horizontal = 6.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            IconButton(onClick = onAttach) {
-                Icon(
-                    Icons.Filled.AttachFile,
-                    contentDescription = "Attach",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Surface(
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (dark) 0.55f else 0.85f),
-                tonalElevation = 0.dp,
-            ) {
-                BasicTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 44.dp)
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .onPreviewKeyEvent { event ->
-                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                            if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
-                                return@onPreviewKeyEvent false
-                            }
-                            // Shift+Enter → newline; Enter → send.
-                            if (event.isShiftPressed) return@onPreviewKeyEvent false
-                            if (canSend) send()
-                            true
-                        },
-                    textStyle = TextStyle(
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp,
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    maxLines = 5,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(
-                        onSend = { if (canSend) send() },
-                    ),
-                    decorationBox = { inner ->
-                        Box {
-                            if (draft.isEmpty()) {
-                                Text(
-                                    "Message",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 16.sp,
-                                )
-                            }
-                            inner()
-                        }
-                    },
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            FilledIconButton(
-                onClick = { send() },
-                enabled = canSend,
-                modifier = Modifier.scale(sendScale).size(46.dp),
-                shape = CircleShape,
-            ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
-            }
-        }
-    }
-}
-
 @Composable
 private fun ChatWallpaper(dark: Boolean, modifier: Modifier = Modifier) {
     val base = if (dark) NemoChatDark else NemoChatLight
     val dot = if (dark) NemoPatternDotDark else NemoPatternDotLight
-    Spacer(
-        modifier
-            .background(base)
-            .drawWithCache {
-                val step = 28.dp.toPx()
-                onDrawBehind {
-                    var y = step * 0.5f
-                    var row = 0
-                    while (y < size.height + step) {
-                        var x = if (row % 2 == 0) step * 0.35f else step * 0.85f
-                        while (x < size.width + step) {
-                            drawCircle(color = dot, radius = 1.6.dp.toPx(), center = Offset(x, y))
-                            x += step
-                        }
-                        y += step * 0.72f
-                        row++
-                    }
-                }
-            },
-    )
+    Canvas(modifier.background(base)) {
+        val step = 28.dp.toPx()
+        var y = step * 0.5f
+        var row = 0
+        while (y < size.height + step) {
+            var x = if (row % 2 == 0) step * 0.35f else step * 0.85f
+            while (x < size.width + step) {
+                drawCircle(color = dot, radius = 1.6.dp.toPx(), center = Offset(x, y))
+                x += step
+            }
+            y += step * 0.72f
+            row++
+        }
+    }
 }
 
 @Composable
@@ -1669,7 +1630,6 @@ private fun MessageBubble(
     clusteredAbove: Boolean,
     clusteredBelow: Boolean,
     animateEnter: Boolean,
-    freezeGradient: Boolean,
     onReact: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1746,11 +1706,10 @@ private fun MessageBubble(
                 Modifier
                     .widthIn(max = 320.dp)
                     .onGloballyPositioned { coords ->
-                        if (!mine || freezeGradient) return@onGloballyPositioned
-                        val y = coords.positionInWindow().y
-                        val h = coords.findRootCoordinates().size.height.toFloat()
-                        if (abs(y - windowY) > 1f) windowY = y
-                        if (abs(h - rootHeight) > 1f) rootHeight = h
+                        if (mine) {
+                            windowY = coords.positionInWindow().y
+                            rootHeight = coords.findRootCoordinates().size.height.toFloat()
+                        }
                     }
                     .shadow(2.dp, shape, ambientColor = shadow, spotColor = shadow)
                     .clip(shape)
@@ -1848,7 +1807,6 @@ private fun SettingsScreen(
     onPrivacyMode: (String) -> Unit,
 ) {
     Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
