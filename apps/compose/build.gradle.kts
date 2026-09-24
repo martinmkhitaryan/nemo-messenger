@@ -116,7 +116,7 @@ compose.desktop {
             packageVersion = "0.1.0"
             description = "Nemo Messenger"
             vendor = "Nemo"
-            copyright = "AGPL-3.0-only"
+            copyright = "Copyright (c) 2026 Martin Mkhitaryan. AGPL-3.0-only."
             linux {
                 debMaintainer = "nemo"
                 menuGroup = "Network"

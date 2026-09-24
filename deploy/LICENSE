@@ -1,0 +1,4 @@
+This directory is MIT. It packages blind infrastructure (Caddy, PostgreSQL,
+optional coturn) and MUST NOT ship libsignal or nemo-core (ADR-0028).
+
+See ../LICENSE-MIT and ../LICENSE.md.

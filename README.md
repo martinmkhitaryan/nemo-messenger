@@ -2142,7 +2142,9 @@ The protocol itself must not depend on a specific cloud provider.
 
 The security-critical components should be open source.
 
-The protocol specification is MIT ([LICENSE](LICENSE), [LICENSE.md](LICENSE.md)). The blind server and shared wire types stay MIT. A client that links libsignal is AGPL-3.0 (ADR-0028). Until those crates exist, this repository is specification-only and MIT.
+Licensing is split ([LICENSE.md](LICENSE.md), ADR-0028): the protocol specification, `nemo-wire`, `nemo-server`, and `deploy/` are **MIT** ([LICENSE-MIT](LICENSE-MIT)); `nemo-core`, `nemo-ffi`, and `apps/compose` are **AGPL-3.0-only** ([LICENSE-AGPL-3.0](LICENSE-AGPL-3.0)) because they link libsignal. The root [LICENSE](LICENSE) is only a pointer to that split.
+
+Third-party libraries keep their own licences and copyright holders. See [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Nemo’s licence does not relicense those dependencies; `deny.toml` constrains which dependency licences may appear in the Cargo graph.
 
 The project should favor:
 

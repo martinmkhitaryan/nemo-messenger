@@ -1,4 +1,4 @@
 This crate is MIT. It is blind infrastructure and MUST NOT depend on
 libsignal or nemo-core (ADR-0028).
 
-See ../../LICENSE and ../../LICENSE.md.
+See ../../LICENSE-MIT and ../../LICENSE.md.

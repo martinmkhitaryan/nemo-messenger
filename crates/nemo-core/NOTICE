@@ -1,0 +1,10 @@
+nemo-core
+Copyright (c) 2026 Martin Mkhitaryan
+
+Licensed under the GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+This crate links libsignal, which is AGPL-3.0-only; see ADR-0028 and ../../LICENSE.md.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The full license text for this crate is in LICENSE (and ../../LICENSE-AGPL-3.0).
+Third-party dependency notices for the product: ../../NOTICE, ../../THIRD_PARTY_NOTICES.md.

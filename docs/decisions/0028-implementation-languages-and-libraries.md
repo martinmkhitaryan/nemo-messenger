@@ -33,9 +33,9 @@ deploy         MIT     container, Caddy, PostgreSQL, optional coturn
 
 ### Licences
 
-- **Specification** (`README.md`, `docs/`) and **server / wire / deploy:** MIT, matching the existing `LICENSE`.
-- **Client core, FFI, and apps:** AGPL-3.0, because they link `libsignal`.
-- The repository root **MUST** carry a licence map ([LICENSE.md](../../LICENSE.md)) so a single GitHub `LICENSE` file cannot be read as “the whole product is MIT.” When a Cargo workspace exists, `cargo-deny` (or equivalent) **MUST** fail a server crate that depends on `libsignal` and a client crate that is not AGPL.
+- **Specification** (`README.md`, `docs/`) and **server / wire / deploy:** MIT ([`LICENSE-MIT`](../../LICENSE-MIT)).
+- **Client core, FFI, and apps:** AGPL-3.0-only, because they link `libsignal`. Full text: [`LICENSE-AGPL-3.0`](../../LICENSE-AGPL-3.0).
+- The repository root **MUST** carry a licence map ([LICENSE.md](../../LICENSE.md)) and named full texts (`LICENSE-MIT`, `LICENSE-AGPL-3.0`) so a single GitHub `LICENSE` file cannot be read as “the whole product is MIT.” When a Cargo workspace exists, `cargo-deny` (or equivalent) **MUST** fail a server crate that depends on `libsignal` and a client crate that is not AGPL.
 
 ### Cryptographic libraries (client)
 

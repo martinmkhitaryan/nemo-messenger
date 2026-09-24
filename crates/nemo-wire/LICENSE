@@ -1,4 +1,4 @@
 This crate is MIT. It encodes version-1 cards, envelopes, and HPKE and MUST NOT
 depend on libsignal or nemo-core (ADR-0028).
 
-See ../../LICENSE and ../../LICENSE.md.
+See ../../LICENSE-MIT and ../../LICENSE.md.
