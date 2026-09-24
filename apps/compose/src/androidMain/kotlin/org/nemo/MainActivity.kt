@@ -16,11 +16,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.nemo.NemoClient
 import java.io.File
 
@@ -75,13 +79,17 @@ actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
 actual fun rememberScanQr(onText: (String) -> Unit): () -> Unit {
     val ctx = LocalContext.current
     val latest = rememberUpdatedState(onText)
+    val scope = rememberCoroutineScope()
     val photo = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
         if (bitmap == null) return@rememberLauncherForActivityResult
         val w = bitmap.width
         val h = bitmap.height
         val pixels = IntArray(w * h)
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        decodeQrArgb(pixels, w, h)?.let(latest.value::invoke)
+        scope.launch {
+            val text = withContext(Dispatchers.Default) { decodeQrArgb(pixels, w, h) }
+            text?.let { latest.value.invoke(it) }
+        }
     }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) photo.launch(null)
