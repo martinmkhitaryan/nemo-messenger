@@ -118,11 +118,15 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.password
+import androidx.compose.ui.semantics.semantics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -1462,6 +1466,8 @@ private fun ChatThread(
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        // Clear Android gesture / nav bar; still lift for the IME.
+                        .navigationBarsPadding()
                         .imePadding()
                         .padding(horizontal = 6.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.Bottom,
@@ -2029,6 +2035,8 @@ private fun PassField(
         modifier = Modifier
             .fillMaxWidth()
             .testTag(label)
+            // Tell the IME / autofill this is a secret — no Gboard learning or dictionary hints.
+            .semantics { password() }
             .onPreviewKeyEvent { event ->
                 if (onSubmit == null) return@onPreviewKeyEvent false
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -2039,6 +2047,9 @@ private fun PassField(
         singleLine = true,
         shape = RoundedCornerShape(12.dp),
         keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.None,
+            autoCorrectEnabled = false,
+            keyboardType = KeyboardType.Password,
             imeAction = if (onSubmit != null) ImeAction.Go else ImeAction.Done,
         ),
         keyboardActions = KeyboardActions(
