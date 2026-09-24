@@ -1355,56 +1355,104 @@ private fun ChatThread(
     Scaffold(
         containerColor = wallpaper,
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(chat.title, chat.isGroup, size = 36.dp)
+            val pillColor = MaterialTheme.colorScheme.surface.copy(alpha = if (dark) 0.82f else 0.92f)
+            val pillShape = RoundedCornerShape(22.dp)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (showBack) {
+                    Surface(
+                        shape = CircleShape,
+                        color = pillColor,
+                        shadowElevation = 2.dp,
+                        tonalElevation = 0.dp,
+                    ) {
+                        IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                }
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = pillShape,
+                    color = pillColor,
+                    shadowElevation = 2.dp,
+                    tonalElevation = 0.dp,
+                    onClick = onSettings,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Avatar(chat.title, chat.isGroup, size = 34.dp)
                         Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(chat.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                chat.title,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                             Text(
                                 if (chat.isGroup) "Group" else "End-to-end encrypted",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
-                },
-                navigationIcon = {
-                    if (showBack) {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+                Surface(
+                    shape = pillShape,
+                    color = pillColor,
+                    shadowElevation = 2.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!chat.isGroup) {
+                            IconButton(onClick = onCall, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Filled.Call, contentDescription = "Call")
+                            }
+                        }
+                        Box {
+                            IconButton(onClick = { onChatMenu(true) }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(
+                                expanded = chatMenu,
+                                onDismissRequest = { onChatMenu(false) },
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 0.dp,
+                                shadowElevation = 8.dp,
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Answer call") },
+                                    onClick = { onChatMenu(false); onAnswer() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Decline call") },
+                                    onClick = { onChatMenu(false); onDecline() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Hang up") },
+                                    leadingIcon = { Icon(Icons.Filled.CallEnd, null) },
+                                    onClick = { onChatMenu(false); onHangup() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Chat settings") },
+                                    onClick = { onChatMenu(false); onSettings() },
+                                )
+                            }
                         }
                     }
-                },
-                actions = {
-                    if (!chat.isGroup) {
-                        IconButton(onClick = onCall) { Icon(Icons.Filled.Call, contentDescription = "Call") }
-                    }
-                    IconButton(onClick = { onChatMenu(true) }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
-                    }
-                    DropdownMenu(
-                        expanded = chatMenu,
-                        onDismissRequest = { onChatMenu(false) },
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 0.dp,
-                        shadowElevation = 8.dp,
-                    ) {
-                        DropdownMenuItem(text = { Text("Answer call") }, onClick = { onChatMenu(false); onAnswer() })
-                        DropdownMenuItem(text = { Text("Decline call") }, onClick = { onChatMenu(false); onDecline() })
-                        DropdownMenuItem(
-                            text = { Text("Hang up") },
-                            leadingIcon = { Icon(Icons.Filled.CallEnd, null) },
-                            onClick = { onChatMenu(false); onHangup() },
-                        )
-                        DropdownMenuItem(text = { Text("Chat settings") }, onClick = { onChatMenu(false); onSettings() })
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                ),
-            )
+                }
+            }
         },
         bottomBar = {
             Surface(
@@ -1486,12 +1534,22 @@ private fun ChatThread(
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        // Draw under the transparent top bar; keep messages readable via list top inset.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(bottom = padding.calculateBottomPadding()),
+        ) {
             ChatWallpaper(dark = dark, modifier = Modifier.fillMaxSize())
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                contentPadding = PaddingValues(
+                    start = 10.dp,
+                    end = 10.dp,
+                    top = padding.calculateTopPadding() + 10.dp,
+                    bottom = 10.dp,
+                ),
             ) {
                 itemsIndexed(
                     messages,
