@@ -27,20 +27,17 @@ internal val NemoOutgoingDark = Color(0xFF2B5278)
 /**
  * Screen-space outgoing bubble gradient (Telegram-style).
  * Colors are sampled by window Y so stacked bubbles share one continuous ribbon.
+ * Brush.verticalGradient: first stop = top of window, last = bottom.
  */
+/** Light: soft magenta (top) → soft blue (bottom). */
 internal val NemoOutgoingGradientLight = listOf(
-    Color(0xFFB8D9F8),
-    Color(0xFFC5D4F5),
-    Color(0xFFD2C8F0),
-    Color(0xFFC4E4F2),
-    Color(0xFFB5D8F0),
+    Color(0xFFE8C8F0), // soft magenta — top of screen
+    Color(0xFFB8D9F8), // soft blue — bottom of screen
 )
+/** Dark: magenta (top) → blue (bottom). */
 internal val NemoOutgoingGradientDark = listOf(
-    Color(0xFF1A4F7A),
-    Color(0xFF2A4580),
-    Color(0xFF3A3D72),
-    Color(0xFF1E5C6E),
-    Color(0xFF245A88),
+    Color(0xFFB04FC8), // magenta — top of screen
+    Color(0xFF2A6BB5), // blue — bottom of screen
 )
 internal val NemoIncomingLight = Color(0xFFFFFFFF)
 internal val NemoIncomingDark = Color(0xFF182533)
