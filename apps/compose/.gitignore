@@ -1,6 +1,8 @@
 /.gradle/
 /build/
+/composeApp/build/
+/androidApp/build/
 /.kotlin/
 /kotlin-js-store/
 /local.properties
-/src/androidMain/jniLibs/
+/composeApp/src/androidMain/jniLibs/

@@ -27,6 +27,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - name: Compose format and static analysis
+        working-directory: apps/compose
+        run: ./gradlew --no-daemon ktlintCheck detekt
       - name: Compose two-vault exchange
         working-directory: apps/compose
         run: ./gradlew --no-daemon desktopTest
@@ -283,7 +286,7 @@ jobs:
       # Google removed the legacy `tools` package. cmdline-tools come from this action.
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-36 build-tools;36.0.0 emulator'
+          packages: 'platform-tools platforms;android-37 build-tools;36.0.0 emulator'
       - name: Native build deps
         run: |
           sudo apt-get update
@@ -332,5 +335,5 @@ jobs:
         continue-on-error: true
         with:
           name: nemo-debug-apk
-          path: apps/compose/build/outputs/apk/debug/*.apk
+          path: apps/compose/androidApp/build/outputs/apk/debug/*.apk
           if-no-files-found: warn

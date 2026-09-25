@@ -18,3 +18,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "nemo-compose"
+
+include(":composeApp")
+include(":androidApp")

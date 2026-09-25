@@ -93,7 +93,7 @@ def make_opaque_icon(canvas: int) -> tuple[Image.Image, int, float]:
 
 
 # Android mipmaps (opaque; launcher applies the round mask).
-res = root / "apps/compose/src/androidMain/res"
+res = root / "apps/compose/composeApp/src/androidMain/res"
 densities = {
     "mdpi": (48, 108),
     "hdpi": (72, 162),
@@ -112,7 +112,7 @@ for dens, (legacy, fg) in densities.items():
     print(f"android {dens}: fg={fg}px logo={length} dark={pct:.1f}%R")
 
 # Desktop window / package icons — square original, no circular mask.
-desk = root / "apps/compose/src/desktopMain/resources"
+desk = root / "apps/compose/composeApp/src/desktopMain/resources"
 desk.mkdir(parents=True, exist_ok=True)
 for name, px in [("nemo_logo.png", 256), ("nemo_logo_512.png", 512)]:
     out = sq.resize((px, px), Image.Resampling.LANCZOS)
