@@ -1290,13 +1290,35 @@ private fun ChatListPane(
     onNewGroup: () -> Unit,
     onJoinGroup: () -> Unit,
 ) {
+    val dark = nemoDarkTheme()
+    val listBg = if (dark) NemoChatDark else NemoListLight
     Scaffold(
         modifier = modifier,
+        containerColor = listBg,
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text(if (label == "Nemo") "Chats" else "$label · Chats", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = {
+                    NemoBrandMark(
+                        Modifier
+                            .padding(start = 12.dp)
+                            .size(28.dp),
+                    )
+                },
+                title = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Chats", fontWeight = FontWeight.SemiBold)
+                        if (label != "Nemo") {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
+                    containerColor = listBg,
+                    scrolledContainerColor = listBg,
                 ),
                 actions = {
                     IconButton(onClick = onSettings) {
@@ -1357,19 +1379,34 @@ private fun ChatListPane(
     ) { padding ->
         if (chats.isEmpty()) {
             Column(
-                Modifier.fillMaxSize().padding(padding).padding(32.dp),
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outline)
-                Spacer(Modifier.height(12.dp))
-                Text("No conversations yet", style = MaterialTheme.typography.titleMedium)
+                NemoBrandMark(Modifier.size(72.dp))
+                Spacer(Modifier.height(16.dp))
                 Text(
-                    "Connect to your home server, then add someone with a Nemo contact card.",
+                    "No conversations yet",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Add someone with a contact card to start.",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(24.dp))
+                Button(
+                    onClick = onAdd,
+                    modifier = Modifier.height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("New chat") }
             }
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(padding)) {
@@ -1400,43 +1437,52 @@ private fun ChatRow(
         selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
         else -> Color.Transparent
     }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Avatar(chat.title, chat.isGroup)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    val hairline = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+    Column(Modifier.fillMaxWidth().background(bg)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Avatar(chat.title, chat.isGroup)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        chat.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (time.isNotEmpty()) {
+                        Text(
+                            time,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
                 Text(
-                    chat.title,
-                    style = MaterialTheme.typography.titleMedium,
+                    preview,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
                 )
-                if (time.isNotEmpty()) {
-                    Text(
-                        time,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (selected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                preview,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 78.dp)
+                .height(1.dp)
+                .background(hairline),
+        )
     }
 }
 
