@@ -527,36 +527,72 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                         )
                     }
                 }
-                Phase.Mnemonic -> OnboardScaffold(
-                    headline = "Recovery phrase",
-                    footnote = "Write this revocation phrase down. It is never stored.",
-                ) {
-                    SelectionContainer {
-                        Text(
-                            mnemonic ?: "",
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .padding(16.dp),
-                        )
-                    }
-                    Spacer(Modifier.height(20.dp))
-                    Button(
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        onClick = {
-                            runIo {
-                                val c = client ?: return@runIo
-                                fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
-                                identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
-                                showSettings = true
-                                phase = Phase.Home
-                            }
+                Phase.Mnemonic -> {
+                    val words = (mnemonic ?: "").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                    val chipBg = MaterialTheme.colorScheme.surface.copy(
+                        alpha = if (nemoDarkTheme()) 0.55f else 0.72f,
+                    )
+                    OnboardScaffold(
+                        headline = "Revocation phrase",
+                        footnote = "Write it down offline. It revokes this identity — it cannot unlock or restore anything.",
+                        footer = {
+                            TextButton(
+                                onClick = {
+                                    val phrase = mnemonic.orEmpty()
+                                    if (phrase.isNotEmpty()) {
+                                        copyToClipboard(phrase)
+                                        scope.launch { snackbar.showSnackbar("Copied") }
+                                    }
+                                },
+                            ) { Text("Copy phrase") }
                         },
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("I wrote it down") }
+                    ) {
+                        SelectionContainer {
+                            Column(
+                                Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                words.chunked(3).forEachIndexed { rowIdx, rowWords ->
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        rowWords.forEachIndexed { colIdx, word ->
+                                            val index = rowIdx * 3 + colIdx + 1
+                                            Text(
+                                                "$index  $word",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(chipBg)
+                                                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                                            )
+                                        }
+                                        repeat(3 - rowWords.size) {
+                                            Spacer(Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            onClick = {
+                                runIo {
+                                    val c = client ?: return@runIo
+                                    fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
+                                    identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
+                                    showSettings = true
+                                    phase = Phase.Home
+                                }
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("I wrote it down") }
+                    }
                 }
                 Phase.Home -> {
                     val c = client
