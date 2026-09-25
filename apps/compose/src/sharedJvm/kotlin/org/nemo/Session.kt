@@ -143,6 +143,11 @@ import java.util.concurrent.atomic.AtomicLong
 internal const val CANNOT_RECOVER =
     "This identity cannot be recovered or exported. If you lose the passphrase, the keys and history are gone."
 
+/** Quiet create-screen footnote — full policy stays in [CANNOT_RECOVER]. */
+internal const val CREATE_FOOTNOTE = "No recovery if you lose this passphrase."
+
+internal const val UNLOCK_FOOTNOTE = "There is no recovery if the passphrase is wrong."
+
 expect fun pickLocalFile(): String?
 
 expect fun deviceVaultSecret(vaultDir: File): ByteArray
@@ -372,10 +377,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         Column(Modifier.fillMaxSize().imePadding()) {
             SnackbarHost(snackbar)
             when (phase) {
-                Phase.Create -> OnboardScaffold(
-                    title = "Create identity",
-                    subtitle = CANNOT_RECOVER,
-                ) {
+                Phase.Create -> {
                     val createIdentity: () -> Unit = {
                         if (!busy) {
                             runIo {
@@ -399,31 +401,45 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             }
                         }
                     }
-                    PassField(
-                        label = "Passphrase (min 8)",
-                        value = passphrase,
-                        onChange = { passphrase = it },
-                    )
-                    PassField(
-                        label = "Confirm",
-                        value = confirm,
-                        onChange = { confirm = it },
-                        onSubmit = createIdentity,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Button(
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth().testTag("create-identity"),
-                        onClick = createIdentity,
-                    ) { Text("Create identity") }
-                    if (File(vaultDir, "kdf.cbor").isFile) {
-                        TextButton(onClick = { phase = Phase.Locked }) { Text("Unlock existing instead") }
+                    val hasVault = File(vaultDir, "kdf.cbor").isFile
+                    OnboardScaffold(
+                        headline = "Create identity",
+                        footnote = CREATE_FOOTNOTE,
+                        footer = if (hasVault) {
+                            {
+                                TextButton(onClick = { phase = Phase.Locked }) {
+                                    Text("Unlock existing instead")
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                    ) {
+                        PassField(
+                            label = "Passphrase (min 8)",
+                            value = passphrase,
+                            onChange = { passphrase = it },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        PassField(
+                            label = "Confirm",
+                            value = confirm,
+                            onChange = { confirm = it },
+                            onSubmit = createIdentity,
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            enabled = !busy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("create-identity"),
+                            onClick = createIdentity,
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("Create identity") }
                     }
                 }
-                Phase.Locked -> OnboardScaffold(
-                    title = "Welcome back",
-                    subtitle = "Unlock this vault. There is no recovery if the passphrase is wrong.",
-                ) {
+                Phase.Locked -> {
                     val unlock: () -> Unit = {
                         if (!busy) {
                             runIo {
@@ -450,20 +466,28 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             }
                         }
                     }
-                    PassField(
-                        label = "Passphrase",
-                        value = passphrase,
-                        onChange = { passphrase = it },
-                        onSubmit = unlock,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Button(
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = unlock,
-                    ) { Text("Unlock") }
-                    TextButton(onClick = { confirmWipe = true }) {
-                        Text("Create a new identity")
+                    OnboardScaffold(
+                        headline = "Welcome back",
+                        footnote = UNLOCK_FOOTNOTE,
+                        footer = {
+                            TextButton(onClick = { confirmWipe = true }) {
+                                Text("Create a new identity")
+                            }
+                        },
+                    ) {
+                        PassField(
+                            label = "Passphrase",
+                            value = passphrase,
+                            onChange = { passphrase = it },
+                            onSubmit = unlock,
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            onClick = unlock,
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("Unlock") }
                     }
                     if (confirmWipe) {
                         AlertDialog(
@@ -504,8 +528,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                     }
                 }
                 Phase.Mnemonic -> OnboardScaffold(
-                    title = "Recovery phrase",
-                    subtitle = "Write this revocation phrase down. It is never stored.",
+                    headline = "Recovery phrase",
+                    footnote = "Write this revocation phrase down. It is never stored.",
                 ) {
                     SelectionContainer {
                         Text(
@@ -519,9 +543,9 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 .padding(16.dp),
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(20.dp))
                     Button(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         onClick = {
                             runIo {
                                 val c = client ?: return@runIo
@@ -531,6 +555,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                 phase = Phase.Home
                             }
                         },
+                        shape = RoundedCornerShape(14.dp),
                     ) { Text("I wrote it down") }
                 }
                 Phase.Home -> {
@@ -1132,29 +1157,82 @@ private fun attachFilePath(
 }
 
 @Composable
-private fun OnboardScaffold(title: String, subtitle: String, content: @Composable () -> Unit) {
+private fun OnboardScaffold(
+    headline: String,
+    footnote: String? = null,
+    footer: (@Composable () -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    val dark = nemoDarkTheme()
+    val atmosphere = Brush.verticalGradient(
+        colors = if (dark) NemoOnboardGradientDark else NemoOnboardGradientLight,
+    )
+    val brandEnter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        brandEnter.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
+        )
+    }
+    val t = brandEnter.value
     Box(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(atmosphere)
             .statusBarsPadding()
             .navigationBarsPadding(),
-        contentAlignment = Alignment.Center,
     ) {
         Column(
             Modifier
+                .fillMaxSize()
                 .widthIn(max = 420.dp)
-                .padding(24.dp),
+                .align(Alignment.TopCenter)
+                .padding(horizontal = 28.dp, vertical = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            NemoBrandMark(Modifier.size(88.dp))
-            Spacer(Modifier.height(16.dp))
-            Text("Nemo", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(28.dp))
+            Column(
+                Modifier.graphicsLayer {
+                    alpha = t
+                    scaleX = 0.92f + 0.08f * t
+                    scaleY = 0.92f + 0.08f * t
+                },
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                NemoBrandMark(Modifier.size(112.dp))
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "Nemo",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+            }
+            Spacer(Modifier.height(36.dp))
+            Text(
+                headline,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Spacer(Modifier.height(18.dp))
             content()
+            if (!footnote.isNullOrBlank()) {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    footnote,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.9f),
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            if (footer != null) {
+                footer()
+                Spacer(Modifier.height(8.dp))
+            }
         }
     }
 }

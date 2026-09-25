@@ -10,6 +10,8 @@ class UiDisplayTest {
     @Test
     fun createCopyForbidsRecoveryAndExport() {
         assertTrue(CANNOT_RECOVER.contains("cannot be recovered or exported"))
+        assertTrue(CREATE_FOOTNOTE.contains("No recovery"))
+        assertTrue(UNLOCK_FOOTNOTE.contains("no recovery"))
     }
 
     @Test

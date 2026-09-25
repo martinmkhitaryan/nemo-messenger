@@ -49,6 +49,18 @@ internal val NemoBubbleShadowDark = Color(0x40000000)
 internal val NemoPatternDotLight = Color(0x14000000)
 internal val NemoPatternDotDark = Color(0x14FFFFFF)
 
+/** Soft atmosphere for unlock / create identity (cool blues only). */
+internal val NemoOnboardGradientLight = listOf(
+    Color(0xFFEAF3FA),
+    NemoListLight,
+    Color(0xFFD6EBFF),
+)
+internal val NemoOnboardGradientDark = listOf(
+    Color(0xFF0B141A),
+    NemoChatDark,
+    Color(0xFF152838),
+)
+
 internal enum class NemoThemeMode {
     System,
     Light,
