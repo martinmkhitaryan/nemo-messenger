@@ -89,6 +89,29 @@ actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
 }
 
 @Composable
+actual fun rememberSaveFile(onResult: (Boolean) -> Unit): (fileName: String, bytes: ByteArray) -> Unit {
+    val latest = rememberUpdatedState(onResult)
+    return { fileName, bytes ->
+        val suggested = fileName.ifBlank { "attachment" }
+        val dlg = java.awt.FileDialog(null as java.awt.Frame?, "Save file", java.awt.FileDialog.SAVE)
+        dlg.file = suggested
+        dlg.isVisible = true
+        val dir = dlg.directory
+        val name = dlg.file
+        if (dir.isNullOrEmpty() || name.isNullOrEmpty()) {
+            latest.value.invoke(false)
+        } else {
+            try {
+                File(dir, name).writeBytes(bytes)
+                latest.value.invoke(true)
+            } catch (_: Throwable) {
+                latest.value.invoke(false)
+            }
+        }
+    }
+}
+
+@Composable
 actual fun rememberScanQr(onText: (String) -> Unit): () -> Unit {
     val latest = rememberUpdatedState(onText)
     return {

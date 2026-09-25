@@ -35,6 +35,14 @@ class UiDisplayTest {
     }
 
     @Test
+    fun saveMenuOnlyWhenFileBytesPresent() {
+        assertTrue(canSaveAttachment(row(fileName = "note.txt", fileBytes = byteArrayOf(1))))
+        assertTrue(!canSaveAttachment(row(fileName = "note.txt")))
+        assertTrue(!canSaveAttachment(row(fileName = "note.txt", fileBytes = byteArrayOf(1), hidden = true)))
+        assertTrue(!canSaveAttachment(row(text = "hello")))
+    }
+
+    @Test
     fun hideMarksMatchingMessageAndDoesNotDuplicate() {
         val messages = mutableListOf(row(kind = "", convSeq = 3UL, text = "hello"))
         applyIncoming(
@@ -63,6 +71,7 @@ class UiDisplayTest {
         text: String = "hello",
         hidden: Boolean = false,
         fileName: String = "",
+        fileBytes: ByteArray = byteArrayOf(),
         emoji: String = "",
         convSeq: ULong = 1UL,
         target: ULong = 0UL,
@@ -73,7 +82,7 @@ class UiDisplayTest {
         sentAt = 1UL,
         fileName = fileName,
         fileMime = "",
-        fileBytes = byteArrayOf(),
+        fileBytes = fileBytes,
         fetchToken = "",
         kind = kind,
         emoji = emoji,

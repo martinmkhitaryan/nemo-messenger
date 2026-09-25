@@ -72,6 +72,37 @@ actual fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit {
 }
 
 @Composable
+actual fun rememberSaveFile(onResult: (Boolean) -> Unit): (fileName: String, bytes: ByteArray) -> Unit {
+    val ctx = LocalContext.current
+    val latest = rememberUpdatedState(onResult)
+    var pending by remember { mutableStateOf<ByteArray?>(null) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val bytes = pending
+        pending = null
+        if (uri == null || bytes == null) {
+            latest.value.invoke(false)
+            return@rememberLauncherForActivityResult
+        }
+        try {
+            ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                ?: run {
+                    latest.value.invoke(false)
+                    return@rememberLauncherForActivityResult
+                }
+            latest.value.invoke(true)
+        } catch (_: Throwable) {
+            latest.value.invoke(false)
+        }
+    }
+    return remember(launcher) {
+        { fileName, bytes ->
+            pending = bytes
+            launcher.launch(fileName.ifBlank { "attachment" })
+        }
+    }
+}
+
+@Composable
 actual fun rememberScanQr(onText: (String) -> Unit): () -> Unit {
     val ctx = LocalContext.current
     val latest = rememberUpdatedState(onText)

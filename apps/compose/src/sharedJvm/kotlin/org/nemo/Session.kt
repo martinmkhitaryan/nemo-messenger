@@ -150,6 +150,10 @@ expect fun deviceVaultSecret(vaultDir: File): ByteArray
 @Composable
 expect fun rememberPickFile(onPicked: (String) -> Unit): () -> Unit
 
+/** Opens a platform save dialog; invokes [onResult] with true when bytes were written. */
+@Composable
+expect fun rememberSaveFile(onResult: (Boolean) -> Unit): (fileName: String, bytes: ByteArray) -> Unit
+
 @Composable
 expect fun rememberScanQr(onText: (String) -> Unit): () -> Unit
 
@@ -163,6 +167,9 @@ expect fun stopCallAudio()
 
 @Composable
 expect fun rememberEnsureMic(onReady: () -> Unit): () -> Unit
+
+internal fun canSaveAttachment(row: DisplayRow): Boolean =
+    row.fileName.isNotEmpty() && row.fileBytes.isNotEmpty() && !row.hidden
 
 private enum class Phase { Locked, Create, Mnemonic, Home }
 
@@ -541,6 +548,11 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             scope,
                         )
                     }
+                    val saveFile = rememberSaveFile { ok ->
+                        if (ok) {
+                            scope.launch { snackbar.showSnackbar("Saved") }
+                        }
+                    }
                     var micAction by remember { mutableStateOf<(() -> Unit)?>(null) }
                     val requestMic = rememberEnsureMic { micAction?.invoke() }
                     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -762,6 +774,15 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
                                                 }
                                             },
+                                            onSave = { row ->
+                                                if (canSaveAttachment(row)) {
+                                                    saveFile(row.fileName, row.fileBytes)
+                                                } else {
+                                                    scope.launch {
+                                                        snackbar.showSnackbar("File unavailable")
+                                                    }
+                                                }
+                                            },
                                         )
                                     }
                                 }
@@ -852,6 +873,15 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             c?.deleteMessage(chat.id, row.convSeq)
                                         } ?: return@runIo
                                         applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                                    }
+                                },
+                                onSave = { row ->
+                                    if (canSaveAttachment(row)) {
+                                        saveFile(row.fileName, row.fileBytes)
+                                    } else {
+                                        scope.launch {
+                                            snackbar.showSnackbar("File unavailable")
+                                        }
                                     }
                                 },
                             )
@@ -1318,6 +1348,7 @@ private fun ChatThread(
     onDecline: () -> Unit,
     onReact: (DisplayRow) -> Unit,
     onDelete: (DisplayRow) -> Unit,
+    onSave: (DisplayRow) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val dark = nemoDarkTheme()
@@ -1585,6 +1616,7 @@ private fun ChatThread(
                         animateEnter = animateEnter,
                         onReact = { onReact(row) },
                         onDelete = { onDelete(row) },
+                        onSave = { onSave(row) },
                         modifier = Modifier.padding(top = gap),
                     )
                 }
@@ -1623,6 +1655,7 @@ private fun MessageBubble(
     animateEnter: Boolean,
     onReact: () -> Unit,
     onDelete: () -> Unit,
+    onSave: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -1741,6 +1774,9 @@ private fun MessageBubble(
                 tonalElevation = 0.dp,
                 shadowElevation = 8.dp,
             ) {
+                if (canSaveAttachment(row)) {
+                    DropdownMenuItem(text = { Text("Save") }, onClick = { menu = false; onSave() })
+                }
                 DropdownMenuItem(text = { Text("React 👍") }, onClick = { menu = false; onReact() })
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })
             }
