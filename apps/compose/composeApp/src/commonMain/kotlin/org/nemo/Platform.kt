@@ -16,7 +16,7 @@ expect fun copyToClipboard(text: String)
 expect fun NemoBackHandler(enabled: Boolean = true, onBack: () -> Unit)
 
 /**
- * Mobile send-morph duration (ms). Mobile morphs composer → bubble (~480 ms).
+ * Mobile send-morph flight duration (ms). Mobile flies composer → bubble (~460 ms).
  * Desktop has no morph — new bubbles appear in place (250 ms,
  * cubic-bezier(.4,0,.2,1)). See MessageSendAnimation header.
  */

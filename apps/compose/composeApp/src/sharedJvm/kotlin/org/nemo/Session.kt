@@ -1839,8 +1839,11 @@ private fun ChatThread(
                                 onValueChange = onDraft,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(min = 44.dp)
-                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                                    .heightIn(min = if (useFlyMorph) 40.dp else 44.dp)
+                                    .padding(
+                                        horizontal = 16.dp,
+                                        vertical = if (useFlyMorph) 10.dp else 12.dp,
+                                    )
                                     .onPreviewKeyEvent { event ->
                                         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                         if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
@@ -2138,27 +2141,20 @@ private fun MessageBubble(
                         },
                     )
                     .clickable(enabled = !conceal) { menu = true }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
-                Text(
-                    bubbleText(row),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = bodyColor,
+                BubbleContent(
+                    text = bubbleText(row),
+                    timeLabel = formatTime(row.sentAt),
+                    bodyColor = bodyColor,
+                    metaColor = metaColor,
+                    hasStatus = mine && status != null,
+                    status = {
+                        if (mine && status != null) {
+                            DeliveryTicks(status = status, tint = metaColor)
+                        }
+                    },
                 )
-                Row(
-                    Modifier.align(Alignment.End).padding(top = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    Text(
-                        formatTime(row.sentAt),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = metaColor,
-                    )
-                    if (mine && status != null) {
-                        DeliveryTicks(status = status, tint = metaColor)
-                    }
-                }
             }
             DropdownMenu(
                 expanded = menu,
