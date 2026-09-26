@@ -33,17 +33,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.lerp as lerpRect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.lerp as lerpDp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.PI
@@ -70,10 +67,7 @@ internal data class MessageSendAnimation(
     val clusteredBelow: Boolean = false,
 )
 
-internal data class PendingMessageSend(
-    val text: String,
-    val source: Rect,
-)
+internal data class PendingMessageSend(val text: String, val source: Rect)
 
 /** Screen-space outgoing ribbon shared with [MessageBubble]. */
 internal fun outgoingScreenBrush(dark: Boolean, windowTopY: Float, rootHeightPx: Float): Brush {
@@ -135,7 +129,7 @@ internal fun MessageSendFlyOverlay(
     // Live target: if the thread scrolls mid-flight, keep synchronizing to the real bubble.
     val to = liveTarget ?: animation.source
     val t = if (liveTarget == null) 0f else progress.value
-    val baseRect = lerpRect(animation.source, to, t)
+    val baseRect = androidx.compose.ui.geometry.lerp(animation.source, to, t)
     // Arc lift mid-flight so the travel reads as a physical send, not a straight slide.
     val arcPx = with(density) { 20.dp.toPx() }
     val arcLift = sin(t * PI).toFloat() * arcPx
@@ -157,16 +151,16 @@ internal fun MessageSendFlyOverlay(
     )
     val bodyFrom = MaterialTheme.colorScheme.onSurface
     val bodyTo = if (dark) Color(0xFFE8F4FF) else MaterialTheme.colorScheme.onSurface
-    val bodyColor = lerpColor(bodyFrom, bodyTo, morph)
+    val bodyColor = androidx.compose.ui.graphics.lerp(bodyFrom, bodyTo, morph)
     val metaColor = if (dark) {
         Color(0xFFB8D4E8).copy(alpha = 0.9f * metaT)
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f * metaT)
     }
 
-    val padH = lerpDp(16.dp, 12.dp, morph)
-    val padV = lerpDp(12.dp, 7.dp, morph)
-    val shadowElev = lerpDp(0.dp, 2.dp, morph)
+    val padH = androidx.compose.ui.unit.lerp(16.dp, 12.dp, morph)
+    val padV = androidx.compose.ui.unit.lerp(12.dp, 7.dp, morph)
+    val shadowElev = androidx.compose.ui.unit.lerp(0.dp, 2.dp, morph)
 
     val corner = 18f
     val tight = 6f
@@ -184,11 +178,11 @@ internal fun MessageSendFlyOverlay(
     val brush = outgoingScreenBrush(dark, windowTopY, rootHeightPx)
     val shadow = if (dark) NemoBubbleShadowDark else NemoBubbleShadowLight
     val bodyStyle = MaterialTheme.typography.bodyLarge
-    val fontSize = lerpDp(16.sp, bodyStyle.fontSize, morph)
+    val fontSize = androidx.compose.ui.unit.lerp(16.sp, bodyStyle.fontSize, morph)
     val endLineHeight = bodyStyle.lineHeight.let { lh ->
         if (lh == TextUnit.Unspecified) 22.sp else lh
     }
-    val lineHeight = lerpDp(22.sp, endLineHeight, morph)
+    val lineHeight = androidx.compose.ui.unit.lerp(22.sp, endLineHeight, morph)
 
     Box(
         Modifier
