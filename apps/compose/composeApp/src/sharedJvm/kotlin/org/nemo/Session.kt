@@ -1,6 +1,7 @@
 package org.nemo
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.EaseOutCubic
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -105,7 +106,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -134,7 +134,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
@@ -169,7 +168,7 @@ private enum class Sheet { None, AddContact, NewGroup, JoinGroup }
 
 private data class ChatTarget(val id: String, val title: String, val isGroup: Boolean)
 
-/** Telegram-style ticks for outgoing bubbles (peer read receipts are off by default). */
+/** Ticks for outgoing bubbles (peer read receipts are off by default). */
 internal enum class OutgoingStatus {
     Pending,
     Sent,
@@ -191,21 +190,7 @@ internal fun outgoingMapKey(row: DisplayRow): String = if (row.fetchToken.starts
     "${row.convId}:${row.convSeq}:${row.kind}"
 }
 
-/** Composer → bubble flight for an optimistic outgoing text row. */
-private data class ActiveSendFly(val listKey: String, val text: String, val from: Rect)
-
-private data class PendingSendFly(val text: String, val from: Rect)
-
-/** Same continuous screen-space ribbon used by real outgoing bubbles. */
-private fun outgoingScreenBrush(dark: Boolean, windowTopY: Float, rootHeightPx: Float): Brush {
-    val stops = if (dark) NemoOutgoingGradientDark else NemoOutgoingGradientLight
-    val h = rootHeightPx.coerceAtLeast(1f)
-    return Brush.verticalGradient(
-        colors = stops,
-        startY = -windowTopY,
-        endY = -windowTopY + h,
-    )
-}
+/** Composer → bubble flight: mobile only. See [MessageSendAnimation]. */
 
 /** Map [child] window bounds into [parent]'s local coordinates (parent need not be an ancestor). */
 private fun boundsInParent(parent: LayoutCoordinates, child: LayoutCoordinates): Rect {
@@ -221,7 +206,7 @@ private fun boundsInParent(parent: LayoutCoordinates, child: LayoutCoordinates):
 
 /**
  * Keep the newest message pinned to the composer (list start when [reverseLayout] is true).
- * Short threads then sit above the input with empty space above — Telegram-style.
+ * Short threads then sit above the input with empty space above.
  */
 private suspend fun LazyListState.animateChatToBottom(animated: Boolean) {
     if (layoutInfo.totalItemsCount <= 0) return
@@ -1598,9 +1583,12 @@ private fun ChatThread(
     var composerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var overlayWindowOrigin by remember { mutableStateOf(Offset.Zero) }
     var rootHeightPx by remember { mutableFloatStateOf(1f) }
-    var pendingFly by remember(chat.id) { mutableStateOf<PendingSendFly?>(null) }
-    val activeFlies = remember(chat.id) { mutableStateListOf<ActiveSendFly>() }
+    var pendingFly by remember(chat.id) { mutableStateOf<PendingMessageSend?>(null) }
+    val activeFlies = remember(chat.id) { mutableStateListOf<MessageSendAnimation>() }
     val flyTargets = remember(chat.id) { mutableStateMapOf<String, Rect>() }
+    // Platform split: mobile morphs composer → bubble;
+    // desktop has no morph — new bubbles just appear (see MessageSendAnimation).
+    val useFlyMorph = messageSendFlyMobileFeel()
     val flyingKeys = remember(activeFlies.size, activeFlies.map { it.listKey }) {
         activeFlies.map { it.listKey }.toSet()
     }
@@ -1638,7 +1626,12 @@ private fun ChatThread(
         listState.animateChatToBottom(animated = chatReady)
     }
     // Promote pending composer capture → active flight once the optimistic row exists.
+    // Mobile only: desktop/web never flies, bubbles just appear.
     LaunchedEffect(lastKey) {
+        if (!useFlyMorph) {
+            pendingFly = null
+            return@LaunchedEffect
+        }
         val pending = pendingFly ?: return@LaunchedEffect
         val key = lastKey ?: return@LaunchedEffect
         if (!key.startsWith("local:")) return@LaunchedEffect
@@ -1646,7 +1639,7 @@ private fun ChatThread(
         if (messageListKey(last) != key || last.text != pending.text) return@LaunchedEffect
         pendingFly = null
         if (activeFlies.none { it.listKey == key }) {
-            activeFlies.add(ActiveSendFly(listKey = key, text = pending.text, from = pending.from))
+            activeFlies.add(messageSendAnimationFor(last, key, pending.source, messages, outgoing))
         }
     }
 
@@ -1663,12 +1656,32 @@ private fun ChatThread(
             }
             val parent = overlayRoot
             val child = composerCoords
-            if (parent != null && child != null) {
-                pendingFly = PendingSendFly(text = text, from = boundsInParent(parent, child))
+            // Capture the *visible* composer rect (includes IME padding on mobile).
+            val from = if (parent != null && child != null) {
+                boundsInParent(parent, child)
+            } else {
+                null
+            }
+            // Insert + clear draft. Mobile starts the morph overlay in the same turn so
+            // text transfers continuously (no empty-composer frame before the fly begins).
+            // Desktop/web has no morph — the bubble just appears via animateEnter.
+            onSend()
+            if (!useFlyMorph) {
+                pendingFly = null
+            } else if (from != null) {
+                val last = messages.lastOrNull()
+                val key = last?.let { messageListKey(it) }
+                if (key != null && key.startsWith("local:") && last.text == text) {
+                    pendingFly = null
+                    if (activeFlies.none { it.listKey == key }) {
+                        activeFlies.add(messageSendAnimationFor(last, key, from, messages, outgoing))
+                    }
+                } else {
+                    pendingFly = PendingMessageSend(text = text, source = from)
+                }
             } else {
                 pendingFly = null
             }
-            onSend()
         }
     }
 
@@ -1882,7 +1895,7 @@ private fun ChatThread(
                     .padding(bottom = padding.calculateBottomPadding()),
             ) {
                 ChatWallpaper(dark = dark, modifier = Modifier.fillMaxSize())
-                // reverseLayout stacks short threads on the composer (empty space above), like Telegram.
+                // reverseLayout stacks short threads on the composer (empty space above).
                 val newestFirst = remember(messages) { messages.asReversed() }
                 LazyColumn(
                     state = listState,
@@ -1913,7 +1926,7 @@ private fun ChatThread(
                         val clusteredBelow = nextMine == mine
                         val gap = if (clusteredAbove) 2.dp else 8.dp
                         val listKey = messageListKey(row)
-                        val isFlying = listKey in flyingKeys
+                        val isFlying = useFlyMorph && listKey in flyingKeys
                         val animateEnter = remember(listKey) {
                             val neu = seedDone && listKey !in knownKeys
                             if (neu) knownKeys.add(listKey)
@@ -1948,106 +1961,51 @@ private fun ChatThread(
             }
         }
 
-        // Overlay above scaffold so flights can start in the composer (bottom bar).
-        for (fly in activeFlies.toList()) {
-            key(fly.listKey) {
-                SendFlyBubble(
-                    fly = fly,
-                    target = flyTargets[fly.listKey],
-                    overlayWindowOrigin = overlayWindowOrigin,
-                    rootHeightPx = rootHeightPx,
-                    dark = dark,
-                    onFinished = {
-                        activeFlies.removeAll { it.listKey == fly.listKey }
-                        flyTargets.remove(fly.listKey)
-                    },
-                )
+        // Mobile only overlay: composer → bubble morph (not a list-item slide-in).
+        // Desktop intentionally has no overlay — bubbles appear in place.
+        if (useFlyMorph) {
+            for (fly in activeFlies.toList()) {
+                key(fly.listKey) {
+                    MessageSendFlyOverlay(
+                        animation = fly,
+                        liveTarget = flyTargets[fly.listKey],
+                        overlayWindowOrigin = overlayWindowOrigin,
+                        rootHeightPx = rootHeightPx,
+                        dark = dark,
+                        onFinished = {
+                            activeFlies.removeAll { it.listKey == fly.listKey }
+                            flyTargets.remove(fly.listKey)
+                        },
+                    )
+                }
             }
         }
     }
 }
 
-/**
- * Temporary outgoing bubble that morphs from the composer rect into the list item rect.
- * Uses the same screen-space gradient as [MessageBubble] so color stays continuous.
- */
-@Composable
-private fun SendFlyBubble(
-    fly: ActiveSendFly,
-    target: Rect?,
-    overlayWindowOrigin: Offset,
-    rootHeightPx: Float,
-    dark: Boolean,
-    onFinished: () -> Unit,
-) {
-    val density = LocalDensity.current
-    val progress = remember(fly.listKey) { Animatable(0f) }
-    var finished by remember(fly.listKey) { mutableStateOf(false) }
-
-    LaunchedEffect(fly.listKey, target == null) {
-        if (target == null) return@LaunchedEffect
-        progress.snapTo(0f)
-        progress.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 320, easing = EaseOutCubic),
-        )
-        if (!finished) {
-            finished = true
-            onFinished()
-        }
+private fun messageSendAnimationFor(
+    row: DisplayRow,
+    listKey: String,
+    source: Rect,
+    messages: List<DisplayRow>,
+    outgoing: Map<String, Boolean>,
+): MessageSendAnimation {
+    val idx = messages.indexOfFirst { messageListKey(it) == listKey }.coerceAtLeast(0)
+    val mine = true
+    val prevMine = messages.getOrNull(idx - 1)?.let { prev ->
+        prev.outgoing || outgoing[outgoingMapKey(prev)] == true
     }
-    LaunchedEffect(fly.listKey) {
-        delay(600)
-        if (!finished) {
-            finished = true
-            onFinished()
-        }
+    val nextMine = messages.getOrNull(idx + 1)?.let { next ->
+        next.outgoing || outgoing[outgoingMapKey(next)] == true
     }
-
-    val to = target ?: fly.from
-    val t = if (target == null) 0f else progress.value
-    val rect = lerp(fly.from, to, t)
-    val corner = androidx.compose.ui.util.lerp(22f, 18f, t)
-    val windowTopY = overlayWindowOrigin.y + rect.top
-    val brush = outgoingScreenBrush(dark, windowTopY, rootHeightPx)
-    val bodyColor = if (dark) Color(0xFFE8F4FF) else MaterialTheme.colorScheme.onSurface
-    val metaColor = if (dark) {
-        Color(0xFFB8D4E8).copy(alpha = 0.9f * t)
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f * t)
-    }
-    val shadow = if (dark) NemoBubbleShadowDark else NemoBubbleShadowLight
-
-    Column(
-        Modifier
-            .offset { IntOffset(rect.left.roundToInt(), rect.top.roundToInt()) }
-            .width(with(density) { rect.width.toDp().coerceAtLeast(48.dp) })
-            .height(with(density) { rect.height.toDp().coerceAtLeast(36.dp) })
-            .shadow(2.dp, RoundedCornerShape(corner.dp), ambientColor = shadow, spotColor = shadow)
-            .clip(RoundedCornerShape(corner.dp))
-            .background(brush)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-    ) {
-        Text(
-            fly.text,
-            style = MaterialTheme.typography.bodyLarge,
-            color = bodyColor,
-            maxLines = 8,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        Row(
-            Modifier.align(Alignment.End).padding(top = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Text(
-                formatTime(nowUnixSecs()),
-                style = MaterialTheme.typography.labelSmall,
-                color = metaColor,
-            )
-        }
-    }
+    return MessageSendAnimation(
+        listKey = listKey,
+        text = row.text,
+        timeLabel = formatTime(row.sentAt),
+        source = source,
+        clusteredAbove = prevMine == mine,
+        clusteredBelow = nextMine == mine,
+    )
 }
 
 @Composable
@@ -2087,12 +2045,18 @@ private fun MessageBubble(
 ) {
     var menu by remember { mutableStateOf(false) }
     val dark = nemoDarkTheme()
+    // Appear animation: desktop has no composer morph — new bubbles fade/scale/rise
+    // in place (250 ms cubic-bezier(.4,0,.2,1)). Mobile keeps its morph overlay for
+    // outgoing sends; incoming bubbles on both platforms use this subtle appear.
+    val mobileFeel = messageSendFlyMobileFeel()
+    val appearEasing = if (mobileFeel) EaseOutCubic else CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
+    val appearMs = if (mobileFeel) 180 else 250
     val enter = remember { Animatable(if (animateEnter) 0f else 1f) }
     LaunchedEffect(Unit) {
         if (animateEnter) {
             enter.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(durationMillis = 160, easing = EaseOutCubic),
+                animationSpec = tween(durationMillis = appearMs, easing = appearEasing),
             )
         }
     }
@@ -2134,11 +2098,25 @@ private fun MessageBubble(
         else -> MaterialTheme.colorScheme.onSurface
     }
     val t = enter.value
+    val density = LocalDensity.current
+    val risePx = with(density) { (if (mobileFeel) 4.dp else 8.dp).toPx() } * (1f - t)
+    val appearScale = if (mobileFeel) {
+        1f
+    } else {
+        androidx.compose.ui.util.lerp(0.9f, 1f, appearEasing.transform(t))
+    }
     Row(
         modifier
             .fillMaxWidth()
             .graphicsLayer {
                 alpha = if (conceal) 0f else t
+                scaleX = appearScale
+                scaleY = appearScale
+                translationY = risePx
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
+                    if (mine) 1f else 0f,
+                    1f,
+                )
             },
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
     ) {

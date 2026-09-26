@@ -140,6 +140,10 @@ actual fun NemoBackHandler(enabled: Boolean, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled = enabled, onBack = onBack)
 }
 
+internal actual fun messageSendFlyDurationMs(): Int = 480
+
+internal actual fun messageSendFlyMobileFeel(): Boolean = true
+
 actual fun startCallAudio(client: NemoClient) {
     val ctx = appContext ?: return
     CallAudio.start(ctx, client)

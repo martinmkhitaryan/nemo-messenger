@@ -18,7 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 
-/** Telegram-like brand blue (not WhatsApp green). */
+/** Brand blue. */
 internal val NemoBlue = Color(0xFF3390EC)
 internal val NemoBlueBright = Color(0xFF5CA8F5)
 
@@ -26,7 +26,7 @@ internal val NemoBlueBright = Color(0xFF5CA8F5)
 internal val NemoOutgoingLight = Color(0xFFD5E8F7)
 internal val NemoOutgoingDark = Color(0xFF2B5278)
 /**
- * Screen-space outgoing bubble gradient (Telegram-style).
+ * Screen-space outgoing bubble gradient.
  * Colors are sampled by window Y so stacked bubbles share one continuous ribbon.
  * Brush.verticalGradient: first stop = top of window, last = bottom.
  */

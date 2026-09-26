@@ -152,6 +152,10 @@ actual fun NemoBackHandler(enabled: Boolean, onBack: () -> Unit) {
     // Desktop has no system back gesture; Escape / window chrome stay as-is.
 }
 
+internal actual fun messageSendFlyDurationMs(): Int = 420
+
+internal actual fun messageSendFlyMobileFeel(): Boolean = false
+
 actual fun startCallAudio(client: NemoClient) {
     DesktopCallAudio.start(client)
 }

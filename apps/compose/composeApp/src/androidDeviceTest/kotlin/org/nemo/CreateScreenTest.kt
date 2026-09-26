@@ -35,7 +35,7 @@ class CreateScreenTest {
             }
         }
         compose.onAllNodesWithText("Create identity")[0].assertIsDisplayed()
-        compose.onNodeWithText("cannot be recovered or exported", substring = true).assertIsDisplayed()
+        compose.onNodeWithText(CREATE_FOOTNOTE, substring = true).assertIsDisplayed()
         compose.onNodeWithTag("Passphrase (min 8)").performTextInput("short")
         compose.onNodeWithTag("Confirm").performTextInput("short")
         compose.onNodeWithTag("create-identity").performClick()
