@@ -82,8 +82,7 @@ internal data class MessageSendAnimation(
 internal data class PendingMessageSend(val text: String, val source: Rect)
 
 /** Screen-space outgoing ribbon shared with [MessageBubble]. */
-internal fun outgoingScreenBrush(dark: Boolean, windowTopY: Float, rootHeightPx: Float): Brush {
-    val stops = if (dark) NemoOutgoingGradientDark else NemoOutgoingGradientLight
+internal fun outgoingScreenBrush(stops: List<Color>, windowTopY: Float, rootHeightPx: Float): Brush {
     val h = rootHeightPx.coerceAtLeast(1f)
     return Brush.verticalGradient(
         colors = stops,
@@ -308,11 +307,19 @@ internal fun MessageSendFlyOverlay(
     // Fast early fade with the reveal; time fades on the same track.
     val boxAlpha = revealT
 
-    val bodyColor = if (dark) Color(0xFFE8F4FF) else MaterialTheme.colorScheme.onSurface
-    val metaColor = if (dark) {
-        Color(0xFFB8D4E8).copy(alpha = 0.9f)
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+    // Mono overlay morphs into the inverse bubble; blue branches unchanged.
+    val palette = LocalNemoPalette.current
+    val bodyColor = when {
+        palette.mono && dark -> Color(0xFF000000)
+        palette.mono -> Color(0xFFFFFFFF)
+        dark -> Color(0xFFE8F4FF)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val metaColor = when {
+        palette.mono && dark -> Color(0xFF000000).copy(alpha = 0.65f)
+        palette.mono -> Color(0xFFFFFFFF).copy(alpha = 0.75f)
+        dark -> Color(0xFFB8D4E8).copy(alpha = 0.9f)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
     }
 
     val padH = 12.dp
@@ -332,8 +339,8 @@ internal fun MessageSendFlyOverlay(
         bottomEnd = endBottomEnd,
     )
     val windowTopY = overlayWindowOrigin.y + rect.top
-    val brush = outgoingScreenBrush(dark, windowTopY, rootHeightPx)
-    val shadow = if (dark) NemoBubbleShadowDark else NemoBubbleShadowLight
+    val brush = outgoingScreenBrush(palette.outgoingGradient, windowTopY, rootHeightPx)
+    val shadow = palette.bubbleShadow
 
     Box(
         Modifier

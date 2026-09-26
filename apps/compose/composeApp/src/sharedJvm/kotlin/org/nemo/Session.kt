@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -642,17 +643,39 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             ) {
                                                 rowWords.forEachIndexed { colIdx, word ->
                                                     val index = rowIdx * 3 + colIdx + 1
-                                                    Text(
-                                                        "$index  $word",
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontFamily = FontFamily.Monospace,
-                                                        color = MaterialTheme.colorScheme.onSurface,
+                                                    // Fixed height + fixed-width number slot: every chip
+                                                    // measures the same, so long words can never
+                                                    // stagger the row (see the wrapped "business" chip).
+                                                    Row(
                                                         modifier = Modifier
                                                             .weight(1f)
+                                                            .height(44.dp)
                                                             .clip(RoundedCornerShape(10.dp))
                                                             .background(chipBg)
-                                                            .padding(horizontal = 10.dp, vertical = 10.dp),
-                                                    )
+                                                            .padding(horizontal = 6.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                    ) {
+                                                        Text(
+                                                            "$index",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontFamily = FontFamily.Monospace,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            textAlign = TextAlign.End,
+                                                            maxLines = 1,
+                                                            modifier = Modifier.width(16.dp),
+                                                        )
+                                                        Spacer(Modifier.width(6.dp))
+                                                        Text(
+                                                            word,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontFamily = FontFamily.Monospace,
+                                                            color = MaterialTheme.colorScheme.onSurface,
+                                                            maxLines = 1,
+                                                            softWrap = false,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.weight(1f),
+                                                        )
+                                                    }
                                                 }
                                                 repeat(3 - rowWords.size) {
                                                     Spacer(Modifier.weight(1f))
@@ -1290,10 +1313,7 @@ private fun OnboardScaffold(
     footer: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    val dark = nemoDarkTheme()
-    val atmosphere = Brush.verticalGradient(
-        colors = if (dark) NemoOnboardGradientDark else NemoOnboardGradientLight,
-    )
+    val atmosphere = Brush.verticalGradient(colors = LocalNemoPalette.current.onboardGradient)
     val brandEnter = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         brandEnter.animateTo(
@@ -1381,8 +1401,8 @@ private fun ChatListPane(
     onNewGroup: () -> Unit,
     onJoinGroup: () -> Unit,
 ) {
-    val dark = nemoDarkTheme()
-    val listBg = if (dark) NemoChatDark else NemoListLight
+    val palette = LocalNemoPalette.current
+    val listBg = if (palette.dark) palette.chat else palette.list
     Scaffold(
         modifier = modifier,
         containerColor = listBg,
@@ -1600,8 +1620,9 @@ private fun ChatThread(
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val dark = nemoDarkTheme()
-    val wallpaper = if (dark) NemoChatDark else NemoChatLight
+    val palette = LocalNemoPalette.current
+    val dark = palette.dark
+    val wallpaper = palette.chat
     val canSend = draft.isNotBlank()
     val sendScale by animateFloatAsState(
         targetValue = if (canSend) 1f else 0.88f,
@@ -1931,7 +1952,7 @@ private fun ChatThread(
                     .fillMaxSize()
                     .padding(bottom = padding.calculateBottomPadding()),
             ) {
-                ChatWallpaper(dark = dark, modifier = Modifier.fillMaxSize())
+                ChatWallpaper(modifier = Modifier.fillMaxSize())
                 // reverseLayout stacks short threads on the composer (empty space above).
                 val newestFirst = remember(messages) { messages.asReversed() }
                 LazyColumn(
@@ -2187,9 +2208,10 @@ private fun messageSendAnimationFor(
 }
 
 @Composable
-private fun ChatWallpaper(dark: Boolean, modifier: Modifier = Modifier) {
-    val base = if (dark) NemoChatDark else NemoChatLight
-    val dot = if (dark) NemoPatternDotDark else NemoPatternDotLight
+private fun ChatWallpaper(modifier: Modifier = Modifier) {
+    val palette = LocalNemoPalette.current
+    val base = palette.chat
+    val dot = palette.patternDot
     Canvas(modifier.background(base)) {
         val step = 28.dp.toPx()
         var y = step * 0.5f
@@ -2241,12 +2263,13 @@ private fun MessageBubble(
     // Window-Y of this bubble + root height → sample one continuous screen gradient.
     var windowY by remember { mutableFloatStateOf(0f) }
     var rootHeight by remember { mutableFloatStateOf(1f) }
+    val palette = LocalNemoPalette.current
     val outgoingBrush = if (mine) {
-        outgoingScreenBrush(dark, windowY, rootHeight)
+        outgoingScreenBrush(palette.outgoingGradient, windowY, rootHeight)
     } else {
         null
     }
-    val incomingBg = if (dark) NemoIncomingDark else NemoIncomingLight
+    val incomingBg = palette.incoming
     val corner = 18.dp
     val tight = 6.dp
     val tail = 4.dp
@@ -2265,13 +2288,18 @@ private fun MessageBubble(
             bottomEnd = corner,
         )
     }
-    val shadow = if (dark) NemoBubbleShadowDark else NemoBubbleShadowLight
-    val metaColor = if (mine && dark) {
-        Color(0xFFB8D4E8).copy(alpha = 0.9f)
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+    val shadow = palette.bubbleShadow
+    // Mono bubbles are inverse (black in Mono Light, white in Mono Dark),
+    // so own text must contrast the bubble there. Blue branches unchanged.
+    val metaColor = when {
+        mine && palette.mono && dark -> Color(0xFF000000).copy(alpha = 0.65f)
+        mine && palette.mono -> Color(0xFFFFFFFF).copy(alpha = 0.75f)
+        mine && dark -> Color(0xFFB8D4E8).copy(alpha = 0.9f)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
     }
     val bodyColor = when {
+        mine && palette.mono && dark -> Color(0xFF000000)
+        mine && palette.mono -> Color(0xFFFFFFFF)
         mine && dark -> Color(0xFFE8F4FF)
         else -> MaterialTheme.colorScheme.onSurface
     }
@@ -2453,14 +2481,17 @@ private fun SettingsScreen(
             item {
                 Text("Appearance", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Text(
-                    "Light and dark use Nemo’s blue chat theme. System follows the OS.",
+                    "Light and Dark use Nemo's blue chat theme. Mono Light and Mono Dark are black and white. System follows the OS.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 val themeMode = LocalThemeMode.current
                 val onThemeMode = LocalOnThemeModeChange.current
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(top = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     NemoThemeMode.entries.forEach { mode ->
@@ -2616,7 +2647,10 @@ private fun EmptyChatHint() {
 
 @Composable
 private fun Avatar(title: String, isGroup: Boolean, size: androidx.compose.ui.unit.Dp = 48.dp) {
-    val color = AvatarPalette[kotlin.math.abs(title.hashCode()) % AvatarPalette.size]
+    val palette = LocalNemoPalette.current
+    // Mono recolors avatars to grayscale; blue keeps the original colorful set.
+    val colors = if (palette.mono) palette.avatars else AvatarPalette
+    val color = colors[kotlin.math.abs(title.hashCode()) % colors.size]
     Box(
         Modifier.size(size).clip(CircleShape).background(color),
         contentAlignment = Alignment.Center,
