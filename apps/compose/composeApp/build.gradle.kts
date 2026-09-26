@@ -108,6 +108,11 @@ compose.desktop {
     application {
         mainClass = "org.nemo.MainKt"
         // JNA path is set per-task (debug vs release) in afterEvaluate.
+        // UniFFI/JNA use reflection heavily; default release ProGuard breaks
+        // com.sun.jna.Native static init ("Could not initialize class …Native").
+        buildTypes.release.proguard {
+            isEnabled.set(false)
+        }
         nativeDistributions {
             targetFormats(TargetFormat.Deb)
             packageName = "nemo-messenger"

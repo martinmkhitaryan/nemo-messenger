@@ -23,9 +23,18 @@ import java.io.File
 
 fun main() {
     val root = repoRoot()
-    val libDir = File(root, "target/debug")
-    if (libDir.resolve("libnemo_ffi.so").isFile || libDir.resolve("nemo_ffi.dll").isFile) {
-        System.setProperty("jna.library.path", libDir.absolutePath)
+    // Prefer path from Gradle (-Djna.library.path). Else release, then debug.
+    if (System.getProperty("jna.library.path").isNullOrBlank()) {
+        val candidates = listOf(
+            File(root, "target/release"),
+            File(root, "target/debug"),
+        )
+        val libDir = candidates.firstOrNull { dir ->
+            dir.resolve("libnemo_ffi.so").isFile || dir.resolve("nemo_ffi.dll").isFile
+        }
+        if (libDir != null) {
+            System.setProperty("jna.library.path", libDir.absolutePath)
+        }
     }
     val data = File(System.getProperty("user.home"), ".local/share/nemo")
     application {
