@@ -23,7 +23,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -78,9 +78,17 @@ jobs:
           }
           Write-Host "rust-objcopy=$rustObjcopy"
           Write-Host "llvm-nm=$llvmNm"
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # arduino/setup-protoc@v3 is stuck on Node 20; install the binary directly.
+      - name: Install protoc
+        shell: pwsh
+        run: |
+          $ver = "36.2"
+          $zip = Join-Path $env:RUNNER_TEMP "protoc.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "protoc"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$ver/protoc-$ver-win64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "bin")
+          & (Join-Path $dest "bin\protoc.exe") --version
       # 55ef6a3 was green because APM was unix-only. Since 82cab75 Windows
       # compiles webrtc-audio-processing. MSVC cl + Strawberry perl, no MinGW.
       # Short CARGO_TARGET_DIR (MAX_PATH). Cargo Command::new("meson") runs
@@ -260,7 +268,7 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "APM build.rs patch failed with exit $LASTEXITCODE" }
           cargo build -p nemo-ffi
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
           name: nemo-ffi-windows
@@ -275,7 +283,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -286,7 +294,7 @@ jobs:
       # Google removed the legacy `tools` package. cmdline-tools come from this action.
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-37 build-tools;36.0.0 emulator'
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0 emulator'
       - name: Native build deps
         run: |
           sudo apt-get update
@@ -320,7 +328,7 @@ jobs:
           cat /tmp/nemo-server.log >&2 || true
           exit 1
       - name: Instrumented tests on API 36 emulator
-        uses: reactivecircus/android-emulator-runner@v2.37.0
+        uses: reactivecircus/android-emulator-runner@v2.38.0
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
@@ -331,7 +339,7 @@ jobs:
           force-avd-creation: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: cd apps/compose && ./gradlew --no-daemon connectedDebugAndroidTest
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
           name: nemo-debug-apk

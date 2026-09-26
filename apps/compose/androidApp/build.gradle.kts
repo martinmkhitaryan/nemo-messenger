@@ -6,7 +6,12 @@ plugins {
 
 android {
     namespace = "org.nemo"
-    compileSdk = 37
+    // API 37 is published as platforms;android-37.0 (not android-37).
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
     ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "org.nemo"

@@ -14,6 +14,11 @@ tasks.register("run") {
     dependsOn(":composeApp:run")
 }
 
+tasks.register("runRelease") {
+    group = "application"
+    dependsOn(":composeApp:runRelease")
+}
+
 tasks.register("desktopTest") {
     group = "verification"
     dependsOn(":composeApp:desktopTest")
@@ -34,9 +39,19 @@ tasks.register("assembleDebug") {
     dependsOn(":androidApp:assembleDebug")
 }
 
+tasks.register("assembleRelease") {
+    group = "build"
+    dependsOn(":androidApp:assembleRelease")
+}
+
 tasks.register("installDebug") {
     group = "install"
     dependsOn(":androidApp:installDebug")
+}
+
+tasks.register("installRelease") {
+    group = "install"
+    dependsOn(":androidApp:installRelease")
 }
 
 tasks.register("packageDeb") {

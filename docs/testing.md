@@ -56,7 +56,7 @@ cd apps/compose && ./gradlew --no-daemon assembleDebug
 The Android GitHub job also installs SDK packages with `android-actions/setup-android`. Do not request the old `tools` package; Google removed it. Local SDK manager:
 
 ```text
-sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "emulator"
+sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "emulator"
 ```
 
 Emulator instrumented tests still need a running `nemo-server` on `0.0.0.0:18787` (see below). The Windows job is `cargo build -p nemo-ffi` and only runs on Windows or in GitHub. Linux `cargo build -p nemo-ffi` does not catch this. On a Windows machine, use an “x64 Native Tools” prompt so `cl` is `CC`/`CXX` (sqlcipher’s OpenSSL nmake is `VC-WIN64A`; GNU `clang` rejects `/Zi`). Keep Strawberry Perl’s `c++` off `PATH`, but leave Strawberry `perl` on `PATH` (Git’s MSYS perl cannot run `Configure`). Use a short `CARGO_TARGET_DIR` (`MAX_PATH`). MSVC needs C++20 for APM designated initializers; GitHub shims `meson.exe` (Cargo ignores `meson.cmd`) so `setup` gets `-Dcpp_std=c++20`. Do not shim `cl.exe` — that breaks openssl-src `OPENSSLDIR` under nmake:
@@ -107,7 +107,8 @@ Linux: install native deps once (`./scripts/install-linux-deps.sh`), then `sourc
 
 ```text
 source scripts/dev-env.sh
-./scripts/desktop-run.sh
+./scripts/desktop-run.sh          # debug
+# ./scripts/desktop-run.sh release
 # equivalent: cd apps/compose && ./gradlew run
 ```
 
@@ -149,12 +150,13 @@ One-time SDK/NDK/AVD setup is in [`deploy/README.md`](../deploy/README.md). Then
 
 ```text
 source scripts/dev-env.sh
-./scripts/android-install-debug.sh
+./scripts/android-install.sh
+# or: ./scripts/android-install.sh release
 # or: ./scripts/android-emulator.sh   # other terminal
 #     cd apps/compose && ./gradlew installDebug
 ```
 
-`android-install-debug.sh` starts the `nemo` AVD if `adb devices` is empty. `No connected devices!` means nothing was booted yet.
+`android-install.sh` starts the `nemo` AVD if `adb devices` is empty. `No connected devices!` means nothing was booted yet. Pass `release` for the release APK (debug-signed for local sideload).
 
 Create / unlock / **Connect** like desktop. Pair with the desktop **Right** pane (or a second emulator).
 
@@ -173,7 +175,8 @@ USB debugging, Android 16, debug APK.
 ```text
 source scripts/dev-env.sh
 adb devices   # must show 'device'
-./scripts/android-install-debug.sh
+./scripts/android-install.sh
+# or: ./scripts/android-install.sh release
 ```
 
 On the phone, Settings → **Home URL** `https://<LAN-IP>:8443` → **Connect**. Do not leave `10.0.2.2` (that is emulator-only).
@@ -189,7 +192,7 @@ Walk the same checklist as desktop: register, 1:1 text, group invite→accept→
 | Symptom | Usual cause |
 | --- | --- |
 | `stddef.h` / bindgen failure building `webrtc-audio-processing-sys` | Missing `clang`/`libclang-dev`, or forgot `source scripts/dev-env.sh` |
-| `No connected devices!` on `installDebug` | Emulator not running / phone not authorized; use `./scripts/android-install-debug.sh` or `adb devices` |
+| `No connected devices!` on `installDebug` | Emulator not running / phone not authorized; use `./scripts/android-install.sh` or `adb devices` |
 | Connect fails from a phone | Home URL still `localhost` / `10.0.2.2`, or port 8443 not reachable on LAN |
 | Call rings, no audio | Coturn profile not up; `NEMO_TURN_URL` is still `127.0.0.1` on a phone |
 | TURN 401 | `NEMO_TURN_SECRET` missing on `nemo-server` or not the same as coturn `--static-auth-secret` |

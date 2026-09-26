@@ -10,7 +10,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -144,8 +143,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
-import kotlin.math.roundToInt
 import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
 import java.io.File
@@ -153,6 +150,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 internal const val CANNOT_RECOVER =
     "This identity cannot be recovered or exported. If you lose the passphrase, the keys and history are gone."
@@ -193,16 +192,9 @@ internal fun outgoingMapKey(row: DisplayRow): String = if (row.fetchToken.starts
 }
 
 /** Composer → bubble flight for an optimistic outgoing text row. */
-private data class ActiveSendFly(
-    val listKey: String,
-    val text: String,
-    val from: Rect,
-)
+private data class ActiveSendFly(val listKey: String, val text: String, val from: Rect)
 
-private data class PendingSendFly(
-    val text: String,
-    val from: Rect,
-)
+private data class PendingSendFly(val text: String, val from: Rect)
 
 /** Same continuous screen-space ribbon used by real outgoing bubbles. */
 private fun outgoingScreenBrush(dark: Boolean, windowTopY: Float, rootHeightPx: Float): Brush {
@@ -412,373 +404,601 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         Box(Modifier.fillMaxSize().imePadding()) {
             Column(Modifier.fillMaxSize()) {
                 when (phase) {
-                Phase.Create -> {
-                    val createIdentity: () -> Unit = {
-                        if (!busy) {
-                            runIo {
-                                if (passphrase.length < 8) {
-                                    throw IllegalArgumentException("Passphrase must be at least 8 characters")
-                                }
-                                if (passphrase != confirm) {
-                                    throw IllegalArgumentException("Passphrases do not match")
-                                }
-                                val c = withContext(Dispatchers.IO) {
-                                    vaultDir.mkdirs()
-                                    NemoClient.createAt(
-                                        vaultDir.absolutePath,
-                                        passphrase,
-                                        deviceVaultSecret(vaultDir.absolutePath),
-                                    )
-                                }
-                                mnemonic = withContext(Dispatchers.IO) { c.takeRevocationMnemonic() }
-                                client = c
-                                phase = Phase.Mnemonic
-                            }
-                        }
-                    }
-                    val hasVault = File(vaultDir, "kdf.cbor").isFile
-                    OnboardScaffold(
-                        headline = "Create identity",
-                        footnote = CREATE_FOOTNOTE,
-                        footer = if (hasVault) {
-                            {
-                                TextButton(onClick = { phase = Phase.Locked }) {
-                                    Text("Unlock existing instead")
-                                }
-                            }
-                        } else {
-                            null
-                        },
-                    ) {
-                        PassField(
-                            label = "Passphrase (min 8)",
-                            value = passphrase,
-                            onChange = { passphrase = it },
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        PassField(
-                            label = "Confirm",
-                            value = confirm,
-                            onChange = { confirm = it },
-                            onSubmit = createIdentity,
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        Button(
-                            enabled = !busy,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp)
-                                .testTag("create-identity"),
-                            onClick = createIdentity,
-                            shape = RoundedCornerShape(14.dp),
-                        ) { Text("Create identity") }
-                    }
-                }
-                Phase.Locked -> {
-                    val unlock: () -> Unit = {
-                        if (!busy) {
-                            runIo {
-                                val c = withContext(Dispatchers.IO) {
-                                    NemoClient.openAt(
-                                        vaultDir.absolutePath,
-                                        passphrase,
-                                        deviceVaultSecret(vaultDir.absolutePath),
-                                    )
-                                }
-                                client = c
-                                fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
-                                identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
-                                withContext(Dispatchers.IO) { reloadRoster(c) }
-                                applyIncoming(
-                                    messages,
-                                    withContext(Dispatchers.IO) { c.inbox() },
-                                    outgoing,
-                                    outgoingStatus,
-                                )
-                                privacyMode = withContext(Dispatchers.IO) { c.privacyMode() }
-                                registered = true
-                                phase = Phase.Home
-                            }
-                        }
-                    }
-                    OnboardScaffold(
-                        headline = "Welcome back",
-                        footnote = UNLOCK_FOOTNOTE,
-                        footer = {
-                            TextButton(onClick = { confirmWipe = true }) {
-                                Text("Create a new identity")
-                            }
-                        },
-                    ) {
-                        PassField(
-                            label = "Passphrase",
-                            value = passphrase,
-                            onChange = { passphrase = it },
-                            onSubmit = unlock,
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        Button(
-                            enabled = !busy,
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            onClick = unlock,
-                            shape = RoundedCornerShape(14.dp),
-                        ) { Text("Unlock") }
-                    }
-                    if (confirmWipe) {
-                        AlertDialog(
-                            onDismissRequest = { confirmWipe = false },
-                            title = { Text("Replace this identity?") },
-                            text = {
-                                Text(
-                                    "This deletes the keys and history on this pane permanently. " +
-                                        "There is no recovery. Contacts must add the new identity again.",
-                                )
-                            },
-                            confirmButton = {
-                                TextButton(
-                                    onClick = {
-                                        confirmWipe = false
-                                        wipeVaultDir(vaultDir)
-                                        client = null
-                                        mnemonic = null
-                                        fingerprint = ""
-                                        identityHex = ""
-                                        registered = false
-                                        shareUri = ""
-                                        messages.clear()
-                                        contacts.clear()
-                                        groups.clear()
-                                        outgoing.clear()
-                                        outgoingStatus.clear()
-                                        passphrase = ""
-                                        confirm = ""
-                                        phase = Phase.Create
-                                    },
-                                ) { Text("Delete and create new") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { confirmWipe = false }) { Text("Cancel") }
-                            },
-                        )
-                    }
-                }
-                Phase.Mnemonic -> {
-                    val words = (mnemonic ?: "").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-                    val chipBg = MaterialTheme.colorScheme.surface.copy(
-                        alpha = if (nemoDarkTheme()) 0.55f else 0.72f,
-                    )
-                    OnboardScaffold(
-                        headline = "Revocation phrase",
-                        footnote = "Write it down offline. It revokes this identity — it cannot unlock or restore anything.",
-                        footer = {
-                            TextButton(
-                                onClick = {
-                                    val phrase = mnemonic.orEmpty()
-                                    if (phrase.isNotEmpty()) {
-                                        copyToClipboard(phrase)
-                                        scope.launch { snackbar.showSnackbar("Copied") }
-                                    }
-                                },
-                            ) { Text("Copy phrase") }
-                        },
-                    ) {
-                        SelectionContainer {
-                            Column(
-                                Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                words.chunked(3).forEachIndexed { rowIdx, rowWords ->
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        rowWords.forEachIndexed { colIdx, word ->
-                                            val index = rowIdx * 3 + colIdx + 1
-                                            Text(
-                                                "$index  $word",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .clip(RoundedCornerShape(10.dp))
-                                                    .background(chipBg)
-                                                    .padding(horizontal = 10.dp, vertical = 10.dp),
-                                            )
-                                        }
-                                        repeat(3 - rowWords.size) {
-                                            Spacer(Modifier.weight(1f))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(20.dp))
-                        Button(
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            onClick = {
+                    Phase.Create -> {
+                        val createIdentity: () -> Unit = {
+                            if (!busy) {
                                 runIo {
-                                    val c = client ?: return@runIo
+                                    if (passphrase.length < 8) {
+                                        throw IllegalArgumentException("Passphrase must be at least 8 characters")
+                                    }
+                                    if (passphrase != confirm) {
+                                        throw IllegalArgumentException("Passphrases do not match")
+                                    }
+                                    val c = withContext(Dispatchers.IO) {
+                                        vaultDir.mkdirs()
+                                        NemoClient.createAt(
+                                            vaultDir.absolutePath,
+                                            passphrase,
+                                            deviceVaultSecret(vaultDir.absolutePath),
+                                        )
+                                    }
+                                    mnemonic = withContext(Dispatchers.IO) { c.takeRevocationMnemonic() }
+                                    client = c
+                                    phase = Phase.Mnemonic
+                                }
+                            }
+                        }
+                        val hasVault = File(vaultDir, "kdf.cbor").isFile
+                        OnboardScaffold(
+                            headline = "Create identity",
+                            footnote = CREATE_FOOTNOTE,
+                            footer = if (hasVault) {
+                                {
+                                    TextButton(onClick = { phase = Phase.Locked }) {
+                                        Text("Unlock existing instead")
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                        ) {
+                            PassField(
+                                label = "Passphrase (min 8)",
+                                value = passphrase,
+                                onChange = { passphrase = it },
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            PassField(
+                                label = "Confirm",
+                                value = confirm,
+                                onChange = { confirm = it },
+                                onSubmit = createIdentity,
+                            )
+                            Spacer(Modifier.height(20.dp))
+                            Button(
+                                enabled = !busy,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(52.dp)
+                                    .testTag("create-identity"),
+                                onClick = createIdentity,
+                                shape = RoundedCornerShape(14.dp),
+                            ) { Text("Create identity") }
+                        }
+                    }
+                    Phase.Locked -> {
+                        val unlock: () -> Unit = {
+                            if (!busy) {
+                                runIo {
+                                    val c = withContext(Dispatchers.IO) {
+                                        NemoClient.openAt(
+                                            vaultDir.absolutePath,
+                                            passphrase,
+                                            deviceVaultSecret(vaultDir.absolutePath),
+                                        )
+                                    }
+                                    client = c
                                     fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                     identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
-                                    showSettings = true
+                                    withContext(Dispatchers.IO) { reloadRoster(c) }
+                                    applyIncoming(
+                                        messages,
+                                        withContext(Dispatchers.IO) { c.inbox() },
+                                        outgoing,
+                                        outgoingStatus,
+                                    )
+                                    privacyMode = withContext(Dispatchers.IO) { c.privacyMode() }
+                                    registered = true
                                     phase = Phase.Home
                                 }
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                        ) { Text("I wrote it down") }
-                    }
-                }
-                Phase.Home -> {
-                    val c = client
-                    val pickFile = rememberPickFile { path ->
-                        val chat = selected ?: return@rememberPickFile
-                        attachFilePath(
-                            c,
-                            chat,
-                            path,
-                            messages,
-                            outgoing,
-                            outgoingStatus,
-                            snackbar,
-                            scope,
-                        )
-                    }
-                    val saveFile = rememberSaveFile { ok ->
-                        if (ok) {
-                            scope.launch { snackbar.showSnackbar("Saved") }
-                        }
-                    }
-                    var micAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-                    val requestMic = rememberEnsureMic { micAction?.invoke() }
-                    BoxWithConstraints(Modifier.fillMaxSize()) {
-                        val split = maxWidth >= 720.dp
-                        val chat = selected
-                        // System / edge-swipe back: settings → chat list → leave app.
-                        NemoBackHandler(enabled = showSettings || selected != null) {
-                            when {
-                                showSettings -> showSettings = false
-                                selected != null -> selected = null
                             }
                         }
-                        when {
-                            showSettings -> {
-                                LaunchedEffect(Unit) {
-                                    runIo {
-                                        shareUri = withContext(Dispatchers.IO) {
-                                            c?.mintShareUri().orEmpty()
-                                        }
-                                    }
+                        OnboardScaffold(
+                            headline = "Welcome back",
+                            footnote = UNLOCK_FOOTNOTE,
+                            footer = {
+                                TextButton(onClick = { confirmWipe = true }) {
+                                    Text("Create a new identity")
                                 }
-                                LaunchedEffect(chat?.id) {
-                                    if (chat != null && !chat.isGroup) {
-                                        contactNickname = contacts[chat.id] ?: chat.title
-                                    }
-                                }
-                                SettingsScreen(
-                                    fingerprint = fingerprint,
-                                    identityHex = identityHex,
-                                    homeUrl = homeUrl,
-                                    onHomeUrl = { homeUrl = it },
-                                    shareUri = shareUri,
-                                    joinUri = joinUri,
-                                    joinPaste = joinPaste,
-                                    onJoinPaste = { joinPaste = it },
-                                    memberCred = memberCred,
-                                    disappearSecs = disappearSecs,
-                                    onDisappearSecs = { disappearSecs = it },
-                                    contactNickname = contactNickname,
-                                    onContactNickname = { contactNickname = it },
-                                    selected = chat,
-                                    busy = busy,
-                                    onBack = { showSettings = false },
-                                    onRegister = {
-                                        runIo {
-                                            val moving = registered
-                                            withContext(Dispatchers.IO) { c?.register(homeUrl.trim()) }
-                                            registered = true
-                                            snackbar.showSnackbar(
-                                                if (moving) "Moved to new home" else "Connected to home",
-                                            )
+                            },
+                        ) {
+                            PassField(
+                                label = "Passphrase",
+                                value = passphrase,
+                                onChange = { passphrase = it },
+                                onSubmit = unlock,
+                            )
+                            Spacer(Modifier.height(20.dp))
+                            Button(
+                                enabled = !busy,
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                onClick = unlock,
+                                shape = RoundedCornerShape(14.dp),
+                            ) { Text("Unlock") }
+                        }
+                        if (confirmWipe) {
+                            AlertDialog(
+                                onDismissRequest = { confirmWipe = false },
+                                title = { Text("Replace this identity?") },
+                                text = {
+                                    Text(
+                                        "This deletes the keys and history on this pane permanently. " +
+                                            "There is no recovery. Contacts must add the new identity again.",
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            confirmWipe = false
+                                            wipeVaultDir(vaultDir)
+                                            client = null
+                                            mnemonic = null
+                                            fingerprint = ""
+                                            identityHex = ""
+                                            registered = false
+                                            shareUri = ""
+                                            messages.clear()
+                                            contacts.clear()
+                                            groups.clear()
+                                            outgoing.clear()
+                                            outgoingStatus.clear()
+                                            passphrase = ""
+                                            confirm = ""
+                                            phase = Phase.Create
+                                        },
+                                    ) { Text("Delete and create new") }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { confirmWipe = false }) { Text("Cancel") }
+                                },
+                            )
+                        }
+                    }
+                    Phase.Mnemonic -> {
+                        val words = (mnemonic ?: "").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                        val chipBg = MaterialTheme.colorScheme.surface.copy(
+                            alpha = if (nemoDarkTheme()) 0.55f else 0.72f,
+                        )
+                        OnboardScaffold(
+                            headline = "Revocation phrase",
+                            footnote = "Write it down offline. It revokes this identity — it cannot unlock or restore anything.",
+                            footer = {
+                                TextButton(
+                                    onClick = {
+                                        val phrase = mnemonic.orEmpty()
+                                        if (phrase.isNotEmpty()) {
+                                            copyToClipboard(phrase)
+                                            scope.launch { snackbar.showSnackbar("Copied") }
                                         }
                                     },
-                                    onShare = {
+                                ) { Text("Copy phrase") }
+                            },
+                        ) {
+                            SelectionContainer {
+                                Column(
+                                    Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    words.chunked(3).forEachIndexed { rowIdx, rowWords ->
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            rowWords.forEachIndexed { colIdx, word ->
+                                                val index = rowIdx * 3 + colIdx + 1
+                                                Text(
+                                                    "$index  $word",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(chipBg)
+                                                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                                                )
+                                            }
+                                            repeat(3 - rowWords.size) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(20.dp))
+                            Button(
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                onClick = {
+                                    runIo {
+                                        val c = client ?: return@runIo
+                                        fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
+                                        identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
+                                        showSettings = true
+                                        phase = Phase.Home
+                                    }
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                            ) { Text("I wrote it down") }
+                        }
+                    }
+                    Phase.Home -> {
+                        val c = client
+                        val pickFile = rememberPickFile { path ->
+                            val chat = selected ?: return@rememberPickFile
+                            attachFilePath(
+                                c,
+                                chat,
+                                path,
+                                messages,
+                                outgoing,
+                                outgoingStatus,
+                                snackbar,
+                                scope,
+                            )
+                        }
+                        val saveFile = rememberSaveFile { ok ->
+                            if (ok) {
+                                scope.launch { snackbar.showSnackbar("Saved") }
+                            }
+                        }
+                        var micAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+                        val requestMic = rememberEnsureMic { micAction?.invoke() }
+                        BoxWithConstraints(Modifier.fillMaxSize()) {
+                            val split = maxWidth >= 720.dp
+                            val chat = selected
+                            // System / edge-swipe back: settings → chat list → leave app.
+                            NemoBackHandler(enabled = showSettings || selected != null) {
+                                when {
+                                    showSettings -> showSettings = false
+                                    selected != null -> selected = null
+                                }
+                            }
+                            when {
+                                showSettings -> {
+                                    LaunchedEffect(Unit) {
                                         runIo {
                                             shareUri = withContext(Dispatchers.IO) {
                                                 c?.mintShareUri().orEmpty()
                                             }
-                                            if (shareUri.isNotEmpty()) copyToClipboard(shareUri)
+                                        }
+                                    }
+                                    LaunchedEffect(chat?.id) {
+                                        if (chat != null && !chat.isGroup) {
+                                            contactNickname = contacts[chat.id] ?: chat.title
+                                        }
+                                    }
+                                    SettingsScreen(
+                                        fingerprint = fingerprint,
+                                        identityHex = identityHex,
+                                        homeUrl = homeUrl,
+                                        onHomeUrl = { homeUrl = it },
+                                        shareUri = shareUri,
+                                        joinUri = joinUri,
+                                        joinPaste = joinPaste,
+                                        onJoinPaste = { joinPaste = it },
+                                        memberCred = memberCred,
+                                        disappearSecs = disappearSecs,
+                                        onDisappearSecs = { disappearSecs = it },
+                                        contactNickname = contactNickname,
+                                        onContactNickname = { contactNickname = it },
+                                        selected = chat,
+                                        busy = busy,
+                                        onBack = { showSettings = false },
+                                        onRegister = {
+                                            runIo {
+                                                val moving = registered
+                                                withContext(Dispatchers.IO) { c?.register(homeUrl.trim()) }
+                                                registered = true
+                                                snackbar.showSnackbar(
+                                                    if (moving) "Moved to new home" else "Connected to home",
+                                                )
+                                            }
+                                        },
+                                        onShare = {
+                                            runIo {
+                                                shareUri = withContext(Dispatchers.IO) {
+                                                    c?.mintShareUri().orEmpty()
+                                                }
+                                                if (shareUri.isNotEmpty()) copyToClipboard(shareUri)
+                                            }
+                                        },
+                                        onAdmit = {
+                                            runIo {
+                                                memberCred = withContext(Dispatchers.IO) {
+                                                    c?.admitJoin(joinPaste.trim()).orEmpty()
+                                                }
+                                                snackbar.showSnackbar("Admitted member")
+                                            }
+                                        },
+                                        onInviteGroup = {
+                                            val id = chat?.id ?: return@SettingsScreen
+                                            if (chat.isGroup.not()) return@SettingsScreen
+                                            runIo {
+                                                val uri = withContext(Dispatchers.IO) {
+                                                    c?.mintGroupInvite(id).orEmpty()
+                                                }
+                                                copyToClipboard(uri)
+                                                snackbar.showSnackbar("Invite copied")
+                                            }
+                                        },
+                                        onSaveNickname = {
+                                            val id = chat?.id ?: return@SettingsScreen
+                                            if (chat.isGroup) return@SettingsScreen
+                                            runIo {
+                                                val name = contactNickname.trim()
+                                                withContext(Dispatchers.IO) {
+                                                    c?.setNickname(id, name)
+                                                }
+                                                if (name.isEmpty()) {
+                                                    contacts.remove(id)
+                                                } else {
+                                                    contacts[id] = name
+                                                }
+                                                selected = chat.copy(title = name.ifBlank { shortId(id) })
+                                                snackbar.showSnackbar("Contact name saved")
+                                            }
+                                        },
+                                        onDisappear = {
+                                            val id = chat?.id ?: return@SettingsScreen
+                                            runIo {
+                                                val secs = disappearSecs.toULongOrNull() ?: 0UL
+                                                val row = withContext(Dispatchers.IO) {
+                                                    c?.setDisappear(id, secs)
+                                                } ?: return@runIo
+                                                messages.add(row)
+                                                markOutgoing(row)
+                                            }
+                                        },
+                                        privacyMode = privacyMode,
+                                        onPrivacyMode = { mode ->
+                                            runIo {
+                                                withContext(Dispatchers.IO) {
+                                                    c?.setPrivacyMode(mode)
+                                                }
+                                                privacyMode = mode
+                                            }
+                                        },
+                                    )
+                                }
+                                split -> Row(Modifier.fillMaxSize()) {
+                                    ChatListPane(
+                                        label = label,
+                                        chats = chats(),
+                                        messages = messages,
+                                        selectedId = chat?.id,
+                                        modifier = Modifier.width(340.dp).fillMaxHeight(),
+                                        onSelect = {
+                                            selected = it
+                                            showSettings = false
+                                        },
+                                        onSettings = { showSettings = true },
+                                        onAdd = { addMenu = true },
+                                        addMenu = addMenu,
+                                        onAddDismiss = { addMenu = false },
+                                        onAddContact = {
+                                            addMenu = false
+                                            sheet = Sheet.AddContact
+                                        },
+                                        onNewGroup = {
+                                            addMenu = false
+                                            sheet = Sheet.NewGroup
+                                        },
+                                        onJoinGroup = {
+                                            addMenu = false
+                                            sheet = Sheet.JoinGroup
+                                        },
+                                    )
+                                    VerticalDivider()
+                                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                                        if (chat == null) {
+                                            EmptyChatHint()
+                                        } else {
+                                            ChatThread(
+                                                chat = chat,
+                                                messages = messages.filter { it.convId == chat.id },
+                                                outgoing = outgoing,
+                                                outgoingStatus = outgoingStatus,
+                                                draft = draft,
+                                                onDraft = { draft = it },
+                                                showBack = false,
+                                                onBack = { selected = null },
+                                                onSettings = { showSettings = true },
+                                                chatMenu = chatMenu,
+                                                onChatMenu = { chatMenu = it },
+                                                onSend = {
+                                                    sendChat(
+                                                        c,
+                                                        chat,
+                                                        draft,
+                                                        messages,
+                                                        outgoing,
+                                                        outgoingStatus,
+                                                        scope,
+                                                        snackbar,
+                                                    ) { draft = "" }
+                                                },
+                                                onAttach = { pickFile() },
+                                                onCall = {
+                                                    micAction = {
+                                                        runIo {
+                                                            val row = withContext(Dispatchers.IO) {
+                                                                c?.startCall(chat.id)
+                                                            } ?: return@runIo
+                                                            messages.add(row)
+                                                            markOutgoing(row)
+                                                            c?.let { startCallAudio(it) }
+                                                        }
+                                                    }
+                                                    requestMic()
+                                                },
+                                                onAnswer = {
+                                                    micAction = {
+                                                        runIo {
+                                                            val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                                ?: return@runIo
+                                                            val row = withContext(Dispatchers.IO) {
+                                                                c?.answerCall(id)
+                                                            } ?: return@runIo
+                                                            messages.add(row)
+                                                            c?.let { startCallAudio(it) }
+                                                        }
+                                                    }
+                                                    requestMic()
+                                                },
+                                                onHangup = {
+                                                    runIo {
+                                                        stopCallAudio()
+                                                        val row = withContext(Dispatchers.IO) { c?.endCall() }
+                                                            ?: return@runIo
+                                                        messages.add(row)
+                                                    }
+                                                },
+                                                onDecline = {
+                                                    runIo {
+                                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                            ?: return@runIo
+                                                        stopCallAudio()
+                                                        val row = withContext(Dispatchers.IO) {
+                                                            c?.rejectCall(id)
+                                                        } ?: return@runIo
+                                                        messages.add(row)
+                                                    }
+                                                },
+                                                onReact = { row ->
+                                                    runIo {
+                                                        val r = withContext(Dispatchers.IO) {
+                                                            c?.react(chat.id, row.convSeq, "👍")
+                                                        } ?: return@runIo
+                                                        messages.add(r)
+                                                        markOutgoing(r)
+                                                    }
+                                                },
+                                                onDelete = { row ->
+                                                    runIo {
+                                                        val r = withContext(Dispatchers.IO) {
+                                                            c?.deleteMessage(chat.id, row.convSeq)
+                                                        } ?: return@runIo
+                                                        applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                                                    }
+                                                },
+                                                onSave = { row ->
+                                                    if (canSaveAttachment(row)) {
+                                                        saveFile(row.fileName, row.fileBytes)
+                                                    } else {
+                                                        scope.launch {
+                                                            snackbar.showSnackbar("File unavailable")
+                                                        }
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                                chat != null -> ChatThread(
+                                    chat = chat,
+                                    messages = messages.filter { it.convId == chat.id },
+                                    outgoing = outgoing,
+                                    outgoingStatus = outgoingStatus,
+                                    draft = draft,
+                                    onDraft = { draft = it },
+                                    showBack = true,
+                                    onBack = { selected = null },
+                                    onSettings = { showSettings = true },
+                                    chatMenu = chatMenu,
+                                    onChatMenu = { chatMenu = it },
+                                    onSend = {
+                                        sendChat(
+                                            c,
+                                            chat,
+                                            draft,
+                                            messages,
+                                            outgoing,
+                                            outgoingStatus,
+                                            scope,
+                                            snackbar,
+                                        ) { draft = "" }
+                                    },
+                                    onAttach = { pickFile() },
+                                    onCall = {
+                                        micAction = {
+                                            runIo {
+                                                val row = withContext(Dispatchers.IO) {
+                                                    c?.startCall(chat.id)
+                                                } ?: return@runIo
+                                                messages.add(row)
+                                                markOutgoing(row)
+                                                c?.let { startCallAudio(it) }
+                                            }
+                                        }
+                                        requestMic()
+                                    },
+                                    onAnswer = {
+                                        micAction = {
+                                            runIo {
+                                                val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                    ?: return@runIo
+                                                val row = withContext(Dispatchers.IO) {
+                                                    c?.answerCall(id)
+                                                } ?: return@runIo
+                                                messages.add(row)
+                                                c?.let { startCallAudio(it) }
+                                            }
+                                        }
+                                        requestMic()
+                                    },
+                                    onHangup = {
+                                        runIo {
+                                            stopCallAudio()
+                                            val row = withContext(Dispatchers.IO) { c?.endCall() }
+                                                ?: return@runIo
+                                            messages.add(row)
                                         }
                                     },
-                                    onAdmit = {
+                                    onDecline = {
                                         runIo {
-                                            memberCred = withContext(Dispatchers.IO) {
-                                                c?.admitJoin(joinPaste.trim()).orEmpty()
-                                            }
-                                            snackbar.showSnackbar("Admitted member")
-                                        }
-                                    },
-                                    onInviteGroup = {
-                                        val id = chat?.id ?: return@SettingsScreen
-                                        if (chat.isGroup.not()) return@SettingsScreen
-                                        runIo {
-                                            val uri = withContext(Dispatchers.IO) {
-                                                c?.mintGroupInvite(id).orEmpty()
-                                            }
-                                            copyToClipboard(uri)
-                                            snackbar.showSnackbar("Invite copied")
-                                        }
-                                    },
-                                    onSaveNickname = {
-                                        val id = chat?.id ?: return@SettingsScreen
-                                        if (chat.isGroup) return@SettingsScreen
-                                        runIo {
-                                            val name = contactNickname.trim()
-                                            withContext(Dispatchers.IO) {
-                                                c?.setNickname(id, name)
-                                            }
-                                            if (name.isEmpty()) {
-                                                contacts.remove(id)
-                                            } else {
-                                                contacts[id] = name
-                                            }
-                                            selected = chat.copy(title = name.ifBlank { shortId(id) })
-                                            snackbar.showSnackbar("Contact name saved")
-                                        }
-                                    },
-                                    onDisappear = {
-                                        val id = chat?.id ?: return@SettingsScreen
-                                        runIo {
-                                            val secs = disappearSecs.toULongOrNull() ?: 0UL
+                                            val id = messages.lastOrNull { it.kind == "call_invite" }?.text
+                                                ?: return@runIo
+                                            stopCallAudio()
                                             val row = withContext(Dispatchers.IO) {
-                                                c?.setDisappear(id, secs)
+                                                c?.rejectCall(id)
                                             } ?: return@runIo
                                             messages.add(row)
-                                            markOutgoing(row)
                                         }
                                     },
-                                    privacyMode = privacyMode,
-                                    onPrivacyMode = { mode ->
+                                    onReact = { row ->
                                         runIo {
-                                            withContext(Dispatchers.IO) {
-                                                c?.setPrivacyMode(mode)
+                                            val r = withContext(Dispatchers.IO) {
+                                                c?.react(chat.id, row.convSeq, "👍")
+                                            } ?: return@runIo
+                                            messages.add(r)
+                                            markOutgoing(r)
+                                        }
+                                    },
+                                    onDelete = { row ->
+                                        runIo {
+                                            val r = withContext(Dispatchers.IO) {
+                                                c?.deleteMessage(chat.id, row.convSeq)
+                                            } ?: return@runIo
+                                            applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                                        }
+                                    },
+                                    onSave = { row ->
+                                        if (canSaveAttachment(row)) {
+                                            saveFile(row.fileName, row.fileBytes)
+                                        } else {
+                                            scope.launch {
+                                                snackbar.showSnackbar("File unavailable")
                                             }
-                                            privacyMode = mode
                                         }
                                     },
                                 )
-                            }
-                            split -> Row(Modifier.fillMaxSize()) {
-                                ChatListPane(
+                                else -> ChatListPane(
                                     label = label,
                                     chats = chats(),
                                     messages = messages,
-                                    selectedId = chat?.id,
-                                    modifier = Modifier.width(340.dp).fillMaxHeight(),
-                                    onSelect = {
-                                        selected = it
-                                        showSettings = false
-                                    },
+                                    selectedId = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    onSelect = { selected = it },
                                     onSettings = { showSettings = true },
                                     onAdd = { addMenu = true },
                                     addMenu = addMenu,
@@ -796,363 +1016,135 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         sheet = Sheet.JoinGroup
                                     },
                                 )
-                                VerticalDivider()
-                                Box(Modifier.weight(1f).fillMaxHeight()) {
-                                    if (chat == null) {
-                                        EmptyChatHint()
-                                    } else {
-                                        ChatThread(
-                                            chat = chat,
-                                            messages = messages.filter { it.convId == chat.id },
-                                            outgoing = outgoing,
-                                            outgoingStatus = outgoingStatus,
-                                            draft = draft,
-                                            onDraft = { draft = it },
-                                            showBack = false,
-                                            onBack = { selected = null },
-                                            onSettings = { showSettings = true },
-                                            chatMenu = chatMenu,
-                                            onChatMenu = { chatMenu = it },
-                                            onSend = {
-                                                sendChat(
-                                                    c,
-                                                    chat,
-                                                    draft,
-                                                    messages,
-                                                    outgoing,
-                                                    outgoingStatus,
-                                                    scope,
-                                                    snackbar,
-                                                ) { draft = "" }
-                                            },
-                                            onAttach = { pickFile() },
-                                            onCall = {
-                                                micAction = {
-                                                    runIo {
-                                                        val row = withContext(Dispatchers.IO) {
-                                                            c?.startCall(chat.id)
-                                                        } ?: return@runIo
-                                                        messages.add(row)
-                                                        markOutgoing(row)
-                                                        c?.let { startCallAudio(it) }
-                                                    }
-                                                }
-                                                requestMic()
-                                            },
-                                            onAnswer = {
-                                                micAction = {
-                                                    runIo {
-                                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                                            ?: return@runIo
-                                                        val row = withContext(Dispatchers.IO) {
-                                                            c?.answerCall(id)
-                                                        } ?: return@runIo
-                                                        messages.add(row)
-                                                        c?.let { startCallAudio(it) }
-                                                    }
-                                                }
-                                                requestMic()
-                                            },
-                                            onHangup = {
-                                                runIo {
-                                                    stopCallAudio()
-                                                    val row = withContext(Dispatchers.IO) { c?.endCall() }
-                                                        ?: return@runIo
-                                                    messages.add(row)
-                                                }
-                                            },
-                                            onDecline = {
-                                                runIo {
-                                                    val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                                        ?: return@runIo
-                                                    stopCallAudio()
-                                                    val row = withContext(Dispatchers.IO) {
-                                                        c?.rejectCall(id)
-                                                    } ?: return@runIo
-                                                    messages.add(row)
-                                                }
-                                            },
-                                            onReact = { row ->
-                                                runIo {
-                                                    val r = withContext(Dispatchers.IO) {
-                                                        c?.react(chat.id, row.convSeq, "👍")
-                                                    } ?: return@runIo
-                                                    messages.add(r)
-                                                    markOutgoing(r)
-                                                }
-                                            },
-                                            onDelete = { row ->
-                                                runIo {
-                                                    val r = withContext(Dispatchers.IO) {
-                                                        c?.deleteMessage(chat.id, row.convSeq)
-                                                    } ?: return@runIo
-                                                    applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
-                                                }
-                                            },
-                                            onSave = { row ->
-                                                if (canSaveAttachment(row)) {
-                                                    saveFile(row.fileName, row.fileBytes)
-                                                } else {
-                                                    scope.launch {
-                                                        snackbar.showSnackbar("File unavailable")
-                                                    }
-                                                }
-                                            },
-                                        )
-                                    }
-                                }
                             }
-                            chat != null -> ChatThread(
-                                chat = chat,
-                                messages = messages.filter { it.convId == chat.id },
-                                outgoing = outgoing,
-                                outgoingStatus = outgoingStatus,
-                                draft = draft,
-                                onDraft = { draft = it },
-                                showBack = true,
-                                onBack = { selected = null },
-                                onSettings = { showSettings = true },
-                                chatMenu = chatMenu,
-                                onChatMenu = { chatMenu = it },
-                                onSend = {
-                                    sendChat(
-                                        c,
-                                        chat,
-                                        draft,
-                                        messages,
-                                        outgoing,
-                                        outgoingStatus,
-                                        scope,
-                                        snackbar,
-                                    ) { draft = "" }
-                                },
-                                onAttach = { pickFile() },
-                                onCall = {
-                                    micAction = {
-                                        runIo {
-                                            val row = withContext(Dispatchers.IO) {
-                                                c?.startCall(chat.id)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                            markOutgoing(row)
-                                            c?.let { startCallAudio(it) }
-                                        }
-                                    }
-                                    requestMic()
-                                },
-                                onAnswer = {
-                                    micAction = {
-                                        runIo {
-                                            val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                                ?: return@runIo
-                                            val row = withContext(Dispatchers.IO) {
-                                                c?.answerCall(id)
-                                            } ?: return@runIo
-                                            messages.add(row)
-                                            c?.let { startCallAudio(it) }
-                                        }
-                                    }
-                                    requestMic()
-                                },
-                                onHangup = {
-                                    runIo {
-                                        stopCallAudio()
-                                        val row = withContext(Dispatchers.IO) { c?.endCall() }
-                                            ?: return@runIo
-                                        messages.add(row)
-                                    }
-                                },
-                                onDecline = {
-                                    runIo {
-                                        val id = messages.lastOrNull { it.kind == "call_invite" }?.text
-                                            ?: return@runIo
-                                        stopCallAudio()
-                                        val row = withContext(Dispatchers.IO) {
-                                            c?.rejectCall(id)
-                                        } ?: return@runIo
-                                        messages.add(row)
-                                    }
-                                },
-                                onReact = { row ->
-                                    runIo {
-                                        val r = withContext(Dispatchers.IO) {
-                                            c?.react(chat.id, row.convSeq, "👍")
-                                        } ?: return@runIo
-                                        messages.add(r)
-                                        markOutgoing(r)
-                                    }
-                                },
-                                onDelete = { row ->
-                                    runIo {
-                                        val r = withContext(Dispatchers.IO) {
-                                            c?.deleteMessage(chat.id, row.convSeq)
-                                        } ?: return@runIo
-                                        applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
-                                    }
-                                },
-                                onSave = { row ->
-                                    if (canSaveAttachment(row)) {
-                                        saveFile(row.fileName, row.fileBytes)
-                                    } else {
-                                        scope.launch {
-                                            snackbar.showSnackbar("File unavailable")
-                                        }
-                                    }
-                                },
-                            )
-                            else -> ChatListPane(
-                                label = label,
-                                chats = chats(),
-                                messages = messages,
-                                selectedId = null,
-                                modifier = Modifier.fillMaxSize(),
-                                onSelect = { selected = it },
-                                onSettings = { showSettings = true },
-                                onAdd = { addMenu = true },
-                                addMenu = addMenu,
-                                onAddDismiss = { addMenu = false },
-                                onAddContact = {
-                                    addMenu = false
-                                    sheet = Sheet.AddContact
-                                },
-                                onNewGroup = {
-                                    addMenu = false
-                                    sheet = Sheet.NewGroup
-                                },
-                                onJoinGroup = {
-                                    addMenu = false
-                                    sheet = Sheet.JoinGroup
-                                },
-                            )
                         }
-                    }
-                    if (sheet != Sheet.None) {
-                        ModalBottomSheet(
-                            onDismissRequest = { sheet = Sheet.None },
-                            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                        ) {
-                            when (sheet) {
-                                Sheet.AddContact -> {
-                                    val scanQr = rememberScanQr { text ->
-                                        cardPaste = text.trim()
-                                    }
-                                    LaunchedEffect(cardPaste, client) {
-                                        val c = client
-                                        val raw = cardPaste.trim()
-                                        cardPreviewFp = if (c == null || raw.isEmpty()) {
-                                            ""
-                                        } else {
-                                            withContext(Dispatchers.IO) {
-                                                runCatching { c.previewContact(raw).fingerprint }.getOrDefault("")
+                        if (sheet != Sheet.None) {
+                            ModalBottomSheet(
+                                onDismissRequest = { sheet = Sheet.None },
+                                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                            ) {
+                                when (sheet) {
+                                    Sheet.AddContact -> {
+                                        val scanQr = rememberScanQr { text ->
+                                            cardPaste = text.trim()
+                                        }
+                                        LaunchedEffect(cardPaste, client) {
+                                            val c = client
+                                            val raw = cardPaste.trim()
+                                            cardPreviewFp = if (c == null || raw.isEmpty()) {
+                                                ""
+                                            } else {
+                                                withContext(Dispatchers.IO) {
+                                                    runCatching { c.previewContact(raw).fingerprint }.getOrDefault("")
+                                                }
                                             }
                                         }
+                                        SheetForm(
+                                            title = "New chat",
+                                            action = "Add",
+                                            enabled = !busy && cardPaste.isNotBlank(),
+                                            onAction = {
+                                                runIo {
+                                                    val peer = withContext(Dispatchers.IO) {
+                                                        c?.addContact(
+                                                            cardPaste.trim(),
+                                                            nickname.ifBlank { "Contact" },
+                                                        ).orEmpty()
+                                                    }
+                                                    contacts[peer] = nickname.ifBlank { shortId(peer) }
+                                                    selected = ChatTarget(peer, contacts[peer] ?: shortId(peer), false)
+                                                    cardPaste = ""
+                                                    cardPreviewFp = ""
+                                                    nickname = ""
+                                                    sheet = Sheet.None
+                                                }
+                                            },
+                                        ) {
+                                            OutlinedTextField(
+                                                value = cardPaste,
+                                                onValueChange = { cardPaste = it },
+                                                label = { Text("Contact card") },
+                                                placeholder = { Text("nemo:1:…") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            )
+                                            TextButton(onClick = scanQr) {
+                                                Text("Scan QR")
+                                            }
+                                            if (cardPreviewFp.isNotEmpty()) {
+                                                Text(
+                                                    "Fingerprint",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                )
+                                                SelectionContainer {
+                                                    Text(
+                                                        cardPreviewFp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                    )
+                                                }
+                                            }
+                                            OutlinedTextField(
+                                                value = nickname,
+                                                onValueChange = { nickname = it },
+                                                label = { Text("Name") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                            )
+                                        }
                                     }
-                                    SheetForm(
-                                        title = "New chat",
-                                        action = "Add",
-                                        enabled = !busy && cardPaste.isNotBlank(),
+                                    Sheet.NewGroup -> SheetForm(
+                                        title = "New group",
+                                        action = "Create",
+                                        enabled = !busy && groupName.isNotBlank(),
                                         onAction = {
                                             runIo {
-                                                val peer = withContext(Dispatchers.IO) {
-                                                    c?.addContact(
-                                                        cardPaste.trim(),
-                                                        nickname.ifBlank { "Contact" },
-                                                    ).orEmpty()
+                                                val id = withContext(Dispatchers.IO) {
+                                                    c?.createGroup(groupName).orEmpty()
                                                 }
-                                                contacts[peer] = nickname.ifBlank { shortId(peer) }
-                                                selected = ChatTarget(peer, contacts[peer] ?: shortId(peer), false)
-                                                cardPaste = ""
-                                                cardPreviewFp = ""
-                                                nickname = ""
+                                                groups[id] = groupName
+                                                selected = ChatTarget(id, groupName, true)
+                                                groupName = ""
                                                 sheet = Sheet.None
                                             }
                                         },
                                     ) {
                                         OutlinedTextField(
-                                            value = cardPaste,
-                                            onValueChange = { cardPaste = it },
-                                            label = { Text("Contact card") },
-                                            placeholder = { Text("nemo:1:…") },
-                                            modifier = Modifier.fillMaxWidth(),
-                                        )
-                                        TextButton(onClick = scanQr) {
-                                            Text("Scan QR")
-                                        }
-                                        if (cardPreviewFp.isNotEmpty()) {
-                                            Text(
-                                                "Fingerprint",
-                                                style = MaterialTheme.typography.labelSmall,
-                                            )
-                                            SelectionContainer {
-                                                Text(
-                                                    cardPreviewFp,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                )
-                                            }
-                                        }
-                                        OutlinedTextField(
-                                            value = nickname,
-                                            onValueChange = { nickname = it },
-                                            label = { Text("Name") },
+                                            value = groupName,
+                                            onValueChange = { groupName = it },
+                                            label = { Text("Group name") },
                                             modifier = Modifier.fillMaxWidth(),
                                             singleLine = true,
                                         )
                                     }
-                                }
-                                Sheet.NewGroup -> SheetForm(
-                                    title = "New group",
-                                    action = "Create",
-                                    enabled = !busy && groupName.isNotBlank(),
-                                    onAction = {
-                                        runIo {
-                                            val id = withContext(Dispatchers.IO) {
-                                                c?.createGroup(groupName).orEmpty()
+                                    Sheet.JoinGroup -> SheetForm(
+                                        title = "Join group",
+                                        action = "Accept invite",
+                                        enabled = !busy && invitePaste.isNotBlank(),
+                                        onAction = {
+                                            runIo {
+                                                joinUri = withContext(Dispatchers.IO) {
+                                                    c?.acceptGroupInvite(invitePaste.trim()).orEmpty()
+                                                }
+                                                copyToClipboard(joinUri)
+                                                invitePaste = ""
+                                                sheet = Sheet.None
+                                                snackbar.showSnackbar("Join request copied — send it to a member")
                                             }
-                                            groups[id] = groupName
-                                            selected = ChatTarget(id, groupName, true)
-                                            groupName = ""
-                                            sheet = Sheet.None
-                                        }
-                                    },
-                                ) {
-                                    OutlinedTextField(
-                                        value = groupName,
-                                        onValueChange = { groupName = it },
-                                        label = { Text("Group name") },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        singleLine = true,
-                                    )
+                                        },
+                                    ) {
+                                        OutlinedTextField(
+                                            value = invitePaste,
+                                            onValueChange = { invitePaste = it },
+                                            label = { Text("Group invite") },
+                                            placeholder = { Text("nemo-g:1:…") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    }
+                                    Sheet.None -> {}
                                 }
-                                Sheet.JoinGroup -> SheetForm(
-                                    title = "Join group",
-                                    action = "Accept invite",
-                                    enabled = !busy && invitePaste.isNotBlank(),
-                                    onAction = {
-                                        runIo {
-                                            joinUri = withContext(Dispatchers.IO) {
-                                                c?.acceptGroupInvite(invitePaste.trim()).orEmpty()
-                                            }
-                                            copyToClipboard(joinUri)
-                                            invitePaste = ""
-                                            sheet = Sheet.None
-                                            snackbar.showSnackbar("Join request copied — send it to a member")
-                                        }
-                                    },
-                                ) {
-                                    OutlinedTextField(
-                                        value = invitePaste,
-                                        onValueChange = { invitePaste = it },
-                                        label = { Text("Group invite") },
-                                        placeholder = { Text("nemo-g:1:…") },
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                }
-                                Sheet.None -> {}
                             }
                         }
                     }
-                }
                 }
             }
             SnackbarHost(

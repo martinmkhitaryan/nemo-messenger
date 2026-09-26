@@ -15,14 +15,21 @@ group = "org.nemo"
 version = "0.1.0"
 
 val repoRoot = rootProject.projectDir.parentFile.parentFile
-val ffiLibDir = repoRoot.resolve("target/debug")
+val ffiDebugDir = repoRoot.resolve("target/debug")
+val ffiReleaseDir = repoRoot.resolve("target/release")
+val ffiLibDir = ffiDebugDir // desktopTest + default JNA path
 val jniLibsDir = project.layout.projectDirectory.dir("src/androidMain/jniLibs")
 
 kotlin {
     jvmToolchain(21)
     android {
         namespace = "org.nemo.shared"
-        compileSdk = 37
+        // API 37 is published as platforms;android-37.0 (not android-37).
+        compileSdk {
+            version = release(37) {
+                minorApiLevel = 0
+            }
+        }
         minSdk = 36
         androidResources {
             enable = true
@@ -100,7 +107,7 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "org.nemo.MainKt"
-        jvmArgs += "-Djna.library.path=${ffiLibDir.absolutePath}"
+        // JNA path is set per-task (debug vs release) in afterEvaluate.
         nativeDistributions {
             targetFormats(TargetFormat.Deb)
             packageName = "nemo-messenger"
@@ -150,6 +157,13 @@ tasks.register<Exec>("cargoBuildFfi") {
     workingDir = repoRoot
     environment("CARGO_TARGET_DIR", repoRoot.resolve("target").absolutePath)
     commandLine("cargo", "build", "-p", "nemo-ffi", "-p", "nemo-server")
+}
+
+tasks.register<Exec>("cargoBuildFfiRelease") {
+    group = "nemo"
+    workingDir = repoRoot
+    environment("CARGO_TARGET_DIR", repoRoot.resolve("target").absolutePath)
+    commandLine("cargo", "build", "--release", "-p", "nemo-ffi", "-p", "nemo-server")
 }
 
 tasks.register<Exec>("cargoNdkFfi") {
@@ -219,10 +233,20 @@ tasks.register<Exec>("generateUniffi") {
 afterEvaluate {
     tasks.named<Test>("desktopTest") {
         dependsOn("cargoBuildFfi")
-        systemProperty("jna.library.path", ffiLibDir.absolutePath)
-        environment("jna.library.path", ffiLibDir.absolutePath)
+        systemProperty("jna.library.path", ffiDebugDir.absolutePath)
+        environment("jna.library.path", ffiDebugDir.absolutePath)
     }
-    tasks.findByName("run")?.dependsOn("cargoBuildFfi")
+    fun org.gradle.api.tasks.JavaExec.withFfi(dir: java.io.File, cargoTask: String) {
+        dependsOn(cargoTask)
+        systemProperty("jna.library.path", dir.absolutePath)
+        environment("jna.library.path", dir.absolutePath)
+        jvmArgs = (jvmArgs ?: emptyList()).filterNot { it.startsWith("-Djna.library.path=") } +
+            "-Djna.library.path=${dir.absolutePath}"
+    }
+    tasks.findByName("run")?.let { (it as org.gradle.api.tasks.JavaExec).withFfi(ffiDebugDir, "cargoBuildFfi") }
+    tasks.findByName("runRelease")?.let {
+        (it as org.gradle.api.tasks.JavaExec).withFfi(ffiReleaseDir, "cargoBuildFfiRelease")
+    }
     // Desktop installers only. Android packaging must not build host nemo-ffi
     // (that pulls webrtc-audio-processing and needs Meson).
     tasks.matching {
@@ -231,8 +255,12 @@ afterEvaluate {
             it.name.startsWith("packageDmg") ||
             it.name.startsWith("packageExe") ||
             it.name.startsWith("packageUber") ||
-            it.name.startsWith("packageDistribution")
-    }.configureEach { dependsOn("cargoBuildFfi") }
+            it.name.startsWith("packageDistribution") ||
+            it.name.startsWith("packageRelease") ||
+            it.name.startsWith("createReleaseDistributable") ||
+            it.name == "runReleaseDistributable" ||
+            it.name == "runDistributable"
+    }.configureEach { dependsOn("cargoBuildFfiRelease") }
     tasks.matching { it.name.contains("AndroidTest") && it.name.startsWith("connected") }.configureEach {
         dependsOn("cargoNdkFfi")
     }

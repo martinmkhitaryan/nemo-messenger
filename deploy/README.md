@@ -65,11 +65,12 @@ The Compose Multiplatform shell is AGPL (it links libsignal through `nemo-ffi`).
 
 ```text
 source scripts/dev-env.sh
-./scripts/desktop-run.sh
+./scripts/desktop-run.sh          # debug (default)
+./scripts/desktop-run.sh release  # optimized + release nemo-ffi
 # equivalent: cd apps/compose && ./gradlew run
 ```
 
-`./gradlew run` builds `nemo-ffi` first and sets `jna.library.path` to `target/debug`. Create two vaults (two process windows, or two data directories), set **Home server** to `https://localhost:8443`, and Register. Local cargo without Caddy still uses `http://0.0.0.0:8787` (reachable as `http://<LAN-IP>:8787` from a phone).
+`./gradlew run` builds debug `nemo-ffi` and sets `jna.library.path` to `target/debug`; `./gradlew runRelease` uses `target/release`. Create two vaults (two process windows, or two data directories), set **Home server** to `https://localhost:8443`, and Register. Local cargo without Caddy still uses `http://0.0.0.0:8787` (reachable as `http://<LAN-IP>:8787` from a phone).
 
 ### Windows JVM run
 
@@ -102,7 +103,7 @@ The Compose module is one Gradle project for desktop JVM and Android (ADR-0028).
 source scripts/dev-env.sh
 # one-time SDK packages (paths match apps/compose ndkVersion):
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-  "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" \
+  "platforms;android-37.0" "build-tools;36.0.0" "ndk;27.2.12479018" \
   "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk
@@ -112,10 +113,11 @@ cargo install cargo-ndk
   -k "system-images;android-36;google_apis;x86_64" -d pixel --force
 
 # build + install (starts the 'nemo' AVD if nothing is connected)
-./scripts/android-install-debug.sh
+./scripts/android-install.sh          # debug (default)
+./scripts/android-install.sh release  # release APK (debug-signed for sideload)
 ```
 
-Or manually: `./scripts/android-emulator.sh` in one terminal, then `cd apps/compose && ./gradlew installDebug`. APK-only (no device): `./gradlew assembleDebug`.
+Or manually: `./scripts/android-emulator.sh` in one terminal, then `cd apps/compose && ./gradlew installDebug`. APK-only (no device): `./gradlew assembleDebug` / `assembleRelease`.
 
 `installDebug` fails with `No connected devices!` when adb sees nothing — start the emulator or plug in a phone with USB debugging (`adb devices` should list a `device`, not only `offline`).
 
