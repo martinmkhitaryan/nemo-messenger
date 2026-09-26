@@ -7,7 +7,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,8 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.InlineTextContent
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material3.Icon
@@ -40,16 +37,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.Placeholder
-import androidx.compose.ui.text.PlaceholderVerticalAlign
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -94,21 +87,21 @@ internal fun outgoingScreenBrush(stops: List<Color>, windowTopY: Float, rootHeig
 /** Max bubble content width: 320.dp bubble minus 12.dp horizontal padding on each side. */
 private val BubbleContentMaxWidth: Dp = 296.dp
 
-private const val TIME_INLINE_ID = "time"
-
-private enum class BubbleTimeMode { Inline, Float, Stacked }
+/** Inline trailing time vs. corner-floated time, decided per message. */
+private data class BubbleLayout(val inline: Boolean, val timeReserve: Dp)
 
 /**
  * Shared bubble body: message text plus trailing time.
  *
- * The time stays on the last text line whenever it fits there: single-line messages keep it
- * trailing the text in the same row, and multiline messages float it at the end of the last
- * line. Only when the last line has no room does the time fall back to a row under the text,
- * aligned to the end — so short bubbles stay compact and multiline bubbles keep one line
- * fewer. [measureWidth] is the content width the decision is measured against — the bubble
- * passes its max content width, the send overlay passes the target bubble width so its final
- * frame matches. [status] draws the trailing tick (or pending clock); [metaAlpha] fades the
- * time row in during the send flight.
+ * The time is always pinned to the bubble's bottom-right corner: single-line
+ * messages keep it trailing the text in the same row (which is the corner
+ * there); taller messages reserve the time's width at the text end and float
+ * the time over that space, so it shares the last line instead of growing a
+ * new row. [measureWidth] is the content width the decision is measured
+ * against — the bubble passes its max content width, the send overlay passes
+ * the target bubble width so its final frame matches. [status] draws the
+ * trailing tick (or pending clock); [metaAlpha] fades the time row in during
+ * the send flight.
  */
 @Composable
 internal fun BubbleContent(
@@ -126,7 +119,7 @@ internal fun BubbleContent(
     val density = LocalDensity.current
     val bodyStyle = MaterialTheme.typography.bodyLarge
     val timeStyle = MaterialTheme.typography.labelSmall
-    val mode = remember(text, timeLabel, hasStatus, measureWidth) {
+    val layout = remember(text, timeLabel, hasStatus, measureWidth) {
         val contentPx = with(density) { measureWidth.roundToPx() }.coerceAtLeast(1)
         val message = measurer.measure(
             text = text,
@@ -136,106 +129,60 @@ internal fun BubbleContent(
         val timeWidthPx = measurer.measure(text = timeLabel, style = timeStyle).size.width +
             with(density) { 8.dp.roundToPx() } +
             if (hasStatus) with(density) { 17.dp.roundToPx() } else 0
-        if (message.lineCount == 1 && message.size.width + timeWidthPx <= contentPx) {
-            BubbleTimeMode.Inline
-        } else if (message.lineCount > 1) {
-            val last = message.lineCount - 1
-            val lastLen = message.getLineEnd(last, true) - message.getLineStart(last)
-            val remaining = (contentPx - message.getLineRight(last)).roundToInt()
-            if (lastLen > 0 && remaining >= timeWidthPx) BubbleTimeMode.Float else BubbleTimeMode.Stacked
-        } else {
-            BubbleTimeMode.Stacked
-        }
+        BubbleLayout(
+            inline = message.lineCount == 1 && message.size.width + timeWidthPx <= contentPx,
+            timeReserve = with(density) { timeWidthPx.toDp() },
+        )
     }
-    // Placeholder width for the floated time, hoisted so it is computed once per content.
-    val timePlaceholderWidth = remember(timeLabel, hasStatus) {
-        val px = measurer.measure(text = timeLabel, style = timeStyle).size.width +
-            with(density) { 8.dp.roundToPx() } +
-            if (hasStatus) with(density) { 17.dp.roundToPx() } else 0
-        with(density) { px.toSp() }
-    }
-    val floatText = remember(text) {
-        buildAnnotatedString {
-            append(text)
-            append(" ")
-            appendInlineContent(TIME_INLINE_ID, "\u2009")
-        }
-    }
-    when (mode) {
-        BubbleTimeMode.Inline -> {
+    if (layout.inline) {
+        Row(
+            modifier = modifier,
+            // Bottom-, not center-aligned: Telegram-style timestamps sit low,
+            // starting around the text's half height.
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = text,
+                style = bodyStyle,
+                color = bodyColor,
+                modifier = Modifier.weight(1f, fill = false),
+            )
             Row(
-                modifier = modifier,
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                modifier = Modifier.graphicsLayer { alpha = metaAlpha },
             ) {
-                Text(
-                    text = text,
-                    style = bodyStyle,
-                    color = bodyColor,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    modifier = Modifier.graphicsLayer { alpha = metaAlpha },
-                ) {
-                    Text(text = timeLabel, style = timeStyle, color = metaColor)
-                    status()
-                }
+                Text(text = timeLabel, style = timeStyle, color = metaColor)
+                status()
             }
         }
-        BubbleTimeMode.Float -> {
-            // Time floats at the end of the last text line (room verified above), so multiline
-            // bubbles keep the time on the text line instead of growing an extra row.
+    } else {
+        // Telegram-style corner float: the text reserves the time's width at
+        // its end, and the time sits over that space at the bottom-right, on
+        // the last line instead of a new row. No overlap is possible because
+        // no text line extends into the reserved zone.
+        Box(modifier = modifier) {
+            // No maxLines/ellipsis: the overlay final frame must match the bubble exactly,
+            // otherwise long messages pop on handoff. Overflow is clipped by the morphing
+            // shape while the overlay rect is still small.
             Text(
-                text = floatText,
+                text = text,
                 style = bodyStyle,
                 color = bodyColor,
                 maxLines = Int.MAX_VALUE,
                 overflow = TextOverflow.Clip,
-                inlineContent = mapOf(
-                    TIME_INLINE_ID to InlineTextContent(
-                        placeholder = Placeholder(
-                            width = timePlaceholderWidth,
-                            height = 16.sp,
-                            placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
-                        ),
-                        children = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                modifier = Modifier.graphicsLayer { alpha = metaAlpha },
-                            ) {
-                                Text(text = timeLabel, style = timeStyle, color = metaColor)
-                                status()
-                            }
-                        },
-                    ),
-                ),
+                modifier = Modifier.padding(end = layout.timeReserve),
             )
-        }
-        BubbleTimeMode.Stacked -> {
-            Column(modifier = modifier) {
-                // No maxLines/ellipsis: the overlay final frame must match the bubble exactly,
-                // otherwise long messages pop on handoff. Overflow is clipped by the morphing
-                // shape while the overlay rect is still small.
-                Text(
-                    text = text,
-                    style = bodyStyle,
-                    color = bodyColor,
-                    maxLines = Int.MAX_VALUE,
-                    overflow = TextOverflow.Clip,
-                )
-                Row(
-                    modifier = Modifier.align(Alignment.End).padding(top = 2.dp).graphicsLayer {
-                        alpha = metaAlpha
-                    },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    Text(text = timeLabel, style = timeStyle, color = metaColor)
-                    status()
-                }
+            Row(
+                modifier = Modifier.align(Alignment.BottomEnd).graphicsLayer {
+                    alpha = metaAlpha
+                },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(text = timeLabel, style = timeStyle, color = metaColor)
+                status()
             }
         }
     }
