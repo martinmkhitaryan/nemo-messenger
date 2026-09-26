@@ -1076,7 +1076,15 @@ impl NemoClient {
                         Ok(())
                     }
                     Err(err) => {
-                        inner.state = None;
+                        // A failed first connect must leave the unregistered
+                        // identity in place (reloaded from the attached vault)
+                        // so the address can be fixed and register retried.
+                        // Leaving state=None bricks every later call into "busy".
+                        inner.state = inner
+                            .vault
+                            .as_ref()
+                            .and_then(|v| v.load_installation().ok())
+                            .map(ClientState::Local);
                         Err(err.into())
                     }
                 }
@@ -2926,6 +2934,47 @@ mod tests {
             .to_string()
             .contains("already registered"));
         opened.mint_share_uri().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_register_keeps_identity_retryable() {
+        // A refused first connect must not poison the client: the identity
+        // stays Local so the address can be fixed and register retried
+        // instead of every later call failing with "busy".
+        // Port 9 (discard) refuses fast with nothing listening.
+        let bad = "https://127.0.0.1:9".to_string();
+        let dir = temp_dir("nemo-ffi-bad-home");
+        let client = NemoClient::create_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let id = client.identity_id_hex().unwrap();
+        let first = client.register(bad.clone()).unwrap_err().to_string();
+        assert!(!first.contains("busy"), "first failure poisoned client: {first}");
+        let second = client.register(bad).unwrap_err().to_string();
+        assert!(
+            !second.contains("busy"),
+            "retry after failed register says busy: {second}"
+        );
+        assert_eq!(client.identity_id_hex().unwrap(), id);
+        // The recovered identity is Local again: registered-only calls say
+        // "not registered", never "busy".
+        let local_err = client.privacy_mode().unwrap_err().to_string();
+        assert!(
+            local_err.contains("not registered"),
+            "expected Local state, got: {local_err}"
+        );
+        drop(client);
+        let opened = NemoClient::open_at(
+            dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(opened.identity_id_hex().unwrap(), id);
         let _ = fs::remove_dir_all(&dir);
     }
 

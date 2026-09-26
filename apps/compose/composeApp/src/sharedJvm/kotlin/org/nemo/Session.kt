@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
@@ -172,6 +173,46 @@ internal const val CREATE_FOOTNOTE = "No recovery if you lose this passphrase."
 internal const val UNLOCK_FOOTNOTE = "There is no recovery if the passphrase is wrong."
 
 internal fun canSaveAttachment(row: DisplayRow): Boolean = row.fileName.isNotEmpty() && row.fileBytes.isNotEmpty() && !row.hidden
+
+/**
+ * Human-readable one-liner for backend/transport failures. Raw engine
+ * strings ("busy", connection stack traces) must never reach the UI.
+ */
+internal fun friendlyErrorMessage(e: Throwable): String {
+    val raw = (e.message ?: e.toString()).trim()
+    if (raw.equals("busy", ignoreCase = true) || raw.equals("lock", ignoreCase = true)) {
+        return "Still working — please try again in a moment."
+    }
+    val lower = raw.lowercase(Locale.US)
+    if ("not registered" in lower) {
+        return "Connect to a home server first."
+    }
+    if ("already registered" in lower) {
+        return "Already connected to this home server."
+    }
+    if ("home http status" in lower) {
+        return "The home server returned an error. Try again later."
+    }
+    val networkHints = listOf(
+        "connection refused", "connection reset", "connection timed out",
+        "timed out", "timeout", "failed to connect", "unable to connect",
+        "couldn't connect", "cannot connect", "network is unreachable",
+        "no route to host", "unknown host", "name resolution",
+        "nodename nor servname", "handshake", "certificate", " tls", "tls ",
+        "ssl", "broken pipe", "stream reset", "econn", "enotfound",
+        "etimedout", "econnrefused", "econnreset", "ehostunreach",
+        "connectexception", "sockettimeout", "unknownhostexception",
+    )
+    if (networkHints.any { it in lower }) {
+        return "Couldn't reach the home server. Check the address and try again."
+    }
+    return raw.ifBlank { "Something went wrong. Try again." }
+}
+
+internal fun isAlreadyRegisteredError(e: Throwable): Boolean {
+    val lower = (e.message ?: e.toString()).lowercase(Locale.US)
+    return "already registered" in lower
+}
 
 private enum class Phase { Locked, Create, Mnemonic, Home }
 
@@ -345,7 +386,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
             try {
                 block()
             } catch (e: Throwable) {
-                snackbar.showSnackbar(e.message ?: e.toString())
+                snackbar.showSnackbar(friendlyErrorMessage(e))
             } finally {
                 busy = false
             }
@@ -538,8 +579,14 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             outgoing,
                                             outgoingStatus,
                                         )
-                                        privacyMode = withContext(Dispatchers.IO) { c.privacyMode() }
-                                        registered = true
+                                        // A never-connected vault has no privacy mode yet;
+                                        // that must not block unlock — it just means the
+                                        // home server step is still pending.
+                                        val privacy = withContext(Dispatchers.IO) {
+                                            runCatching { c.privacyMode() }
+                                        }
+                                        privacyMode = privacy.getOrDefault("normal")
+                                        registered = privacy.isSuccess
                                         phase = Phase.Home
                                     }
                                 }
@@ -722,9 +769,9 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             }
                             // Settings side-effects are hoisted here so the AnimatedContent below
                             // stays pure (share-url minting must not replay for both children
-                            // mid-transition).
-                            LaunchedEffect(showSettings) {
-                                if (showSettings) {
+                            // mid-transition). No point minting before first connect.
+                            LaunchedEffect(showSettings, registered) {
+                                if (showSettings && registered) {
                                     runIo {
                                         shareUri = withContext(Dispatchers.IO) {
                                             c?.mintShareUri().orEmpty()
@@ -802,7 +849,16 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             onRegister = {
                                                 runIo {
                                                     val moving = registered
-                                                    withContext(Dispatchers.IO) { c?.register(homeUrl.trim()) }
+                                                    try {
+                                                        withContext(Dispatchers.IO) { c?.register(homeUrl.trim()) }
+                                                    } catch (e: Throwable) {
+                                                        // Same URL on an already-connected client is
+                                                        // not a failure — just confirm the state.
+                                                        if (!isAlreadyRegisteredError(e)) throw e
+                                                        registered = true
+                                                        snackbar.showSnackbar("Already connected to this home server.")
+                                                        return@runIo
+                                                    }
                                                     registered = true
                                                     snackbar.showSnackbar(
                                                         if (moving) "Moved to new home" else "Connected to home",
@@ -902,6 +958,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     addMenu = false
                                                     sheet = Sheet.JoinGroup
                                                 },
+                                                showConnectBanner = !registered,
+                                                onConnect = { showSettings = true },
                                             )
                                             VerticalDivider()
                                             Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -993,6 +1051,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                         addMenu = false
                                                         sheet = Sheet.JoinGroup
                                                     },
+                                                    showConnectBanner = !registered,
+                                                    onConnect = { showSettings = true },
                                                 )
                                             } else {
                                                 ActiveChatThread(
@@ -1400,6 +1460,8 @@ private fun ChatListPane(
     onAddContact: () -> Unit,
     onNewGroup: () -> Unit,
     onJoinGroup: () -> Unit,
+    showConnectBanner: Boolean = false,
+    onConnect: () -> Unit = {},
 ) {
     val palette = LocalNemoPalette.current
     val listBg = if (palette.dark) palette.chat else palette.list
@@ -1488,50 +1550,92 @@ private fun ChatListPane(
             }
         },
     ) { padding ->
-        if (chats.isEmpty()) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                NemoBrandMark(Modifier.size(72.dp))
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "No conversations yet",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (showConnectBanner) {
+                NotConnectedBanner(
+                    onConnect = onConnect,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Add someone with a contact card to start.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(24.dp))
-                Button(
-                    onClick = onAdd,
-                    modifier = Modifier.height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) { Text("New chat") }
             }
-        } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                items(chats, key = { it.id }) { chat ->
-                    val last = messages.lastOrNull { it.convId == chat.id }
-                    ChatRow(
-                        chat = chat,
-                        preview = last?.let { previewLine(it) } ?: "No messages yet",
-                        time = last?.let { formatTime(it.sentAt) }.orEmpty(),
-                        selected = chat.id == selectedId,
-                        onClick = { onSelect(chat) },
+            if (chats.isEmpty()) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    NemoBrandMark(Modifier.size(72.dp))
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "No conversations yet",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Add someone with a contact card to start.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    Button(
+                        onClick = onAdd,
+                        modifier = Modifier.height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("New chat") }
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    items(chats, key = { it.id }) { chat ->
+                        val last = messages.lastOrNull { it.convId == chat.id }
+                        ChatRow(
+                            chat = chat,
+                            preview = last?.let { previewLine(it) } ?: "No messages yet",
+                            time = last?.let { formatTime(it.sentAt) }.orEmpty(),
+                            selected = chat.id == selectedId,
+                            onClick = { onSelect(chat) },
+                        )
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun NotConnectedBanner(onConnect: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Not connected",
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    "Connect to a home server to chat.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            TextButton(onClick = onConnect) { Text("Connect") }
         }
     }
 }
@@ -2398,7 +2502,14 @@ private fun DeliveryTicks(status: OutgoingStatus, tint: Color) {
     }
     val color = when (status) {
         OutgoingStatus.Failed -> MaterialTheme.colorScheme.error
-        OutgoingStatus.Delivered -> MaterialTheme.colorScheme.primary
+        // Mono bubbles are inverse, so the brand accent is invisible on them —
+        // delivered ticks follow the message text instead. Blue keeps blue.
+        OutgoingStatus.Delivered ->
+            if (LocalNemoPalette.current.mono) {
+                LocalNemoPalette.current.mineBody
+            } else {
+                MaterialTheme.colorScheme.primary
+            }
         else -> tint
     }
     Icon(

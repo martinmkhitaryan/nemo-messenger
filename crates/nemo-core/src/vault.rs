@@ -140,6 +140,17 @@ impl Vault {
         &self.dir
     }
 
+    /// Reload the installation snapshot from an open vault, including MLS
+    /// storage. Used to restore an unregistered identity after a failed
+    /// register without requiring the passphrase again.
+    pub fn load_installation(&self) -> Result<Installation> {
+        let install = self.load()?;
+        if let Some(mls) = self.get_opt(MLS_KEY)? {
+            install.apply_mls_storage(&mls)?;
+        }
+        Ok(install)
+    }
+
     pub fn save(&self, install: &Installation) -> Result<()> {
         self.put(SNAPSHOT_KEY, &install.encode_snapshot()?)?;
         self.put(MLS_KEY, &install.encode_mls_storage()?)?;
