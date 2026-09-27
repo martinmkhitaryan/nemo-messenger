@@ -194,6 +194,12 @@ private val MonoAvatars = listOf(
     Color(0xFF888888),
 )
 
+/** Deterministic avatar color for a chat title; mono uses the grayscale set. */
+internal fun avatarColor(title: String, mono: Boolean): Color {
+    val colors = if (mono) MonoAvatars else AvatarPaletteColors
+    return colors[kotlin.math.abs(title.hashCode()) % colors.size]
+}
+
 private val MonoLightColors = lightColorScheme(
     primary = Color(0xFF000000),
     onPrimary = Color.White,

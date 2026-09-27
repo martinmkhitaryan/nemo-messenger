@@ -159,8 +159,6 @@ import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
@@ -249,18 +247,6 @@ internal enum class OutgoingStatus {
 
 private val localMsgSeq = AtomicLong(0)
 
-internal fun messageListKey(row: DisplayRow): String = if (row.fetchToken.startsWith("local:")) {
-    row.fetchToken
-} else {
-    "${row.convId}:${row.convSeq}:${row.kind}:${row.target}"
-}
-
-internal fun outgoingMapKey(row: DisplayRow): String = if (row.fetchToken.startsWith("local:")) {
-    row.fetchToken
-} else {
-    "${row.convId}:${row.convSeq}:${row.kind}"
-}
-
 /** Composer → bubble flight: mobile only. See [MessageSendAnimation]. */
 
 /** Map [child] window bounds into [parent]'s local coordinates (parent need not be an ancestor). */
@@ -326,17 +312,6 @@ private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray
     outgoing = true,
 )
 
-private val AvatarPalette = listOf(
-    Color(0xFF3390EC),
-    Color(0xFF0369A1),
-    Color(0xFF7C3AED),
-    Color(0xFFB45309),
-    Color(0xFFBE185D),
-    Color(0xFF15803D),
-    Color(0xFF1D4ED8),
-    Color(0xFF0E7490),
-)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Modifier) {
@@ -356,6 +331,17 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var registered by remember { mutableStateOf(false) }
     var shareUri by remember { mutableStateOf("") }
     var privacyMode by remember { mutableStateOf("normal") }
+    var notifyMode by remember { mutableStateOf(loadNotifyMode()) }
+    var pendingNotify by remember { mutableStateOf<NemoNotifyMode?>(null) }
+    var notificationsAllowed by remember { mutableStateOf(areNotificationsAllowed()) }
+    val ensureNotifications = rememberEnsureNotifications {
+        pendingNotify?.let { mode ->
+            saveNotifyMode(mode)
+            notifyMode = mode
+            applyNotifyMode(mode)
+        }
+        pendingNotify = null
+    }
     var cardPaste by remember { mutableStateOf("") }
     var cardPreviewFp by remember { mutableStateOf("") }
     var nickname by remember { mutableStateOf("") }
@@ -456,6 +442,19 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         }
     }
 
+    // Foreground sync is the default but needs the system permission to show
+    // anything — ask once on entry instead of failing silently.
+    LaunchedEffect(phase) {
+        if (phase == Phase.Home && notifyMode == NemoNotifyMode.Foreground) {
+            ensureNotifications()
+            notificationsAllowed = areNotificationsAllowed()
+        }
+    }
+
+    LaunchedEffect(showSettings) {
+        notificationsAllowed = areNotificationsAllowed()
+    }
+
     Surface(modifier) {
         Box(Modifier.fillMaxSize().imePadding()) {
             AnimatedContent(
@@ -510,6 +509,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         }
                                         mnemonic = withContext(Dispatchers.IO) { c.takeRevocationMnemonic() }
                                         client = c
+                                        publishClient(c)
                                         phase = Phase.Mnemonic
                                     }
                                 }
@@ -570,6 +570,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             )
                                         }
                                         client = c
+                                        publishClient(c)
                                         fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                         identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
                                         withContext(Dispatchers.IO) { reloadRoster(c) }
@@ -636,6 +637,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                 confirmWipe = false
                                                 wipeVaultDir(vaultDir)
                                                 client = null
+                                                publishClient(null)
                                                 mnemonic = null
                                                 fingerprint = ""
                                                 identityHex = ""
@@ -929,6 +931,13 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     privacyMode = mode
                                                 }
                                             },
+                                            notifyMode = notifyMode,
+                                            onNotifyMode = { mode ->
+                                                pendingNotify = mode
+                                                ensureNotifications()
+                                            },
+                                            notificationsAllowed = notificationsAllowed,
+                                            onOpenSystemSettings = { openSystemNotificationSettings() },
                                         )
                                     } else if (split) {
                                         Row(Modifier.fillMaxSize()) {
@@ -2333,32 +2342,6 @@ private fun ChatWallpaper(modifier: Modifier = Modifier) {
     }
 }
 
-/** Height of the top fade over the message list — gradual, keeps reading area clear. */
-internal val MessageListFadeHeight = 48.dp
-
-/** Gradient stops for the top fade: opaque theme background → fully transparent. */
-internal fun messageListFadeColors(baseColor: Color): List<Color> =
-    listOf(baseColor, baseColor.copy(alpha = 0f))
-
-/**
- * Top gradient fade mask for the message list.
- *
- * Sits above scrolling messages but below the status bar / fixed header (callers
- * place it inside the Scaffold content, after the LazyColumn so it draws on top).
- * No clickable / pointerInput modifiers on purpose: hit-testing passes through
- * to the list below (Compose equivalent of pointer-events: none / IgnorePointer).
- */
-@Composable
-internal fun MessageListTopFade(baseColor: Color, modifier: Modifier = Modifier) {
-    Box(
-        modifier
-            .fillMaxWidth()
-            .height(MessageListFadeHeight)
-            .background(Brush.verticalGradient(messageListFadeColors(baseColor)))
-            .testTag("messageFade"),
-    )
-}
-
 @Composable
 private fun MessageBubble(
     row: DisplayRow,
@@ -2574,6 +2557,10 @@ private fun SettingsScreen(
     onDisappear: () -> Unit,
     privacyMode: String,
     onPrivacyMode: (String) -> Unit,
+    notifyMode: NemoNotifyMode,
+    onNotifyMode: (NemoNotifyMode) -> Unit,
+    notificationsAllowed: Boolean,
+    onOpenSystemSettings: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -2691,6 +2678,46 @@ private fun SettingsScreen(
                 }
             }
             item {
+                Text("Notifications", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "How messages reach you when the app is closed. Notification text never shows message content. " +
+                        "After a reboot, unlock once to resume background sync.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                NemoNotifyMode.entries.forEach { mode ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(mode.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                mode.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = notifyMode == mode,
+                            onCheckedChange = { if (it) onNotifyMode(mode) },
+                        )
+                    }
+                }
+                if (!notificationsAllowed) {
+                    Text(
+                        "System notifications are off — alerts stay silent until you allow them.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Button(onClick = onOpenSystemSettings, modifier = Modifier.fillMaxWidth()) {
+                        Text("Open system settings")
+                    }
+                }
+            }
+            item {
                 Text("Share contact", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Button(enabled = !busy, onClick = onShare, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(18.dp))
@@ -2787,8 +2814,7 @@ private fun EmptyChatHint() {
 private fun Avatar(title: String, isGroup: Boolean, size: androidx.compose.ui.unit.Dp = 48.dp) {
     val palette = LocalNemoPalette.current
     // Mono recolors avatars to grayscale; blue keeps the original colorful set.
-    val colors = if (palette.mono) palette.avatars else AvatarPalette
-    val color = colors[kotlin.math.abs(title.hashCode()) % colors.size]
+    val color = avatarColor(title, palette.mono)
     Box(
         Modifier.size(size).clip(CircleShape).background(color),
         contentAlignment = Alignment.Center,
@@ -2840,57 +2866,13 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit, 
     )
 }
 
-private fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
+internal fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
 
 /** Wipe a pane vault so [`NemoClient.createAt`] can run again. */
 internal fun wipeVaultDir(dir: File) {
     if (!dir.isDirectory) return
     dir.listFiles()?.forEach { child ->
         if (child.isDirectory) child.deleteRecursively() else child.delete()
-    }
-}
-
-internal fun previewLine(row: DisplayRow): String = when {
-    row.hidden && row.kind == "expired" -> "Message expired"
-    row.hidden || row.kind == "deleted" -> "Message deleted"
-    row.kind == "reaction" -> "Reacted ${row.emoji}"
-    row.kind == "call_invite" -> "Incoming call"
-    row.kind == "call_ringing" -> "Ringing"
-    row.kind == "call_answer" -> "Call answered"
-    row.kind == "call_reject" -> "Declined"
-    row.kind == "call_cancel" -> "Cancelled"
-    row.kind == "call_end" -> "Call ended"
-    row.kind == "lost" -> "Messages lost"
-    row.kind == "revoked" -> "Identity revoked"
-    row.kind == "binding_conflict" -> "Home-server binding conflict"
-    row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
-    else -> row.text
-}
-
-internal fun bubbleText(row: DisplayRow): String = when {
-    row.hidden && row.kind == "expired" -> "Expired"
-    row.hidden || row.kind == "deleted" -> "Deleted"
-    row.kind == "reaction" -> "Reacted ${row.emoji}"
-    row.kind == "disappear" -> "Disappearing messages: ${row.text}s"
-    row.kind == "call_invite" -> "Incoming call"
-    row.kind == "call_ringing" -> "Ringing"
-    row.kind == "call_answer" -> "Answered"
-    row.kind == "call_reject" -> "Declined"
-    row.kind == "call_cancel" -> "Cancelled"
-    row.kind == "call_end" -> "Call ended"
-    row.kind == "lost" -> "Messages lost"
-    row.kind == "revoked" -> "Identity revoked"
-    row.kind == "binding_conflict" -> "Home-server binding conflict"
-    row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
-    else -> row.text
-}
-
-private fun formatTime(sentAt: ULong): String {
-    if (sentAt == 0UL) return ""
-    return try {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(sentAt.toLong() * 1000))
-    } catch (_: Throwable) {
-        ""
     }
 }
 
