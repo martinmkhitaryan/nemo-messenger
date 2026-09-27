@@ -43,9 +43,15 @@ internal class SyncService : Service() {
                     continue
                 }
                 startForegroundLocked(true)
+                val stamp = LocalClient.generation
+                val woke = runCatching { client.waitWakeup() }
                 try {
-                    client.waitWakeup()
-                    syncNow(client)
+                    // Vault wiped/recreated mid-wait: this wake belongs to a
+                    // dead identity. Drop it; the next iteration serves the
+                    // new client immediately.
+                    if (stamp != LocalClient.generation) continue
+                    woke.getOrThrow()
+                    LocalClient.client?.let { syncNow(it) }
                 } catch (_: Throwable) {
                     delay(2_000)
                 }

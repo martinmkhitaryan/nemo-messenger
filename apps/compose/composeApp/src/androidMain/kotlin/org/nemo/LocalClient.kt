@@ -18,10 +18,19 @@ import java.util.concurrent.TimeUnit
 internal object LocalClient {
     @Volatile
     var client: NemoClient? = null
+
+    /**
+     * Bumped on every [publishClient]. Loops blocked in a previous client's
+     * wake socket compare their stamp on return and drop stale wakes instead
+     * of fetching with a dead identity.
+     */
+    @Volatile
+    var generation: Long = 0
 }
 
 internal actual fun publishClient(client: NemoClient?) {
     LocalClient.client = client
+    LocalClient.generation++
     if (client == null) {
         // Vault locked or wiped: nothing to sync with. The service idles
         // until the next unlock; the worker no-ops without a client.

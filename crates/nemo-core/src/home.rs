@@ -25,6 +25,9 @@ use crate::privacy::{
 };
 
 pub const FETCH_LIMIT: u64 = 64;
+
+/// Idle bound for one `/v1/wakeup` frame wait (see `wait_wakeup`).
+pub const WAKEUP_IDLE_TIMEOUT_SECS: u64 = 90;
 const CARD_TTL_SECS: u64 = 30 * 24 * 3600;
 
 #[derive(Clone, Debug)]
@@ -1505,6 +1508,13 @@ impl HttpHome {
     }
 
     /// Long-lived `/v1/wakeup`. Returns the next binary frame (must be empty).
+    ///
+    /// The frame wait is bounded by [WAKEUP_IDLE_TIMEOUT_SECS]: an idle socket
+    /// must not outlive interest in it. Callers only hold the connection while
+    /// a given vault is unlocked; after wipe/lock the old call would otherwise
+    /// block forever on a dead mailbox and strand its thread (reconnects also
+    /// keep NAT bindings warm). Every caller already retries errors, so a
+    /// timeout is just a prompt reconnect.
     pub async fn wait_wakeup(&self, owner_header: &str) -> Result<Vec<u8>> {
         use futures::StreamExt;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -1535,7 +1545,13 @@ impl HttpHome {
         }
         .map_err(|e| CoreError::Transport(e.to_string()))?;
         loop {
-            match ws.next().await {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_secs(WAKEUP_IDLE_TIMEOUT_SECS),
+                ws.next(),
+            )
+            .await
+            .map_err(|_| CoreError::Transport("wakeup idle-timeout".into()))?;
+            match next {
                 Some(Ok(WsMsg::Binary(b))) => {
                     if !b.is_empty() {
                         return Err(CoreError::Transport("wakeup frame must be empty".into()));
