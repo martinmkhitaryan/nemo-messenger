@@ -154,9 +154,9 @@ private val MonoOutgoingGradientDark = listOf(
 )
 
 private val MonoIncomingLight = Color(0xFFFFFFFF)
-private val MonoIncomingDark = Color(0xFF171717)
+private val MonoIncomingDark = Color(0xFF1F1F1F)
 private val MonoChatLight = Color(0xFFE9E7E0)
-private val MonoChatDark = Color(0xFF000000)
+private val MonoChatDark = Color(0xFF141414)
 private val MonoListLight = Color(0xFFF5F3EC)
 
 private val MonoOnboardGradientLight = listOf(
@@ -166,9 +166,9 @@ private val MonoOnboardGradientLight = listOf(
 )
 
 private val MonoOnboardGradientDark = listOf(
-    Color(0xFF000000),
+    Color(0xFF141414),
     MonoChatDark,
-    Color(0xFF101010),
+    Color(0xFF1F1F1F),
 )
 
 /** Original avatar colors, also referenced by the blue palettes. */
@@ -235,19 +235,19 @@ private val MonoDarkColors = darkColorScheme(
     onTertiary = Color(0xFF000000),
     tertiaryContainer = Color(0xFF2A2A2A),
     onTertiaryContainer = Color(0xFFFFFFFF),
-    surface = Color(0xFF0A0A0A),
+    surface = Color(0xFF232323),
     onSurface = Color(0xFFF5F5F5),
-    surfaceVariant = Color(0xFF1C1C1C),
+    surfaceVariant = Color(0xFF2C2C2C),
     onSurfaceVariant = Color(0xFFA3A3A3),
     background = MonoChatDark,
     onBackground = Color(0xFFF5F5F5),
-    outline = Color(0xFF2A2A2A),
+    outline = Color(0xFF3D3D3D),
     error = Color(0xFFF97066),
-    surfaceContainerLowest = Color(0xFF000000),
-    surfaceContainerLow = Color(0xFF0A0A0A),
-    surfaceContainer = Color(0xFF111111),
-    surfaceContainerHigh = Color(0xFF181818),
-    surfaceContainerHighest = Color(0xFF212121),
+    surfaceContainerLowest = Color(0xFF141414),
+    surfaceContainerLow = Color(0xFF1B1B1B),
+    surfaceContainer = Color(0xFF232323),
+    surfaceContainerHigh = Color(0xFF2B2B2B),
+    surfaceContainerHighest = Color(0xFF333333),
 )
 
 private val BlueLightPalette = NemoPalette(

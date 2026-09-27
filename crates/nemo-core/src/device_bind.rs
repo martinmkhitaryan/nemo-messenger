@@ -3,16 +3,22 @@
 //! The secret is never stored next to `store.db` in plaintext. Copying the vault
 //! directory to another machine does not unlock a version-2 vault.
 
+#[cfg(not(target_os = "android"))]
 use std::fs;
+#[cfg(not(target_os = "android"))]
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_os = "android"))]
 use nemo_wire::ids;
+#[cfg(not(target_os = "android"))]
 use rand::RngCore;
 
 use crate::error::{CoreError, Result};
 use crate::vault::KEY_LEN;
 
+#[cfg(not(target_os = "android"))]
 const SERVICE: &str = "org.nemo.vault";
+#[cfg(not(target_os = "android"))]
 const FILE_PREFIX: &str = "device-";
 
 pub fn resolve(injected: Option<&[u8]>, salt: &[u8], create: bool) -> Result<[u8; KEY_LEN]> {
@@ -31,14 +37,17 @@ fn parse_secret(bytes: &[u8]) -> Result<[u8; KEY_LEN]> {
     Ok(out)
 }
 
+#[cfg(not(target_os = "android"))]
 fn account(salt: &[u8]) -> String {
     format!("{FILE_PREFIX}{}", ids::to_hex(salt))
 }
 
+#[cfg(not(target_os = "android"))]
 fn bind_file(salt: &[u8]) -> Result<PathBuf> {
     Ok(bind_dir()?.join(account(salt)))
 }
 
+#[cfg(not(target_os = "android"))]
 fn bind_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("NEMO_BIND_DIR") {
         let p = PathBuf::from(dir);
@@ -56,11 +65,13 @@ fn bind_dir() -> Result<PathBuf> {
     Ok(fallback)
 }
 
+#[cfg(not(target_os = "android"))]
 fn read_file(path: &Path) -> Result<[u8; KEY_LEN]> {
     let bytes = fs::read(path).map_err(|e| CoreError::VaultIo(e.to_string()))?;
     parse_secret(&bytes)
 }
 
+#[cfg(not(target_os = "android"))]
 fn write_file(path: &Path, secret: &[u8; KEY_LEN]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| CoreError::VaultIo(e.to_string()))?;

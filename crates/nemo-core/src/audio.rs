@@ -12,6 +12,7 @@ use crate::error::{CoreError, Result};
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
 pub const FRAME_MONO: usize = 960; // 20 ms @ 48 kHz
+#[cfg(not(target_os = "android"))]
 const APM_CHUNK: usize = 480; // 10 ms @ 48 kHz
 const CAPTURE_CAP: usize = SAMPLE_RATE as usize; // 1 s mono
 
