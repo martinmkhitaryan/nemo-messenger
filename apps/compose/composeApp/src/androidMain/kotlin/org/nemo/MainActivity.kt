@@ -30,6 +30,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         appContext = applicationContext
+        // Covers the reboot case: start the saved sync mode (foreground
+        // idles until the first unlock hands it a client via publishClient).
+        applyNotifyMode(loadNotifyMode())
         enableEdgeToEdge()
         val vault = File(filesDir, "vault")
         setContent {
