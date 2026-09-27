@@ -76,6 +76,7 @@ kotlin {
                 implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
                 implementation(libs.androidx.activity.compose)
                 implementation(libs.androidx.core.ktx)
+                implementation(libs.androidx.work.runtime)
                 implementation(libs.stream.webrtc.android)
             }
         }
