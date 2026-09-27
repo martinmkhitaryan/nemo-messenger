@@ -30,7 +30,7 @@ kotlin {
                 minorApiLevel = 0
             }
         }
-        minSdk = 36
+        minSdk = 35
         androidResources {
             enable = true
         }

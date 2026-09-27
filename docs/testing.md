@@ -73,7 +73,7 @@ GitHub’s default `cc` is Strawberry MinGW, which cannot compile `webrtc-audio-
 
 ## Shared home (desktop and Android)
 
-Android 16 (`minSdk` 36). The debug APK talks to the same home as desktop.
+Android 15+ (`minSdk` 35). The debug APK talks to the same home as desktop.
 
 ```text
 # same secret on nemo-server and coturn (ADR-0035)

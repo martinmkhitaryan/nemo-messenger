@@ -15,7 +15,7 @@ android {
     ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "org.nemo"
-        minSdk = 36
+        minSdk = 35
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
