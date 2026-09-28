@@ -60,7 +60,9 @@ internal fun mergeDisplayRows(current: List<DisplayRow>, incoming: List<DisplayR
  * chat list until restart (which re-read `inbox()`).
  *
  * Now only the store fetches. The UI collects [messagesFlow] /
- * [contactsFlow] / [groupsFlow]; background delivery collects [freshRows].
+ * [contactsFlow] / [groupsFlow] plus [freshRows] deltas; background delivery
+ * collects [messagesFlow] state and diffs against the persisted notify mark,
+ * so late subscribers never miss a notification.
  * `fetchMutex` serializes the internal poll loop, wake loop, and any
  * externally triggered [refresh] (service, worker) so consumption happens
  * exactly once and every collector sees the same rows.
@@ -77,6 +79,9 @@ internal class NemoVaultStore(val vaultDir: File, @Volatile var client: NemoClie
 
     /** Currently open conversation, or null on the list page / background. */
     val visibleChatId = MutableStateFlow<String?>(null)
+
+    /** True while an activity is resumed. Service uses it to not suppress tray in background. */
+    val appForeground = MutableStateFlow(true)
 
     /** Raw deltas from the last fetch, for notification layers to filter. */
     val freshRows = MutableSharedFlow<List<DisplayRow>>(extraBufferCapacity = 64)
@@ -123,7 +128,10 @@ internal class NemoVaultStore(val vaultDir: File, @Volatile var client: NemoClie
         if (!started.compareAndSet(false, true)) return
         val poll = scope.launch {
             while (isActive) {
-                delay(2_000)
+                // Foreground polls fast for snappy UI; backgrounded backs off
+                // (the wake long-poll stays real-time) to save battery and stay
+                // friendly to Doze instead of hammering the radio every 2 s.
+                delay(if (appForeground.value) 2_000 else 15_000)
                 try {
                     refresh()
                 } catch (e: CancellationException) {
@@ -166,12 +174,15 @@ internal object VaultStores {
             val key = vaultDir.absolutePath
             val existing = byPath[key]
             if (existing != null) {
-                if (existing.client === client) return existing
-                runCatching { existing.close() }
-                val stale = byClient.entries.iterator()
-                while (stale.hasNext()) {
-                    if (stale.next().value === existing) stale.remove()
-                }
+                // Same vault reopened (e.g. activity destroyed by swipe, then
+                // unlock creates a fresh client): keep the store so its flows
+                // stay continuous and existing collectors (service, UI) never
+                // wedge on a dead instance. The loops read `client` per
+                // iteration, so they pick the new handle up on their own.
+                // Genuine identity changes go through remove() on wipe first.
+                existing.client = client
+                byClient[client] = existing
+                return existing
             }
             val store = NemoVaultStore(vaultDir, client)
             byPath[key] = store
@@ -186,6 +197,13 @@ internal object VaultStores {
 
     fun findByPath(vaultDir: File): NemoVaultStore? {
         synchronized(lock) { return byPath[vaultDir.absolutePath] }
+    }
+
+    /** Updated from Activity onResume/onPause; desktop stays foreground. */
+    fun setForeground(foreground: Boolean) {
+        synchronized(lock) {
+            byPath.values.forEach { it.appForeground.value = foreground }
+        }
     }
 
     fun remove(vaultDir: File) {

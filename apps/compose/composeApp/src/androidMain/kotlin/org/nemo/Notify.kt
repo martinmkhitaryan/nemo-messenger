@@ -68,27 +68,57 @@ internal fun syncNow(client: NemoClient) {
  * path: exactly one consumer advances the server cursor, every collector
  * (open list via [NemoVaultStore.messagesFlow], tray here) sees the result.
  *
- * Suppression: rows for [NemoVaultStore.visibleChatId] post no tray (the
- * user already sees them), except calls which always ring. Suppressed rows
- * still advance the seen mark so leaving the chat does not re-notify.
+ * Suppression: foreground rows for [NemoVaultStore.visibleChatId] post no
+ * tray (the user already sees them), except calls which always ring.
+ * Suppressed rows still advance the seen mark so leaving the chat does not
+ * re-notify.
+ *
+ * Callers must pass their own [Context] (service/worker), never the static
+ * [appContext]: after a system restart the background components can run
+ * before any activity sets it, and a null check here would silently drop
+ * background delivery.
  */
-internal suspend fun syncStoreAndNotify(store: NemoVaultStore) {
-    val ctx = appContext ?: return
+internal suspend fun syncStoreAndNotify(store: NemoVaultStore, ctx: Context) {
     val rows = runCatching { store.refresh() }.getOrNull() ?: return
     if (rows.isEmpty()) return
     notifyStoreRows(ctx, store, rows)
 }
 
-/** Filter + post already-fetched [rows] (service collector path, no fetch). */
+/** Overload for call sites that only have the static context (tests, strays). */
+internal suspend fun syncStoreAndNotify(store: NemoVaultStore) {
+    val ctx = appContext ?: return
+    syncStoreAndNotify(store, ctx)
+}
+
+/** Filter + post already-fetched [rows] (worker path, no extra fetch). */
 internal fun notifyStoreRows(ctx: Context, store: NemoVaultStore, rows: List<DisplayRow>) {
     val seen = loadSeen(ctx)
     val (pending, next) = pendingNotifies(rows, seen)
     if (next != seen) saveSeen(ctx, next)
     if (pending.isEmpty()) return
+    postPending(ctx, store, pending)
+}
+
+/**
+ * State-based notify for the long-lived service collector. Diffs the full
+ * [messages] snapshot against the persisted mark, so a late subscriber that
+ * missed [NemoVaultStore.freshRows] emissions still notifies exactly once.
+ */
+internal fun notifyMessagesState(ctx: Context, store: NemoVaultStore, messages: List<DisplayRow>) {
+    if (messages.isEmpty()) return
+    val seen = loadSeen(ctx)
+    val (pending, next) = pendingNotifies(messages, seen)
+    if (next != seen) saveSeen(ctx, next)
+    if (pending.isEmpty()) return
+    postPending(ctx, store, pending)
+}
+
+private fun postPending(ctx: Context, store: NemoVaultStore, pending: List<PendingNotify>) {
     val visible = store.visibleChatId.value
+    val foreground = store.appForeground.value
     val titles = conversationTitles(store.client)
     for (item in pending) {
-        if (!shouldNotifyRow(item.convId, item.kind, visible)) continue
+        if (!shouldNotifyRow(item.convId, item.kind, visible, foreground)) continue
         notifyMessage(ctx, titles[item.convId] ?: shortId(item.convId), item.kind)
     }
 }
@@ -115,11 +145,25 @@ private fun notifyMessage(ctx: Context, title: String, kind: String) {
         .setLargeIcon(BitmapFactory.decodeResource(ctx.resources, R.drawable.nemo_brand_round))
         .setContentTitle(title)
         .setContentText(text)
-        .setOnlyAlertOnce(true)
+        // NOTE: no setOnlyAlertOnce here. The tray row is keyed per
+        // conversation (see messageNotifyId), so silencing reposts would make
+        // every message after the first one arrive silently until the user
+        // taps/dismisses the old row: "works once, then never again".
         .setAutoCancel(true)
         .setContentIntent(open)
         .build()
-    NotificationManagerCompat.from(ctx).notify(title.hashCode(), notification)
+    NotificationManagerCompat.from(ctx).notify(messageNotifyId(title), notification)
+}
+
+/**
+ * Stable tray row per conversation. Post and cancel must use the same id,
+ * resolved the same way (nickname or short id fallback).
+ */
+internal fun messageNotifyId(title: String): Int = title.hashCode()
+
+internal fun messageNotifyId(store: NemoVaultStore, convId: String): Int {
+    val titles = conversationTitles(store.client)
+    return messageNotifyId(titles[convId] ?: shortId(convId))
 }
 
 internal fun ensureChannels(ctx: Context) {

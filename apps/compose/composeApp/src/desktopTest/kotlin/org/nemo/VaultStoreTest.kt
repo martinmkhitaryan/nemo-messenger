@@ -40,15 +40,35 @@ class VaultStoreTest {
     fun visibleChatSuppressesTrayExceptCalls() {
         val open = "ab".repeat(32)
         val other = "cd".repeat(32)
-        // List page / background: everything notifies.
-        assertTrue(shouldNotifyRow(open, "", null))
+        // List page: everything notifies.
+        assertTrue(shouldNotifyRow(open, "", null, true))
         // Other chat while inside a thread: notifies.
-        assertTrue(shouldNotifyRow(other, "", open))
-        // Same chat: silent, user already sees it.
-        assertFalse(shouldNotifyRow(open, "", open))
+        assertTrue(shouldNotifyRow(other, "", open, true))
+        // Same chat foreground: silent, user already sees it.
+        assertFalse(shouldNotifyRow(open, "", open, true))
         // Calls always ring, even in the open thread.
-        assertTrue(shouldNotifyRow(open, "call_invite", open))
-        assertTrue(shouldNotifyRow(open, "call_ringing", open))
+        assertTrue(shouldNotifyRow(open, "call_invite", open, true))
+        assertTrue(shouldNotifyRow(open, "call_ringing", open, true))
+    }
+
+    @Test
+    fun backgroundAlwaysNotifies() {
+        val open = "ab".repeat(32)
+        // Backgrounded with a thread still selected: tray must fire.
+        assertTrue(shouldNotifyRow(open, "", open, false))
+        assertTrue(shouldNotifyRow(open, "", null, false))
+    }
+
+    @Test
+    fun stateDiffCoversMissedEvents() {
+        // Service diffs the replayed full snapshot, so a late subscriber that
+        // missed freshRows still notifies exactly once via the seen mark.
+        val conv = "ab".repeat(32)
+        val full = listOf(row(convId = conv, convSeq = 1UL), row(convId = conv, convSeq = 2UL))
+        val (firstPending, seen) = pendingNotifies(full, emptyMap())
+        assertEquals(2, firstPending.size)
+        val (secondPending, _) = pendingNotifies(full, seen)
+        assertTrue(secondPending.isEmpty())
     }
 
     private fun row(

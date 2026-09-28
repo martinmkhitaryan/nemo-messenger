@@ -137,7 +137,7 @@ internal fun BubbleContent(
     if (layout.inline) {
         Row(
             modifier = modifier,
-            // Bottom-, not center-aligned: Telegram-style timestamps sit low,
+            // Bottom-, not center-aligned: timestamps sit low,
             // starting around the text's half height.
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -158,7 +158,7 @@ internal fun BubbleContent(
             }
         }
     } else {
-        // Telegram-style corner float: the text reserves the time's width at
+        // corner float: the text reserves the time's width at
         // its end, and the time sits over that space at the bottom-right, on
         // the last line instead of a new row. No overlap is possible because
         // no text line extends into the reserved zone.

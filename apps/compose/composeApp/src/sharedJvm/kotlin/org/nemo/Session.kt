@@ -1871,12 +1871,11 @@ private fun ChatThread(
     // Start unpinned when jumping, so the bottom-pin below can't yank the
     // list down mid-jump.
     var stickToBottom by remember(chat.id) { mutableStateOf(entryUnreadSeq == null) }
-    // Marker anchor: oldest unread at open, frozen for the visit. It never
-    // follows the live mark, so it can't dance while scrolling; once the
-    // anchor row is seen it stays gone until the next visit.
-    val dividerAt = remember(messages, entryUnreadSeq, readMark) {
+    // Marker anchor: oldest unread at open, frozen for the whole visit. It is
+    // cleared only on leave (the persisted mark decides the next visit), so
+    // scrolling past it never moves or dismisses it mid-read.
+    val dividerAt = remember(messages, entryUnreadSeq) {
         val seq = entryUnreadSeq ?: return@remember null
-        if (readMark >= seq) return@remember null
         val chrono = messages.indexOfFirst { it.convId == chat.id && it.convSeq == seq }
         if (chrono < 0) return@remember null
         (messages.lastIndex - chrono) + 1
@@ -1887,8 +1886,8 @@ private fun ChatThread(
     var userScrolled by remember(chat.id) { mutableStateOf(false) }
     val latestVisibleRead = rememberUpdatedState(onVisibleRead)
 
-    // Telegram-style floating date lives in its own state holder so the thread
-    // keeps its unread-marker indices and visible-index math untouched.
+    // Floating date lives in its own state holder so the thread keeps its
+    // unread-marker indices and visible-index math untouched.
     val floatingDate = rememberFloatingDateUiState(messages, chat.id, listState, dividerAt)
 
     var overlayRoot by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -3082,8 +3081,30 @@ private fun JumpToUnreadEffect(
             return@LaunchedEffect
         }
         onStickToBottom(false)
-        withFrameMillis { }
-        withFrameMillis { }
+        // Wait for a settled layout before measuring. The thread can enter
+        // through an animated transition (size morphs for its duration), and
+        // measuring mid-animation strands the marker and visibly drifts.
+        run {
+            var signature = ""
+            var settled = 0
+            repeat(30) {
+                withFrameMillis { }
+                if (listState.isScrollInProgress) {
+                    // User took over before the jump; visible-max marking takes over.
+                    onMarkEnabled(true)
+                    return@LaunchedEffect
+                }
+                val info = listState.layoutInfo
+                val next = "${info.viewportSize} ${info.visibleItemsInfo.size} ${info.totalItemsCount}"
+                if (next == signature) {
+                    settled++
+                    if (settled >= 2) return@run
+                } else {
+                    signature = next
+                    settled = 0
+                }
+            }
+        }
         var div = unreadDividerAt(messages, chatId, entryMark, openMaxSeq)
         if (div == null) {
             onMarkEnabled(true)

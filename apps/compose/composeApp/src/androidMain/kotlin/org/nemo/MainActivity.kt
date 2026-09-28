@@ -52,6 +52,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        VaultStores.setForeground(true)
+    }
+
+    override fun onPause() {
+        VaultStores.setForeground(false)
+        super.onPause()
+    }
 }
 
 actual fun pickLocalFile(): String? = null

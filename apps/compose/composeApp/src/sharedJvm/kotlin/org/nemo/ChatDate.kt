@@ -189,7 +189,7 @@ internal fun floatingPushForPos(floatingTop: Float, floatingHeight: Float, activ
 }
 
 /**
- * Dedicated state for the Telegram-style floating date.
+ * Dedicated state for the floating date.
  *
  * Keeps ChatThread small: header flags are computed once per list change,
  * the active day only updates when the top visible day changes, and the
@@ -350,7 +350,7 @@ internal fun ChatDateSeparator(
 }
 
 /**
- * Telegram-style floating date overlay.
+ * Floating date overlay.
  *
  * Overlay only (callers place it in a Box above the LazyColumn, no layout space
  * reserved). Fade + small vertical slide, no scale/bounce. Date switches via
