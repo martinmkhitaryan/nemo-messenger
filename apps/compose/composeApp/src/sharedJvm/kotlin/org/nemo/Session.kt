@@ -42,7 +42,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -58,6 +57,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
@@ -107,6 +107,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameMillis
@@ -234,6 +235,9 @@ private fun phaseOrder(p: Phase): Int = when (p) {
 private const val SCREEN_SLIDE_MS = 300
 private const val SCREEN_FADE_MS = 220
 private const val THREAD_FADE_MS = 180
+
+/** Seen rows kept above the unread marker on open. */
+private const val UNREAD_CONTEXT_ABOVE = 2
 
 private data class ChatTarget(val id: String, val title: String, val isGroup: Boolean)
 
@@ -364,6 +368,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     val outgoingStatus = remember { mutableStateMapOf<String, OutgoingStatus>() }
     val contacts = remember { mutableStateMapOf<String, String>() }
     val groups = remember { mutableStateMapOf<String, String>() }
+    val lastRead = remember { mutableStateMapOf<String, ULong>() }
 
     fun runIo(block: suspend () -> Unit) {
         if (busy) return
@@ -580,6 +585,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             outgoing,
                                             outgoingStatus,
                                         )
+                                        loadUnreadAfterInbox(vaultDir, messages, lastRead)
                                         // A never-connected vault has no privacy mode yet;
                                         // that must not block unlock — it just means the
                                         // home server step is still pending.
@@ -648,6 +654,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                 groups.clear()
                                                 outgoing.clear()
                                                 outgoingStatus.clear()
+                                                lastRead.clear()
                                                 passphrase = ""
                                                 confirm = ""
                                                 phase = Phase.Create
@@ -945,6 +952,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                 label = label,
                                                 chats = chatList,
                                                 messages = messages,
+                                                lastRead = lastRead,
                                                 selectedId = chat?.id,
                                                 modifier = Modifier.width(340.dp).fillMaxHeight(),
                                                 onSelect = {
@@ -1000,6 +1008,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                             runIo = runIoFn,
                                                             onMarkOutgoing = markOutgoingFn,
                                                             saveFile = saveFile,
+                                                            lastRead = lastRead,
+                                                            vaultDir = vaultDir,
                                                         )
                                                     }
                                                 }
@@ -1041,6 +1051,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     label = label,
                                                     chats = chatList,
                                                     messages = messages,
+                                                    lastRead = lastRead,
                                                     selectedId = null,
                                                     modifier = Modifier.fillMaxSize(),
                                                     onSelect = { selected = it },
@@ -1082,6 +1093,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     runIo = runIoFn,
                                                     onMarkOutgoing = markOutgoingFn,
                                                     saveFile = saveFile,
+                                                    lastRead = lastRead,
+                                                    vaultDir = vaultDir,
                                                 )
                                             }
                                         }
@@ -1471,6 +1484,7 @@ private fun ChatListPane(
     onJoinGroup: () -> Unit,
     showConnectBanner: Boolean = false,
     onConnect: () -> Unit = {},
+    lastRead: Map<String, ULong> = emptyMap(),
 ) {
     val palette = LocalNemoPalette.current
     val listBg = if (palette.dark) palette.chat else palette.list
@@ -1606,6 +1620,7 @@ private fun ChatListPane(
                             preview = last?.let { previewLine(it) } ?: "No messages yet",
                             time = last?.let { formatTime(it.sentAt) }.orEmpty(),
                             selected = chat.id == selectedId,
+                            unread = unreadCount(chat.id, messages, lastRead),
                             onClick = { onSelect(chat) },
                         )
                     }
@@ -1650,12 +1665,13 @@ private fun NotConnectedBanner(onConnect: () -> Unit, modifier: Modifier = Modif
 }
 
 @Composable
-private fun ChatRow(chat: ChatTarget, preview: String, time: String, selected: Boolean, onClick: () -> Unit) {
+private fun ChatRow(chat: ChatTarget, preview: String, time: String, selected: Boolean, onClick: () -> Unit, unread: Int = 0) {
     val bg = when {
         selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
         else -> Color.Transparent
     }
     val hairline = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+    val hasUnread = unread > 0
     Column(Modifier.fillMaxWidth().background(bg)) {
         Row(
             Modifier
@@ -1671,6 +1687,7 @@ private fun ChatRow(chat: ChatTarget, preview: String, time: String, selected: B
                     Text(
                         chat.title,
                         style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (hasUnread) FontWeight.Bold else null,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -1679,22 +1696,34 @@ private fun ChatRow(chat: ChatTarget, preview: String, time: String, selected: B
                         Text(
                             time,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (selected) {
+                            color = if (selected || hasUnread) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
+                            fontWeight = if (hasUnread) FontWeight.Bold else null,
                         )
                     }
                 }
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    preview,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        preview,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (hasUnread) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (hasUnread) {
+                        Spacer(Modifier.width(8.dp))
+                        UnreadBadge(count = unread, convId = chat.id)
+                    }
+                }
             }
         }
         Box(
@@ -1704,6 +1733,98 @@ private fun ChatRow(chat: ChatTarget, preview: String, time: String, selected: B
                 .height(1.dp)
                 .background(hairline),
         )
+    }
+}
+
+@Composable
+private fun UnreadBadge(count: Int, convId: String) {
+    val label = if (count > 99) "99+" else count.toString()
+    Box(
+        modifier = Modifier
+            .heightIn(min = 20.dp)
+            .widthIn(min = 20.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.primary)
+            .padding(horizontal = 7.dp, vertical = 2.dp)
+            .testTag("unread-$convId"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onPrimary,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun UnreadMarker() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .testTag("unread-marker"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+        )
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        ) {
+            Text(
+                "Unread messages",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                maxLines = 1,
+            )
+        }
+        Box(
+            Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+        )
+    }
+}
+
+@Composable
+private fun JumpLatestButton(count: Int, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        shadowElevation = 4.dp,
+        modifier = modifier.testTag("jump-latest"),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.ArrowDownward,
+                contentDescription = "Jump to new messages",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (count > 99) "99+ new" else "$count new",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -1730,6 +1851,9 @@ private fun ChatThread(
     onReact: (DisplayRow) -> Unit,
     onDelete: (DisplayRow) -> Unit,
     onSave: (DisplayRow) -> Unit,
+    entryMark: ULong = 0UL,
+    readMark: ULong = 0UL,
+    onVisibleRead: (ULong) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -1742,10 +1866,32 @@ private fun ChatThread(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
         label = "sendScale",
     )
-    var stickToBottom by remember(chat.id) { mutableStateOf(true) }
     val lastKey = messages.lastOrNull()?.let { messageListKey(it) }
     val knownKeys = remember(chat.id) { mutableSetOf<String>() }
     var seedDone by remember(chat.id) { mutableStateOf(false) }
+    // Jump target: oldest unread at open, frozen for the visit.
+    val entryUnreadSeq = remember(chat.id) { firstUnreadSeq(messages, chat.id, entryMark) }
+    // Newest seq present at open: rows arriving later never raise the marker,
+    // so it can't flash in and out while watching the bottom of the thread.
+    val openMaxSeq = remember(chat.id) { messages.maxOfOrNull { it.convSeq } ?: 0UL }
+    // Start unpinned when jumping, so the bottom-pin below can't yank the
+    // list down mid-jump.
+    var stickToBottom by remember(chat.id) { mutableStateOf(entryUnreadSeq == null) }
+    // Marker anchor: oldest unread at open, frozen for the visit. It never
+    // follows the live mark, so it can't dance while scrolling; once the
+    // anchor row is seen it stays gone until the next visit.
+    val dividerAt = remember(messages, entryUnreadSeq, readMark) {
+        val seq = entryUnreadSeq ?: return@remember null
+        if (readMark >= seq) return@remember null
+        val chrono = messages.indexOfFirst { it.convId == chat.id && it.convSeq == seq }
+        if (chrono < 0) return@remember null
+        (messages.lastIndex - chrono) + 1
+    }
+    var markEnabled by remember(chat.id) { mutableStateOf(false) }
+    // True once the user scrolls themselves. Landing viewport rows must not
+    // count as seen on open alone; programmatic jumps never set this.
+    var userScrolled by remember(chat.id) { mutableStateOf(false) }
+    val latestVisibleRead = rememberUpdatedState(onVisibleRead)
 
     var overlayRoot by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var composerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -1768,14 +1914,33 @@ private fun ChatThread(
             seedDone = true
         }
     }
-    LaunchedEffect(listState) {
+    LaunchedEffect(listState, dividerAt, messages.size) {
         snapshotFlow {
             val info = listState.layoutInfo
+            val visible = info.visibleItemsInfo
+            if (visible.isEmpty()) return@snapshotFlow Triple(true, 0UL, false)
             // reverseLayout: index 0 is the newest message at the bottom (above composer).
-            val first = info.visibleItemsInfo.firstOrNull() ?: return@snapshotFlow true
-            first.index <= 1
-        }.distinctUntilChanged().collect { nearBottom ->
-            stickToBottom = nearBottom
+            val nearBottom = (visible.minOfOrNull { it.index } ?: 0) <= 1
+            var max: ULong = 0UL
+            for (v in visible) {
+                val d = v.index
+                if (dividerAt != null && d == dividerAt) continue
+                val newestIndex = if (dividerAt != null && d > dividerAt) d - 1 else d
+                val chronoIndex = messages.lastIndex - newestIndex
+                val row = messages.getOrNull(chronoIndex) ?: continue
+                if (row.convSeq > max) max = row.convSeq
+            }
+            Triple(nearBottom, max, listState.isScrollInProgress)
+        }.distinctUntilChanged().collect { (nearBottom, maxSeq, scrolling) ->
+            // Never re-pin mid-jump: only upward (away from bottom) updates
+            // apply before marking starts.
+            stickToBottom = if (nearBottom) markEnabled else false
+            if (scrolling) userScrolled = true
+            // Landing rows count only after the user scrolls, or when the
+            // viewport holds the bottom (at-bottom reading / all fits).
+            if (markEnabled && (userScrolled || nearBottom) && maxSeq > 0UL) {
+                latestVisibleRead.value(maxSeq)
+            }
         }
     }
     var chatReady by remember(chat.id) { mutableStateOf(false) }
@@ -1784,6 +1949,18 @@ private fun ChatThread(
         withFrameMillis { }
         chatReady = true
     }
+    // Jump so a couple of seen rows, the marker, then the new rows are on
+    // screen (heights vary, so placement verifies against the live layout).
+    JumpToUnreadEffect(
+        chatId = chat.id,
+        messages = messages,
+        entryMark = entryMark,
+        entryUnreadSeq = entryUnreadSeq,
+        openMaxSeq = openMaxSeq,
+        listState = listState,
+        onStickToBottom = { stickToBottom = it },
+        onMarkEnabled = { markEnabled = it },
+    )
     LaunchedEffect(lastKey, chat.id) {
         if (messages.isEmpty() || !stickToBottom) return@LaunchedEffect
         // Already pinned: reverseLayout inserts at index 0 without scrolling.
@@ -2068,6 +2245,7 @@ private fun ChatThread(
                 ChatWallpaper(modifier = Modifier.fillMaxSize())
                 // reverseLayout stacks short threads on the composer (empty space above).
                 val newestFirst = remember(messages) { messages.asReversed() }
+                val totalCount = newestFirst.size + if (dividerAt != null) 1 else 0
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
@@ -2079,57 +2257,86 @@ private fun ChatThread(
                         bottom = 10.dp,
                     ),
                 ) {
-                    itemsIndexed(
-                        newestFirst,
-                        key = { _, it -> messageListKey(it) },
-                    ) { index, row ->
-                        // Chronological neighbors for clustering (list is newest-first).
-                        val chronoIndex = messages.lastIndex - index
-                        val key = outgoingMapKey(row)
-                        val mine = row.outgoing || outgoing[key] == true
-                        val prevMine = messages.getOrNull(chronoIndex - 1)?.let { prev ->
-                            prev.outgoing || outgoing[outgoingMapKey(prev)] == true
-                        }
-                        val nextMine = messages.getOrNull(chronoIndex + 1)?.let { next ->
-                            next.outgoing || outgoing[outgoingMapKey(next)] == true
-                        }
-                        val clusteredAbove = prevMine == mine
-                        val clusteredBelow = nextMine == mine
-                        val gap = if (clusteredAbove) 2.dp else 8.dp
-                        val listKey = messageListKey(row)
-                        val isFlying = useFlyMorph && listKey in flyingKeys
-                        val animateEnter = remember(listKey) {
-                            val neu = seedDone && listKey !in knownKeys
-                            if (neu) knownKeys.add(listKey)
-                            neu
-                        }
-                        MessageBubble(
-                            row = row,
-                            mine = mine,
-                            status = if (mine) outgoingStatus[key] else null,
-                            clusteredAbove = clusteredAbove,
-                            clusteredBelow = clusteredBelow,
-                            animateEnter = animateEnter && !isFlying,
-                            conceal = isFlying,
-                            onBubbleCoords = if (isFlying) {
-                                { coords ->
-                                    overlayRoot?.let { parent ->
-                                        flyTargets[listKey] = boundsInParent(parent, coords)
-                                    }
-                                }
+                    items(
+                        count = totalCount,
+                        key = { display ->
+                            if (display == dividerAt) {
+                                "unread-marker"
                             } else {
-                                null
-                            },
-                            onReact = { onReact(row) },
-                            onDelete = { onDelete(row) },
-                            onSave = { onSave(row) },
-                            // No animateItem: with reverseLayout, a new message shifts every
-                            // visible index and placement animation makes the thread shake.
-                            modifier = Modifier.padding(top = gap),
-                        )
+                                val newestIndex = if (dividerAt != null && display > dividerAt) display - 1 else display
+                                messageListKey(newestFirst[newestIndex])
+                            }
+                        },
+                    ) { display ->
+                        if (display == dividerAt) {
+                            UnreadMarker()
+                        } else {
+                            val newestIndex = if (dividerAt != null && display > dividerAt) display - 1 else display
+                            val row = newestFirst[newestIndex]
+                            // Chronological neighbors for clustering (list is newest-first).
+                            val chronoIndex = messages.lastIndex - newestIndex
+                            val key = outgoingMapKey(row)
+                            val mine = row.outgoing || outgoing[key] == true
+                            val prevMine = messages.getOrNull(chronoIndex - 1)?.let { prev ->
+                                prev.outgoing || outgoing[outgoingMapKey(prev)] == true
+                            }
+                            val nextMine = messages.getOrNull(chronoIndex + 1)?.let { next ->
+                                next.outgoing || outgoing[outgoingMapKey(next)] == true
+                            }
+                            val clusteredAbove = prevMine == mine
+                            val clusteredBelow = nextMine == mine
+                            val gap = if (clusteredAbove) 2.dp else 8.dp
+                            val listKey = messageListKey(row)
+                            val isFlying = useFlyMorph && listKey in flyingKeys
+                            val animateEnter = remember(listKey) {
+                                val neu = seedDone && listKey !in knownKeys
+                                if (neu) knownKeys.add(listKey)
+                                neu
+                            }
+                            MessageBubble(
+                                row = row,
+                                mine = mine,
+                                status = if (mine) outgoingStatus[key] else null,
+                                clusteredAbove = clusteredAbove,
+                                clusteredBelow = clusteredBelow,
+                                animateEnter = animateEnter && !isFlying,
+                                conceal = isFlying,
+                                onBubbleCoords = if (isFlying) {
+                                    { coords ->
+                                        overlayRoot?.let { parent ->
+                                            flyTargets[listKey] = boundsInParent(parent, coords)
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                                onReact = { onReact(row) },
+                                onDelete = { onDelete(row) },
+                                onSave = { onSave(row) },
+                                // No animateItem: with reverseLayout, a new message shifts every
+                                // visible index and placement animation makes the thread shake.
+                                modifier = Modifier.padding(top = gap),
+                            )
+                        }
                     }
                 }
                 MessageListTopFade(baseColor = wallpaper, modifier = Modifier.align(Alignment.TopCenter))
+                val firstVisible = listState.firstVisibleItemIndex
+                val belowNew = remember(messages, readMark, dividerAt, firstVisible) {
+                    belowUnreadCount(messages, chat.id, readMark, dividerAt, firstVisible)
+                }
+                if (belowNew > 0 && !stickToBottom) {
+                    JumpLatestButton(
+                        count = belowNew,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+                        onClick = {
+                            scope.launch {
+                                stickToBottom = true
+                                listState.animateScrollToItem(0)
+                            }
+                        },
+                    )
+                }
             }
         }
 
@@ -2181,6 +2388,8 @@ private fun ActiveChatThread(
     runIo: (suspend () -> Unit) -> Unit,
     onMarkOutgoing: (DisplayRow) -> Unit,
     saveFile: (String, ByteArray) -> Unit,
+    lastRead: MutableMap<String, ULong>,
+    vaultDir: File,
 ) {
     val pickFile = rememberPickFile { path ->
         attachFilePath(
@@ -2199,6 +2408,9 @@ private fun ActiveChatThread(
     ChatThread(
         chat = target,
         messages = messages.filter { it.convId == target.id },
+        entryMark = remember(target.id) { lastRead[target.id] ?: 0UL },
+        readMark = lastRead[target.id] ?: 0UL,
+        onVisibleRead = { seq -> markVisibleRead(lastRead, vaultDir, scope, target.id, seq) },
         outgoing = outgoing,
         outgoingStatus = outgoingStatus,
         draft = draft,
@@ -2867,6 +3079,106 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit, 
 }
 
 internal fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
+
+/**
+ * One-shot open jump: land the anchor bubble, then correct from the measured
+ * layout until at most context rows sit above the marker. Row heights vary,
+ * so index estimates alone could strand the marker off screen.
+ */
+@Composable
+private fun JumpToUnreadEffect(
+    chatId: String,
+    messages: List<DisplayRow>,
+    entryMark: ULong,
+    entryUnreadSeq: ULong?,
+    openMaxSeq: ULong,
+    listState: LazyListState,
+    onStickToBottom: (Boolean) -> Unit,
+    onMarkEnabled: (Boolean) -> Unit,
+) {
+    LaunchedEffect(chatId) {
+        if (entryUnreadSeq == null) {
+            onMarkEnabled(true)
+            return@LaunchedEffect
+        }
+        onStickToBottom(false)
+        withFrameMillis { }
+        withFrameMillis { }
+        var div = unreadDividerAt(messages, chatId, entryMark, openMaxSeq)
+        if (div == null) {
+            onMarkEnabled(true)
+            return@LaunchedEffect
+        }
+        val total = messages.size + 1
+        val h0 = listState.layoutInfo.visibleItemsInfo.size
+        if (total <= h0.coerceAtLeast(1)) {
+            // Everything fits: already at the bottom with all rows on screen.
+            onMarkEnabled(true)
+            return@LaunchedEffect
+        }
+        listState.scrollToItem((div - 1).coerceAtLeast(0))
+        repeat(3) {
+            withFrameMillis { }
+            if (listState.isScrollInProgress) {
+                // User took over mid-jump; visible-max marking takes it from here.
+                onMarkEnabled(true)
+                return@LaunchedEffect
+            }
+            div = unreadDividerAt(messages, chatId, entryMark, openMaxSeq)
+            if (div == null) {
+                onMarkEnabled(true)
+                return@LaunchedEffect
+            }
+            val vis = listState.layoutInfo.visibleItemsInfo.map { it.index }
+            if (vis.isEmpty()) return@repeat
+            val first = vis.minOrNull() ?: 0
+            val top = vis.maxOrNull() ?: 0
+            val low = 0
+            val high = (div - 1).coerceAtLeast(0)
+            if (div in first..top && top - div <= UNREAD_CONTEXT_ABOVE) {
+                onMarkEnabled(true)
+                return@LaunchedEffect
+            }
+            val target = when {
+                // Marker above the screen: bring it down with context rows above it.
+                div > top -> markerTopTarget(div, vis.size, UNREAD_CONTEXT_ABOVE).coerceIn(low, high)
+                // Marker below the screen (list changed under us): anchor back to bottom.
+                div < first -> (div - 1).coerceIn(low, high)
+                // Marker on screen with too much above it: trim to context size.
+                else -> (first + (top - div - UNREAD_CONTEXT_ABOVE)).coerceIn(low, high)
+            }
+            if (target == first) {
+                onMarkEnabled(true)
+                return@LaunchedEffect
+            }
+            listState.scrollToItem(target)
+        }
+        onMarkEnabled(true)
+    }
+}
+
+// Visible-only read marking: the thread reports the newest visible seq,
+// unseen newer rows keep their unread count when leaving.
+private fun markVisibleRead(lastRead: MutableMap<String, ULong>, vaultDir: File, scope: CoroutineScope, convId: String, seq: ULong) {
+    if ((lastRead[convId] ?: 0UL) >= seq) return
+    lastRead[convId] = seq
+    scope.launch(Dispatchers.IO) { saveUnreadSeen(vaultDir, lastRead.toMap()) }
+}
+
+/** Load the badge watermark after inbox; first unlock marks history read. */
+private suspend fun loadUnreadAfterInbox(vaultDir: File, messages: List<DisplayRow>, lastRead: MutableMap<String, ULong>) {
+    val persisted = withContext(Dispatchers.IO) { loadUnreadSeen(vaultDir) }
+    if (persisted == null) {
+        lastRead.clear()
+        for (id in messages.map { it.convId }.distinct()) {
+            markConversationRead(lastRead, messages, id)
+        }
+        withContext(Dispatchers.IO) { saveUnreadSeen(vaultDir, lastRead) }
+    } else {
+        lastRead.clear()
+        lastRead.putAll(persisted)
+    }
+}
 
 /** Wipe a pane vault so [`NemoClient.createAt`] can run again. */
 internal fun wipeVaultDir(dir: File) {
