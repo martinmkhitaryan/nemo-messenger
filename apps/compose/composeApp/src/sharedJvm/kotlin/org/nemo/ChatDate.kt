@@ -195,6 +195,47 @@ internal fun floatingPushForPos(floatingTop: Float, floatingHeight: Float, activ
  * the active day only updates when the top visible day changes, and the
  * scroll callback only touches activeDay / scrolling / push offset.
  */
+internal fun floatingVisibleFor(
+    scrollingVisible: Boolean,
+    activeDayKey: Long?,
+    activeLabel: String?,
+    visibleDayHeaders: Set<Long>,
+    activeHeaderOnScreen: Boolean = false,
+): Boolean {
+    if (!scrollingVisible) return false
+    if (activeDayKey == null || activeLabel == null) return false
+    // In-list header for the same day already on screen → avoid duplicate
+    // pills (e.g. single "Today" thread showing floating + in-list "Today").
+    // Two signals: positioned headers map + layout-based flag (reliable for
+    // short threads where the single item never leaves the viewport).
+    if (activeHeaderOnScreen) return false
+    if (activeDayKey in visibleDayHeaders) return false
+    return true
+}
+
+/**
+ * True when the in-list header for [activeDayKey] is among the currently
+ * visible Lazy items. Pure so it can be unit-tested. [displayToChrono] maps a
+ * Lazy display index (newest-first, marker-aware) to a chrono index, or null
+ * when the display index is the unread marker / out of bounds.
+ */
+internal fun isActiveHeaderOnScreen(
+    activeDayKey: Long?,
+    visibleDisplay: Collection<Int>,
+    displayToChrono: (Int) -> Int?,
+    dateNeedsHeader: BooleanArray,
+    dateDayKeys: List<Long?>,
+): Boolean {
+    if (activeDayKey == null) return false
+    for (d in visibleDisplay) {
+        val chrono = displayToChrono(d) ?: continue
+        if (dateNeedsHeader.getOrNull(chrono) == true && dateDayKeys.getOrNull(chrono) == activeDayKey) {
+            return true
+        }
+    }
+    return false
+}
+
 internal class FloatingDateUiState(
     val dateNeedsHeader: BooleanArray,
     val dateDayKeys: List<Long?>,
@@ -204,10 +245,19 @@ internal class FloatingDateUiState(
     val headerPositions: SnapshotStateMap<Long, ChatHeaderPos>,
     internal val floatingTop: MutableState<Float>,
     internal val floatingHeight: MutableState<Float>,
+    internal val activeHeaderOnScreen: State<Boolean>,
 ) {
     val activeDayKey: Long? get() = activeDay.value
     val floatingVisibleRaw: Boolean get() = scrollingVisible.value
     val activeLabel: String? get() = activeDay.value?.let { dayLabels[it] }
+    val floatingEffectiveVisible: Boolean
+        get() = floatingVisibleFor(
+            scrollingVisible = scrollingVisible.value,
+            activeDayKey = activeDay.value,
+            activeLabel = activeLabel,
+            visibleDayHeaders = headerPositions.keys.toSet(),
+            activeHeaderOnScreen = activeHeaderOnScreen.value,
+        )
     val floatingPush: Float
         get() {
             if (!scrollingVisible.value || activeDay.value == null) return 0f
@@ -244,6 +294,7 @@ internal fun rememberFloatingDateUiState(
         }.toMap()
     }
     val activeDay = remember(chatId) { mutableStateOf<Long?>(null) }
+    val activeHeaderOnScreen = remember(chatId) { mutableStateOf(false) }
     val scrollingVisible = remember(chatId) { mutableStateOf(false) }
     val headerPositions = remember(chatId) { mutableStateMapOf<Long, ChatHeaderPos>() }
     val floatingTop = remember(chatId) { mutableFloatStateOf(Float.NaN) }
@@ -272,8 +323,35 @@ internal fun rememberFloatingDateUiState(
             val chrono = messages.lastIndex - newestIndex
             val row = messages.getOrNull(chrono) ?: return@snapshotFlow null
             if (row.sentAt == 0UL) return@snapshotFlow null
-            chatDayKey(row.sentAt)
-        }.distinctUntilChanged().collect { activeDay.value = it }
+            val active = chatDayKey(row.sentAt) ?: return@snapshotFlow null
+            // Layout-based header visibility: is the active day's own in-list
+            // header among the visible Lazy items? Reliable for short threads
+            // (single message) where the item never leaves the viewport.
+            val headerVisible = isActiveHeaderOnScreen(
+                activeDayKey = active,
+                visibleDisplay = visible.map { it.index },
+                displayToChrono = { d ->
+                    if (dividerAt != null && d == dividerAt) {
+                        null
+                    } else {
+                        val ni = if (dividerAt != null && d > dividerAt) d - 1 else d
+                        val ci = messages.lastIndex - ni
+                        if (ci in messages.indices) ci else null
+                    }
+                },
+                dateNeedsHeader = dateNeedsHeader,
+                dateDayKeys = dateDayKeys,
+            )
+            Pair(active, headerVisible)
+        }.distinctUntilChanged().collect {
+            if (it == null) {
+                activeDay.value = null
+                activeHeaderOnScreen.value = false
+            } else {
+                activeDay.value = it.first
+                activeHeaderOnScreen.value = it.second
+            }
+        }
     }
     return remember(messages, chatId, dividerAt, listState) {
         FloatingDateUiState(
@@ -285,6 +363,7 @@ internal fun rememberFloatingDateUiState(
             headerPositions = headerPositions,
             floatingTop = floatingTop,
             floatingHeight = floatingHeight,
+            activeHeaderOnScreen = activeHeaderOnScreen,
         )
     }
 }

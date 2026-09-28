@@ -2295,7 +2295,7 @@ private fun ChatThread(
                 MessageListTopFade(baseColor = wallpaper, modifier = Modifier.align(Alignment.TopCenter))
                 FloatingChatDate(
                     dateText = floatingDate.activeLabel,
-                    visible = floatingDate.floatingVisibleRaw && floatingDate.activeLabel != null,
+                    visible = floatingDate.floatingEffectiveVisible,
                     offsetYPx = floatingDate.floatingPush,
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = padding.calculateTopPadding() + 8.dp),
                     onPositioned = { top, h -> floatingDate.onFloatingPositioned(top, h) },
