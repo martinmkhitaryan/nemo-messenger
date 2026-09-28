@@ -18,10 +18,16 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Foreground service holding the home-server wake socket while the app is
- * backgrounded. Android mandates the ongoing notification this service
- * posts — that is the visible price of real-time delivery without a push
- * provider. Runs only after unlock; before that it idles with an
+ * Foreground service keeping the process alive while backgrounded.
+ * Android mandates the ongoing notification this service posts — that is
+ * the visible price of real-time delivery without a push provider.
+ *
+ * Data ownership lives in [NemoVaultStore]: it runs the single
+ * waitWakeup/poll loops and publishes to [NemoVaultStore.messagesFlow] /
+ * [NemoVaultStore.freshRows]. This service only ensures the store runs and
+ * turns fresh rows into system notifications filtered by
+ * [NemoVaultStore.visibleChatId]. It never calls `fetchNow()` itself, so it
+ * cannot steal rows from the open chat list. Before unlock it idles with an
  * "unlock to resume" note until [publishClient] hands it a client.
  */
 internal class SyncService : Service() {
@@ -29,6 +35,8 @@ internal class SyncService : Service() {
     private var loop: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private class StaleIdentity : Exception()
 
     override fun onCreate() {
         super.onCreate()
@@ -43,15 +51,35 @@ internal class SyncService : Service() {
                     continue
                 }
                 startForegroundLocked(true)
+                val store = VaultStores.findByClient(client)
+                if (store == null) {
+                    // No owner yet (unlock race) or legacy caller: fall back to
+                    // direct fetch so delivery never stalls. Production always
+                    // has a store; tests exercise this path via syncNow.
+                    val stamp = LocalClient.generation
+                    val woke = runCatching { client.waitWakeup() }
+                    try {
+                        // Vault wiped/recreated mid-wait: this wake belongs to a
+                        // dead identity. Drop it; the next iteration serves the
+                        // new client immediately.
+                        if (stamp != LocalClient.generation) continue
+                        woke.getOrThrow()
+                        LocalClient.client?.let { syncNow(it) }
+                    } catch (_: Throwable) {
+                        delay(2_000)
+                    }
+                    continue
+                }
+                store.start()
                 val stamp = LocalClient.generation
-                val woke = runCatching { client.waitWakeup() }
                 try {
-                    // Vault wiped/recreated mid-wait: this wake belongs to a
-                    // dead identity. Drop it; the next iteration serves the
-                    // new client immediately.
-                    if (stamp != LocalClient.generation) continue
-                    woke.getOrThrow()
-                    LocalClient.client?.let { syncNow(it) }
+                    store.freshRows.collect { rows ->
+                        if (stamp != LocalClient.generation) throw StaleIdentity()
+                        if (rows.isEmpty()) return@collect
+                        appContext?.let { ctx -> notifyStoreRows(ctx, store, rows) }
+                    }
+                } catch (e: StaleIdentity) {
+                    continue
                 } catch (_: Throwable) {
                     delay(2_000)
                 }

@@ -153,7 +153,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -412,40 +411,27 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         }
     }
 
-    LaunchedEffect(client, phase) {
-        val c = client ?: return@LaunchedEffect
-        if (phase != Phase.Home) return@LaunchedEffect
-        while (true) {
-            delay(2_000)
-            try {
-                val rows = withContext(Dispatchers.IO) { c.fetchNow() }
-                applyIncoming(messages, rows, outgoing, outgoingStatus)
-                val expired = withContext(Dispatchers.IO) { c.expireNow() }
-                applyIncoming(messages, expired, outgoing, outgoingStatus)
-                val contactRows = withContext(Dispatchers.IO) { c.listContacts() }
-                val groupRows = withContext(Dispatchers.IO) { c.listGroups() }
-                contacts.clear()
-                contactRows.forEach { contacts[it.identityId] = it.nickname }
-                groups.clear()
-                groupRows.forEach { groups[it.groupId] = it.nickname.ifBlank { "Group" } }
-            } catch (_: Throwable) {
-            }
+    // Single sync owner: VaultStore fetches once, UI + background collect.
+    // This replaces the old dual fetchNow/waitWakeup loops that raced with
+    // SyncService on the same destructive cursor (notification shown, list stale).
+    val store = remember(client, vaultDir.absolutePath) {
+        val c = client
+        if (c == null) {
+            null
+        } else {
+            VaultStores.getOrCreate(vaultDir, c).also { it.client = c }
         }
     }
-
-    LaunchedEffect(client, phase) {
-        val c = client ?: return@LaunchedEffect
-        if (phase != Phase.Home) return@LaunchedEffect
-        while (true) {
-            try {
-                withContext(Dispatchers.IO) { c.waitWakeup() }
-                val rows = withContext(Dispatchers.IO) { c.fetchNow() }
-                applyIncoming(messages, rows, outgoing, outgoingStatus)
-            } catch (_: Throwable) {
-                delay(2_000)
-            }
-        }
-    }
+    BindVaultStore(
+        store = store,
+        atHome = phase == Phase.Home,
+        messages = messages,
+        contacts = contacts,
+        groups = groups,
+        outgoing = outgoing,
+        outgoingStatus = outgoingStatus,
+        selectedId = selected?.id,
+    )
 
     // Foreground sync is the default but needs the system permission to show
     // anything — ask once on entry instead of failing silently.
@@ -514,6 +500,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         }
                                         mnemonic = withContext(Dispatchers.IO) { c.takeRevocationMnemonic() }
                                         client = c
+                                        VaultStores.getOrCreate(vaultDir, c).also { it.client = c }
                                         publishClient(c)
                                         phase = Phase.Mnemonic
                                     }
@@ -575,16 +562,22 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             )
                                         }
                                         client = c
+                                        // Register the single sync owner before publishing,
+                                        // so SyncService never sees a client without a store.
+                                        VaultStores.getOrCreate(vaultDir, c).also { it.client = c }
                                         publishClient(c)
                                         fingerprint = withContext(Dispatchers.IO) { c.fingerprint() }
                                         identityHex = withContext(Dispatchers.IO) { c.identityIdHex() }
                                         withContext(Dispatchers.IO) { reloadRoster(c) }
+                                        val inbox = withContext(Dispatchers.IO) { c.inbox() }
                                         applyIncoming(
                                             messages,
-                                            withContext(Dispatchers.IO) { c.inbox() },
+                                            inbox,
                                             outgoing,
                                             outgoingStatus,
                                         )
+                                        VaultStores.findByClient(c)
+                                            ?.seed(inbox, contacts.toMap(), groups.toMap())
                                         loadUnreadAfterInbox(vaultDir, messages, lastRead)
                                         // A never-connected vault has no privacy mode yet;
                                         // that must not block unlock — it just means the
@@ -642,6 +635,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             onClick = {
                                                 confirmWipe = false
                                                 wipeVaultDir(vaultDir)
+                                                VaultStores.remove(vaultDir)
                                                 client = null
                                                 publishClient(null)
                                                 mnemonic = null

@@ -185,3 +185,15 @@ internal fun pendingNotifies(rows: List<DisplayRow>, seen: Map<String, ULong>): 
     }
     return out to next
 }
+
+/**
+ * Tray suppression for the single-owner sync: rows for the currently open
+ * conversation post no notification (the user already sees them), except
+ * calls which always ring. Null [visibleChatId] (list page / background)
+ * never suppresses. Suppressed rows still advance the seen mark in
+ * [pendingNotifies], so leaving the chat does not re-notify.
+ */
+internal fun shouldNotifyRow(convId: String, kind: String, visibleChatId: String?): Boolean {
+    if (visibleChatId == null || convId != visibleChatId) return true
+    return kind == "call_invite" || kind == "call_ringing"
+}

@@ -20,6 +20,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import org.nemo.shared.R
+import uniffi.nemo.DisplayRow
 import uniffi.nemo.NemoClient
 import java.io.File
 
@@ -33,9 +34,24 @@ private const val SEEN_FILE = "notify_seen"
  * (fallback). Never surfaces message content: title is the chat, body is a
  * generic label. System rows (reactions, receipts, deletions, revocations)
  * stay silent.
+ *
+ * Legacy direct-fetch path. Used when no [NemoVaultStore] owns the client
+ * (tests, service race before unlock). Production uses [syncStoreAndNotify],
+ * which fetches exactly once via the store so the open chat list sees the
+ * same rows that trigger the notification.
  */
 internal fun syncNow(client: NemoClient) {
     val ctx = appContext ?: return
+    // Single-owner fast path: delegate consumption to the store when present
+    // so background fetch cannot steal rows from the open list.
+    VaultStores.findByClient(client)?.let { store ->
+        // syncNow is blocking; bridge to the suspending store refresh.
+        // Service/Worker call syncStoreAndNotify directly; this covers strays.
+        runCatching {
+            kotlinx.coroutines.runBlocking { syncStoreAndNotify(store) }
+        }
+        return
+    }
     val rows = runCatching { client.fetchNow() }.getOrNull() ?: return
     val seen = loadSeen(ctx)
     val (pending, next) = pendingNotifies(rows, seen)
@@ -43,6 +59,36 @@ internal fun syncNow(client: NemoClient) {
     if (pending.isEmpty()) return
     val titles = conversationTitles(client)
     for (item in pending) {
+        notifyMessage(ctx, titles[item.convId] ?: shortId(item.convId), item.kind)
+    }
+}
+
+/**
+ * Store-owned refresh + filtered notification. The only production fetch
+ * path: exactly one consumer advances the server cursor, every collector
+ * (open list via [NemoVaultStore.messagesFlow], tray here) sees the result.
+ *
+ * Suppression: rows for [NemoVaultStore.visibleChatId] post no tray (the
+ * user already sees them), except calls which always ring. Suppressed rows
+ * still advance the seen mark so leaving the chat does not re-notify.
+ */
+internal suspend fun syncStoreAndNotify(store: NemoVaultStore) {
+    val ctx = appContext ?: return
+    val rows = runCatching { store.refresh() }.getOrNull() ?: return
+    if (rows.isEmpty()) return
+    notifyStoreRows(ctx, store, rows)
+}
+
+/** Filter + post already-fetched [rows] (service collector path, no fetch). */
+internal fun notifyStoreRows(ctx: Context, store: NemoVaultStore, rows: List<DisplayRow>) {
+    val seen = loadSeen(ctx)
+    val (pending, next) = pendingNotifies(rows, seen)
+    if (next != seen) saveSeen(ctx, next)
+    if (pending.isEmpty()) return
+    val visible = store.visibleChatId.value
+    val titles = conversationTitles(store.client)
+    for (item in pending) {
+        if (!shouldNotifyRow(item.convId, item.kind, visible)) continue
         notifyMessage(ctx, titles[item.convId] ?: shortId(item.convId), item.kind)
     }
 }
