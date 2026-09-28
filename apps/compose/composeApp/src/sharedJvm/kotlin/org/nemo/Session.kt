@@ -254,7 +254,7 @@ private val localMsgSeq = AtomicLong(0)
 /** Composer → bubble flight: mobile only. See [MessageSendAnimation]. */
 
 /** Map [child] window bounds into [parent]'s local coordinates (parent need not be an ancestor). */
-private fun boundsInParent(parent: LayoutCoordinates, child: LayoutCoordinates): Rect {
+internal fun boundsInParent(parent: LayoutCoordinates, child: LayoutCoordinates): Rect {
     val b = child.boundsInWindow()
     val origin = parent.positionInWindow()
     return Rect(
@@ -1893,6 +1893,10 @@ private fun ChatThread(
     var userScrolled by remember(chat.id) { mutableStateOf(false) }
     val latestVisibleRead = rememberUpdatedState(onVisibleRead)
 
+    // Telegram-style floating date lives in its own state holder so the thread
+    // keeps its unread-marker indices and visible-index math untouched.
+    val floatingDate = rememberFloatingDateUiState(messages, chat.id, listState, dividerAt)
+
     var overlayRoot by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var composerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var overlayWindowOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -2275,52 +2279,34 @@ private fun ChatThread(
                             val row = newestFirst[newestIndex]
                             // Chronological neighbors for clustering (list is newest-first).
                             val chronoIndex = messages.lastIndex - newestIndex
-                            val key = outgoingMapKey(row)
-                            val mine = row.outgoing || outgoing[key] == true
-                            val prevMine = messages.getOrNull(chronoIndex - 1)?.let { prev ->
-                                prev.outgoing || outgoing[outgoingMapKey(prev)] == true
-                            }
-                            val nextMine = messages.getOrNull(chronoIndex + 1)?.let { next ->
-                                next.outgoing || outgoing[outgoingMapKey(next)] == true
-                            }
-                            val clusteredAbove = prevMine == mine
-                            val clusteredBelow = nextMine == mine
-                            val gap = if (clusteredAbove) 2.dp else 8.dp
-                            val listKey = messageListKey(row)
-                            val isFlying = useFlyMorph && listKey in flyingKeys
-                            val animateEnter = remember(listKey) {
-                                val neu = seedDone && listKey !in knownKeys
-                                if (neu) knownKeys.add(listKey)
-                                neu
-                            }
-                            MessageBubble(
+                            DatedMessageItem(
                                 row = row,
-                                mine = mine,
-                                status = if (mine) outgoingStatus[key] else null,
-                                clusteredAbove = clusteredAbove,
-                                clusteredBelow = clusteredBelow,
-                                animateEnter = animateEnter && !isFlying,
-                                conceal = isFlying,
-                                onBubbleCoords = if (isFlying) {
-                                    { coords ->
-                                        overlayRoot?.let { parent ->
-                                            flyTargets[listKey] = boundsInParent(parent, coords)
-                                        }
-                                    }
-                                } else {
-                                    null
-                                },
-                                onReact = { onReact(row) },
-                                onDelete = { onDelete(row) },
-                                onSave = { onSave(row) },
-                                // No animateItem: with reverseLayout, a new message shifts every
-                                // visible index and placement animation makes the thread shake.
-                                modifier = Modifier.padding(top = gap),
+                                chronoIndex = chronoIndex,
+                                messages = messages,
+                                outgoing = outgoing,
+                                outgoingStatus = outgoingStatus,
+                                floatingDate = floatingDate,
+                                seedDone = seedDone,
+                                knownKeys = knownKeys,
+                                useFlyMorph = useFlyMorph,
+                                flyingKeys = flyingKeys,
+                                overlayRoot = overlayRoot,
+                                flyTargets = flyTargets,
+                                onReact = onReact,
+                                onDelete = onDelete,
+                                onSave = onSave,
                             )
                         }
                     }
                 }
                 MessageListTopFade(baseColor = wallpaper, modifier = Modifier.align(Alignment.TopCenter))
+                FloatingChatDate(
+                    dateText = floatingDate.activeLabel,
+                    visible = floatingDate.floatingVisibleRaw && floatingDate.activeLabel != null,
+                    offsetYPx = floatingDate.floatingPush,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = padding.calculateTopPadding() + 8.dp),
+                    onPositioned = { top, h -> floatingDate.onFloatingPositioned(top, h) },
+                )
                 val firstVisible = listState.firstVisibleItemIndex
                 val belowNew = remember(messages, readMark, dividerAt, firstVisible) {
                     belowUnreadCount(messages, chat.id, readMark, dividerAt, firstVisible)
@@ -2555,7 +2541,7 @@ private fun ChatWallpaper(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun MessageBubble(
+internal fun MessageBubble(
     row: DisplayRow,
     mine: Boolean,
     status: OutgoingStatus?,
