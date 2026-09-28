@@ -1,6 +1,9 @@
 # Nemo Messenger
 
-**Status:** Draft, revision 14 (2026-09-21)<br>
+> All code in this project was written by AI, using
+> Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
+
+**Status:** Revision 15 (2026-09-28) — v1 specification frozen, 0.1.0 implemented<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
@@ -9,6 +12,13 @@
 **v1.2 later (video, key transparency, group migration, …):** [`docs/v1.2.md`](docs/v1.2.md)<br>
 **Manual live-call check:** [`docs/testing.md`](docs/testing.md)<br>
 **Build and run (home + desktop + Android):** [`deploy/README.md`](deploy/README.md) · [`scripts/`](scripts/)
+**Changelog:** [`CHANGELOG.md`](CHANGELOG.md)
+
+> Manually tested in 0.1.0 (desktop two-pane, Android emulator, physical
+> device): identity/contacts, 1:1 text, 1:1 file attachments, non-FCM
+> notifications. Left to test: MLS groups (invite/join/admit/send), audible
+> 1:1 calls via TURN, High/Maximum cover + Tor. No FCM in 0.1.0.
+> See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -2213,7 +2223,8 @@ The initial product should focus on:
 ## Platforms (ADR-0026, ADR-0028)
 
 * Android, Linux, Windows (not iOS, macOS, or web);
-* opaque push notifications on Android with Play Services; long-lived connection otherwise;
+* Android 15+ (minSdk 35); JDK 21, Android SDK 37 / NDK 27.2 for builds (see `deploy/README.md`);
+* opaque push wakes on Android via foreground service + poll in 0.1.0; FCM is deferred to v1.1 (N4); long-lived connection otherwise;
 * encrypted message retrieval after wake-up;
 * single Rust core with a Compose Multiplatform shell over UniFFI.
 
@@ -2785,10 +2796,10 @@ encrypted frames -> SRTP -> SFU forwards without decrypting
 Calls are the worst case for the metadata layer: long, bidirectional, near-constant-rate flows.
 
 * Use Opus in constant-bitrate mode with DTX and VAD disabled in Private mode and above. Variable-bitrate packet sizes leak phonemes and spoken language.
-* Tor carries no UDP; TURN over TCP over Tor gives multi-second latency. Calls are unavailable in modes that require Tor (0.1).
+* Tor carries no UDP; TURN over TCP over Tor gives multi-second latency. Calls are unavailable in modes that require Tor (§0.1).
 * The TURN/SFU operator sees who is in a call (by IP) and for how long. This is stated, not hidden.
 
 ## 64.6 Wake-up
 
-Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. On Android with Play Services this is FCM at the platform's single wake priority plus a foreground service. On Android without Play Services and on desktop, the long-lived connection (ADR-0028) carries the envelope.
+Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. In 0.1.0 this is a foreground service holding `/v1/wakeup` plus poll fallback; FCM is deferred to v1.1 (N4). On Android without Play Services and on desktop, the long-lived connection (ADR-0028) carries the envelope.
 
