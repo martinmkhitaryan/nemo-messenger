@@ -44,7 +44,7 @@ deploy         MIT     container, Caddy, PostgreSQL, optional coturn
 - **1:1 stays Double Ratchet, not MLS.** MLS-only remains rejected (ADR-0005). Revisit only when MLS post-quantum ciphersuites are an RFC, OpenMLS ships them as stable, and the project accepts a sequencer on every 1:1 conversation.
 - **Identity / revocation:** Ed25519 (`ed25519-dalek`). `identity_id = H(pubkey)` with `H` named in the phase-2 specification.
 - **Federation HPKE:** RFC 9180 via the RustCrypto `hpke` crate, the same dependency in `nemo-wire` on client and server.
-- **TLS:** `rustls` for outbound HTTPS (federation, FCM). Inbound TLS is the reverse proxy, not the Rust process.
+- **TLS:** `rustls` for outbound HTTPS (federation). Inbound TLS is the reverse proxy, not the Rust process.
 - No custom primitives or tweaks to PQXDH, Double Ratchet, MLS, or HPKE (ADR-0025).
 
 ### Encoding (when those protocols are specified)
@@ -57,14 +57,14 @@ deploy         MIT     container, Caddy, PostgreSQL, optional coturn
 
 - Compose must not persist ratchet or MLS keys. The vault is SQLCipher via `rusqlite` **inside `nemo-core`**. The UI may hold decrypted display rows in memory.
 - **Calls (v1 1:1):** signaling stays in the E2EE conversation in the Rust core (ADR-0024). ICE/DTLS-SRTP/TURN uses `webrtc` 0.20.x (webrtc-rs) with `iceTransportPolicy=relay` and no host or srflx candidates. Echo cancellation, AGC and NS use a WebRTC audio-processing module: on Android the official `org.webrtc` capture/APM path in the Kotlin shell; on desktop `webrtc-audio-processing` + `cpal` + Opus, or libwebrtc if APM quality is not enough. **This amends ADR-0026:** the media engine may live in the shell; signaling and DTLS fingerprint binding stay in the core. Group calls and SFrame remain deferred (ADR-0024).
-- **Push:** FCM HTTP v1 is Android-with-Play-Services only; payload is an opaque wake token (ADR-0020). Desktop and Android without Play Services use a long-lived WebSocket or poll while the application runs. The protocol MUST NOT require Google.
+- **Push:** no platform push and no FCM by design; the wake is an opaque token (ADR-0020). Android uses a foreground service plus poll; desktop uses a long-lived WebSocket or poll while the application runs. The protocol MUST NOT require Google.
 - **Tor:** optional, via a SOCKS5 hop to Arti (default `127.0.0.1:9150`, `NEMO_TOR_SOCKS` to override) behind High/Maximum client→home HTTP. Not a system `tor` binary. Loopback homes stay direct.
 
 ### Server (phase 8, after the protocols exist)
 
 - **Runtime:** Tokio. **HTTP and WebSocket:** Axum 0.8 + Tower (`tower-http`). Listen on plain HTTP on localhost; **Caddy** terminates TLS in the reference deploy. QUIC is optional later; v1 is HTTPS + WebSocket.
 - **Database:** PostgreSQL via `sqlx` (`query!`, offline mode, `sqlx-cli` migrations). No Redis. SQLite is not the only server database in v1.
-- **Push (operator):** FCM HTTP v1 with `reqwest` + rustls and an operator-supplied service account. No unmaintained FCM wrappers.
+- **Push:** none. No FCM, no push-endpoint table.
 - **TURN:** coturn as a sidecar. Do not rewrite TURN in Rust.
 - **Packaging:** Docker Compose with `nemo-server`, PostgreSQL, Caddy, optional coturn. No cloud vendor API in the protocol.
 
@@ -126,3 +126,4 @@ Rejected: UniFFI is the Kotlin/Swift path; flutter_rust_bridge assumes Flutter.
 - 2026-09-19 — Accepted. Implementation languages and libraries.
 - 2026-09-21 — Amendment: Compose/UniFFI is Android, Linux, and Windows. iOS Swift bindings are out of scope (ADR-0026).
 - 2026-09-21 — Amendment: High/Maximum client→home uses SOCKS5 to Arti, not a system `tor` binary.
+- 2026-09-29 — Amendment: FCM rejected; push entries above updated to no-platform-push.

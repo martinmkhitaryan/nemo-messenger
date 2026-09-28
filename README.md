@@ -8,16 +8,16 @@
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
 **Protocol specifications:** [`docs/protocol/`](docs/protocol/README.md)<br>
-**v1.1 nice-to-have (group calls, FCM):** [`docs/v1.1.md`](docs/v1.1.md)<br>
+**v1.1 nice-to-have (group calls):** [`docs/v1.1.md`](docs/v1.1.md)<br>
 **v1.2 later (video, key transparency, group migration, …):** [`docs/v1.2.md`](docs/v1.2.md)<br>
 **Manual live-call check:** [`docs/testing.md`](docs/testing.md)<br>
 **Build and run (home + desktop + Android):** [`deploy/README.md`](deploy/README.md) · [`scripts/`](scripts/)
 **Changelog:** [`CHANGELOG.md`](CHANGELOG.md)
 
 > Manually tested in 0.1.0 (desktop two-pane, Android emulator, physical
-> device): identity/contacts, 1:1 text, 1:1 file attachments, non-FCM
+> device): identity/contacts, 1:1 text, 1:1 file attachments,
 > notifications. Left to test: MLS groups (invite/join/admit/send), audible
-> 1:1 calls via TURN, High/Maximum cover + Tor. No FCM in 0.1.0.
+> 1:1 calls via TURN, High/Maximum cover + Tor. No FCM by design.
 > See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
@@ -1428,7 +1428,7 @@ Encrypted Message
 
 The device wakes up and fetches encrypted envelopes itself.
 
-Per ADR-0026 the product targets Android, Linux and Windows. On Android with Play Services, push is FCM (one priority class, opaque payload). Linux, Windows, and Android without Play Services have no platform push: a persistent WebSocket or periodic poll while the application runs (ADR-0028). The protocol MUST NOT require Google. Every wake on a platform uses the same priority (ADR-0020).
+Per ADR-0026 the product targets Android, Linux and Windows. There is no platform push service and no FCM: Android uses a foreground service plus poll, Linux/Windows and Android in general use a persistent WebSocket or periodic poll while the application runs (ADR-0028). The protocol MUST NOT require Google. Every wake on a platform uses the same priority (ADR-0020).
 
 ---
 
@@ -2123,7 +2123,7 @@ Caddy (TLS)
 optional coturn
 ```
 
-The reference listen address is plain HTTP on `0.0.0.0:8787` (`NEMO_LISTEN`); Caddy terminates TLS ([ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)). nginx is an operator alternative, not the default. The server should not require a central SaaS service to operate. FCM, when used, is an operator-supplied credential for Android wake-up, not a protocol dependency.
+The reference listen address is plain HTTP on `0.0.0.0:8787` (`NEMO_LISTEN`); Caddy terminates TLS ([ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)). nginx is an operator alternative, not the default. The server should not require a central SaaS service to operate. There is no FCM and no platform push dependency.
 
 Possible deployment models:
 
@@ -2224,7 +2224,7 @@ The initial product should focus on:
 
 * Android, Linux, Windows (not iOS, macOS, or web);
 * Android 15+ (minSdk 35); JDK 21, Android SDK 37 / NDK 27.2 for builds (see `deploy/README.md`);
-* opaque push wakes on Android via foreground service + poll in 0.1.0; FCM is deferred to v1.1 (N4); long-lived connection otherwise;
+* opaque wakes on Android via foreground service + poll; no FCM by design; long-lived connection otherwise;
 * encrypted message retrieval after wake-up;
 * single Rust core with a Compose Multiplatform shell over UniFFI.
 
@@ -2234,7 +2234,7 @@ The initial product should focus on:
 
 Not required for the first release. Split so later work is not one undifferentiated pile.
 
-**v1.1** ([`docs/v1.1.md`](docs/v1.1.md)): group voice calls (SFU + SFrame, section 64.4); FCM opaque wake.
+**v1.1** ([`docs/v1.1.md`](docs/v1.1.md)): group voice calls (SFU + SFrame, section 64.4).
 
 **v1.2** ([`docs/v1.2.md`](docs/v1.2.md)): video; key transparency; group migration; group re-form after a long host outage; anonymous group membership; global or privacy-preserving contact discovery; mixnets / stronger global-observer anonymity; cross-server TURN issuance; desktop delivery while the app is not running; multi-use or long-lived group invite links (v1 invites stay one-time, short-TTL; ADR-0018).
 
@@ -2328,7 +2328,7 @@ Still open (v1.2, each needs a new ADR):
 
 * TURN credential issuance across servers for cross-server calls (section 64, ADR-0024; [v1.2](docs/v1.2.md) L8).
 * Behaviour when a hosting server is unreachable for an extended time: how a group detects it and re-forms ([v1.2](docs/v1.2.md) L4).
-* Push wake-token format beyond "opaque 32-byte token", and desktop background delivery when the app is not running ([v1.2](docs/v1.2.md) L9; Android FCM itself is v1.1 N4).
+* Push wake-token format beyond "opaque 32-byte token", and desktop background delivery when the app is not running ([v1.2](docs/v1.2.md) L9).
 
 ---
 
@@ -2336,7 +2336,7 @@ Still open (v1.2, each needs a new ADR):
 
 The project should not begin by defining REST endpoints or database tables.
 
-Languages and libraries for *this* implementation are bound by ADR-0028. Client-to-home routes and Postgres DDL are [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md). FCM project configuration remains operator-supplied and is not a protocol object.
+Languages and libraries for *this* implementation are bound by ADR-0028. Client-to-home routes and Postgres DDL are [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md). There is no platform push provider configuration; it is not a protocol object.
 
 The recommended sequence is:
 
@@ -2385,7 +2385,7 @@ Defines:
 * outbound queue as specified in phase 5;
 * no Redis;
 * WebSocket `/v1/wakeup` (empty binary, 10 s coalesce); poll fetch is required;
-* S2S mTLS on `s2s_port` (ALPN `nemo-s2s/1`); FCM remains an operator follow-on.
+* S2S mTLS on `s2s_port` (ALPN `nemo-s2s/1`); no platform push.
 
 ---
 
@@ -2801,5 +2801,5 @@ Calls are the worst case for the metadata layer: long, bidirectional, near-const
 
 ## 64.6 Wake-up
 
-Incoming calls use the same opaque push as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. In 0.1.0 this is a foreground service holding `/v1/wakeup` plus poll fallback; FCM is deferred to v1.1 (N4). On Android without Play Services and on desktop, the long-lived connection (ADR-0028) carries the envelope.
+Incoming calls use the same opaque wake as any other wake (section 33, ADR-0020). The device wakes, fetches the encrypted `call_invite` from its mailbox, decrypts, and rings. Wakes use a foreground service holding `/v1/wakeup` plus poll fallback; there is no FCM. On desktop, the long-lived connection (ADR-0028) carries the envelope.
 

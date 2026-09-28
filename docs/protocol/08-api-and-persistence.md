@@ -6,7 +6,7 @@
 - **Depends on:** [04-delivery-protocol.md](04-delivery-protocol.md), [05-federation.md](05-federation.md)
 - **Decisions:** [ADR-0028](../decisions/0028-implementation-languages-and-libraries.md), [0031](../decisions/0031-mailbox-retention-and-owner-auth.md), [0032](../decisions/0032-server-signing-key-and-federation-tls.md), [0033](../decisions/0033-local-http-api-and-postgres-schema.md)
 
-This document is the HTTP and storage mapping of phases 1–5. It MUST NOT add a server-stored field that those phases did not require. Cover traffic, Maximum mode, and Tor SOCKS are client transport ([ADR-0021](../decisions/0021-privacy-layer-and-modes.md)) and have no extra routes here. Group calls and FCM: [`../v1.1.md`](../v1.1.md). Later work: [`../v1.2.md`](../v1.2.md).
+This document is the HTTP and storage mapping of phases 1–5. It MUST NOT add a server-stored field that those phases did not require. Cover traffic, Maximum mode, and Tor SOCKS are client transport ([ADR-0021](../decisions/0021-privacy-layer-and-modes.md)) and have no extra routes here. Group calls: [`../v1.1.md`](../v1.1.md). Later work: [`../v1.2.md`](../v1.2.md).
 
 ---
 
@@ -159,11 +159,11 @@ Retention defaults remain 14 days / 500 MiB for mailboxes ([ADR-0031](../decisio
 
 - **Outbound queue:** `outbound` rows; backoff 1 s … 300 s; drop after 14 days. The S2S mTLS listener on `s2s_port` (ALPN `nemo-s2s/1`, pinned Ed25519) forwards due rows; in-process `pump` remains for tests. Operator pin files: `NEMO_PEERS_DIR` of ServerBundle CBOR.
 - **Caches:** none required. No Redis ([ADR-0028](../decisions/0028-implementation-languages-and-libraries.md)).
-- **Push:** opaque FCM wake is operator-optional ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)); not a table of message metadata.
+- **Push:** no platform push and no FCM by design ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)); wakes are foreground service + poll / long-lived connection, not a table of message metadata.
 - **TURN:** coturn sidecar; this API does not issue long-lived credentials in v1.
 
 ---
 
 ## 6. Phase completion
 
-v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime). Remaining operational work that does **not** unfreeze this document: FCM. Those MUST keep the tables and routes above.
+v1 client-to-home HTTP, error shapes, and Postgres DDL are specified and implemented. Group join and files are on `/v1`. sqlx write-through uses the frozen tables when `DATABASE_URL` is set. The client talks to those routes through `nemo-core::HomeSession` (transport trait; no `nemo-server` link at runtime).

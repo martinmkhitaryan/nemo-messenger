@@ -4,7 +4,7 @@ v1 automated tests run in CI (`cargo test`, `desktopTest`, Android emulator inst
 
 Two vaults in one desktop window count as two identities. Headphones on at least one side, or you hear yourself twice.
 
-Follow-on: [`v1.1.md`](v1.1.md) (group calls, FCM), then [`v1.2.md`](v1.2.md).
+Follow-on: [`v1.1.md`](v1.1.md) (group calls), then [`v1.2.md`](v1.2.md).
 
 ---
 

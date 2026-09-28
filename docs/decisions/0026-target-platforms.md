@@ -39,7 +39,7 @@ Rejected: web needs a browser-safe key storage story and WebRTC Encoded Transfor
 
 ## Consequences
 
-- Push section of the README must cover FCM (opaque wake) for Android and a non-push path for desktop.
+- Push section of the README must cover the no-platform-push path: foreground service + poll on Android, long-lived connection or poll on desktop. FCM is rejected and will never be used.
 - Call design (README voice-call section) uses libwebrtc via the Rust core on all three platforms; iOS PushKit/CallKit handling is deferred with the platform.
 
 ## Amendment 1 (ADR-0028)
@@ -51,3 +51,4 @@ The platforms, “no web in v1”, and “single Rust core with thin shells” r
 - 2026-09-19 — Accepted.
 - 2026-09-19 — Amendment 1: media engine may live in the shell (ADR-0028). The Decision section is unchanged.
 - 2026-09-21 — Amendment 2: iOS, macOS, and web are out of scope until a new ADR. Android / Linux / Windows is the product, not a first-release subset.
+- 2026-09-29 — Amendment 3: FCM rejected; push consequence above updated to no-platform-push.

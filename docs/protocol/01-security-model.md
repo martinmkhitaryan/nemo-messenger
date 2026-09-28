@@ -32,7 +32,7 @@ Installation (client)
 Home server (discovery + blind delivery + optional TURN)
   |  server-authenticated channel
 Peer servers (federation)
-Push provider (FCM or none)
+No push provider
 TURN operator (may be the home server)
 User (holds revocation phrase off-device)
 ```

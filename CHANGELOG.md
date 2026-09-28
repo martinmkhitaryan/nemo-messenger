@@ -22,8 +22,8 @@ and a physical device:
   add with fingerprint confirm, local nicknames.
 - 1:1 text: send/receive both directions, persistence across unlock.
 - 1:1 file attachments: send/receive and save to disk.
-- Notifications (non-FCM): foreground `SyncService` wake + `PollWorker`
-  fallback, generic-text alerts.
+- Notifications: foreground `SyncService` wake + `PollWorker`
+  fallback, generic-text alerts. No FCM by design.
 
 Not manually tested in 0.1.0 (implemented, covered by automated
 tests where noted in `docs/testing.md`): groups, 1:1 voice calls
@@ -94,7 +94,7 @@ Left to test (required before 1.0.0):
 - Onboarding: branded create/unlock, revocation-phrase chips with copy, Home URL connect, QR scan/generate, New chat sheet with verify-contact card.
 - Telegram-style thread: optimistic send with delivery ticks, bubble entrance + mobile composer-to-bubble morph, Enter-to-send, day separators + floating date pill with collision push, unread badge + in-thread marker + jump-to-unread / new-message button, pinned bottom-right timestamps, floating translucent header pills, top fade mask, screen-space outgoing gradients.
 - Themes: System / Light / Dark / Mono Light / Mono Dark, persisted by name.
-- Notifications: foreground `SyncService` (default, manually tested) holding `/v1/wakeup` + `PollWorker` fallback (manually tested), generic-text alerts with per-conversation seen marks, Nemo logo icons. No FCM in 0.1.0.
+- Notifications: foreground `SyncService` (default, manually tested) holding `/v1/wakeup` + `PollWorker` fallback (manually tested), generic-text alerts with per-conversation seen marks, Nemo logo icons. No FCM by design.
 - Single `VaultStore` fetch owner (poll + wake under mutex); UI/notifier collect deltas; bounded wake waits with stale-wake drop on identity switch.
 - Chat list chrome + empty-state CTA, animated phase/chat/settings transitions, attachment save dialogs, friendly backend errors + not-connected banner with Connect action.
 

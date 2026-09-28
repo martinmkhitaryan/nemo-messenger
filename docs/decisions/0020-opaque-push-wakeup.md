@@ -6,7 +6,7 @@
 
 ## Context
 
-Mobile platforms suspend applications; a message or call cannot reach a suspended client without the platform's push service (FCM on Android, APNs on iOS). Those services are operated by Google and Apple and see everything placed in the push payload. Many messengers put encrypted message content, or at least conversation identifiers, into the push.
+Mobile platforms suspend applications; a message or call cannot reach a suspended client without a wake path. Platform push services (FCM on Android, APNs on iOS) are operated by Google and Apple and see everything placed in the push payload. This project uses no platform push service. Many messengers put encrypted message content, or at least conversation identifiers, into the push.
 
 ## Decision
 
@@ -47,6 +47,11 @@ Attractive for privacy and consistent with self-hosting. Not chosen as the only 
 - Data model has `PushEndpoint {identity_id, provider, opaque_endpoint, created_at}`.
 - Server-side push coalescing rules and the wake token format are open protocol details (README 53.6).
 
+## Amendment 1 — no platform push, no FCM (2026-09-29)
+
+FCM and APNs are rejected and will never be used. There is no platform push service: Android wakes via a foreground service holding `/v1/wakeup` plus poll fallback; desktop uses a long-lived connection or poll while the application runs. The `PushEndpoint` registry described above is not implemented and no push-endpoint table will be added. The wake remains opaque (wake token only); the device fetches its own ciphertext.
+
 ## History
 
 - 2026-09-19 — Accepted. Opaque push wake-up; the device fetches its own ciphertext.
+- 2026-09-29 — Amendment 1: platform push (FCM/APNs) rejected; no push-endpoint table.

@@ -44,7 +44,7 @@ v1 MUST ship Normal and Private. High with cover ships. Tor SOCKS is used for no
 
 ## 3. Push
 
-Unaffected: opaque wake, no size/type ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)). Coalescing: at most one wake per 10 s per device. Desktop: no FCM; long-lived HTTPS/WSS to home while running.
+Unaffected: opaque wake, no size/type ([ADR-0020](../decisions/0020-opaque-push-wakeup.md)). Coalescing: at most one wake per 10 s per device. No platform push; long-lived HTTPS/WSS to home while running.
 
 ---
 
