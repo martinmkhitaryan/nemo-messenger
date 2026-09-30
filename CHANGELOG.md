@@ -27,7 +27,8 @@ and a physical device:
 
 Not manually tested in 0.1.0 (implemented, covered by automated
 tests where noted in `docs/testing.md`): groups, 1:1 voice calls
-(no live-audio check passed), High/Maximum cover traffic and Tor.
+(no live-audio check passed), High/Maximum cover traffic and Tor,
+server federation.
 
 Left to test (required before 1.0.0):
 
@@ -39,6 +40,9 @@ Left to test (required before 1.0.0):
   (headphones on one side), emulator, and physical device.
 - Privacy modes: High cover traffic, Maximum constant-rate slots,
   Tor SOCKS for non-loopback homes.
+- Server federation: two homes with pinned peer bundles
+  (`NEMO_PEERS_DIR`, S2S mTLS), one identity per home, cross-server
+  1:1 text both directions.
 
 ### Identity and vault
 

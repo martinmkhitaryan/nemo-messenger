@@ -17,7 +17,8 @@
 > Manually tested in 0.1.0 (desktop two-pane, Android emulator, physical
 > device): identity/contacts, 1:1 text, 1:1 file attachments,
 > notifications. Left to test: MLS groups (invite/join/admit/send), audible
-> 1:1 calls via TURN, High/Maximum cover + Tor. No FCM by design.
+> 1:1 calls via TURN, High/Maximum cover + Tor, server federation.
+> No FCM by design.
 > See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
