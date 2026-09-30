@@ -1,6 +1,6 @@
 //! Group stream host. Does not parse MLS commits. No HTTP.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nemo_wire::envelope::{MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::hpke::seal_to_server;
@@ -99,6 +99,46 @@ pub struct GroupHost {
     pub(crate) groups: HashMap<GroupId, GroupState>,
     pub(crate) files: HashMap<[u8; KEY_LEN], FileSlot>,
     pub file_budget: u64,
+    /// Incremental-persistence journal, drained by `pg::persist`. See `HomeDirty`.
+    pub(crate) dirty: GroupDirty,
+}
+
+/// What changed in [`GroupHost`] since the last successful [`crate::pg::persist`].
+#[derive(Default)]
+pub(crate) struct GroupDirty {
+    /// Upsert the `groups` row (`next_seq`, `bytes`).
+    pub groups: HashSet<GroupId>,
+    /// Upsert these member credentials by `(group_id, credential_id)`.
+    pub creds: HashSet<(GroupId, [u8; KEY_LEN])>,
+    /// Rewrite these groups' `group_invites` sets.
+    pub invites: HashSet<GroupId>,
+    /// Rewrite these groups' `group_pending` sets.
+    pub pending: HashSet<GroupId>,
+    /// `INSERT` these stream rows `(group_id, seq)`.
+    pub stream_new: Vec<(GroupId, u64)>,
+    /// Upsert these file slots by fetch token.
+    pub files: HashSet<[u8; KEY_LEN]>,
+}
+
+impl GroupDirty {
+    pub fn is_clean(&self) -> bool {
+        self.groups.is_empty()
+            && self.creds.is_empty()
+            && self.invites.is_empty()
+            && self.pending.is_empty()
+            && self.stream_new.is_empty()
+            && self.files.is_empty()
+    }
+
+    /// Merge a previously drained journal back after a failed persist.
+    pub fn absorb(&mut self, other: Self) {
+        self.groups.extend(other.groups);
+        self.creds.extend(other.creds);
+        self.invites.extend(other.invites);
+        self.pending.extend(other.pending);
+        self.stream_new.extend(other.stream_new);
+        self.files.extend(other.files);
+    }
 }
 
 impl GroupHost {
@@ -108,6 +148,7 @@ impl GroupHost {
             groups: HashMap::new(),
             files: HashMap::new(),
             file_budget: FILE_BUDGET_BYTES,
+            dirty: GroupDirty::default(),
         }
     }
 
@@ -142,6 +183,8 @@ impl GroupHost {
                 stream: Vec::new(),
             },
         );
+        self.dirty.groups.insert(group_id);
+        self.dirty.creds.insert((group_id, cred.credential_id));
         Ok(CreatedGroup { group_id, cred })
     }
 
@@ -169,6 +212,7 @@ impl GroupHost {
                 invitee_binding: invite.invitee_binding,
             },
         );
+        self.dirty.invites.insert(group_id);
         Ok(())
     }
 
@@ -199,6 +243,9 @@ impl GroupHost {
                 expires_at: stored.expires_at,
             },
         );
+        self.dirty.invites.insert(group_id);
+        self.dirty.pending.insert(group_id);
+        self.dirty.creds.insert((group_id, cred.credential_id));
         Ok(PendingJoin {
             pending_id,
             cred,
@@ -224,6 +271,8 @@ impl GroupHost {
         let vk = VerifyingKey::from_bytes(&pk).map_err(|_| ServerError::Denied)?;
         admit.verify(&vk).map_err(|_| ServerError::Denied)?;
         self.gc_pending(group_id);
+        self.dirty.invites.insert(group_id);
+        self.dirty.pending.insert(group_id);
         let g = self.groups.get_mut(&group_id).ok_or(ServerError::Denied)?;
         let reserved = g
             .pending
@@ -239,6 +288,7 @@ impl GroupHost {
         rec.live = true;
         rec.signing_pk = Some(joiner_signing_pk);
         rec.fanout = Some(fanout);
+        self.dirty.creds.insert((group_id, reserved.cred.credential_id));
         Ok(reserved.cred.credential_id)
     }
 
@@ -265,6 +315,7 @@ impl GroupHost {
         if let Some(rec) = g.creds.get_mut(&cred.credential_id) {
             rec.fanout = Some(fanout);
         }
+        self.dirty.creds.insert((group_id, cred.credential_id));
         Ok(())
     }
 
@@ -313,6 +364,7 @@ impl GroupHost {
             return Err(ServerError::Denied);
         }
         slot.bytes = Some(body);
+        self.dirty.files.insert(fetch_token);
         Ok(())
     }
 
@@ -360,6 +412,7 @@ impl GroupHost {
                 rec.fanout = None;
             }
         }
+        self.dirty.creds.insert((group_id, named));
         Ok(out)
     }
 
@@ -392,6 +445,7 @@ impl GroupHost {
                 bytes: None,
             },
         );
+        self.dirty.files.insert(reserve.fetch_token);
         Ok(out)
     }
 
@@ -428,6 +482,7 @@ impl GroupHost {
                 rec.signing_pk = Some(replace.new_public_key);
             }
         }
+        self.dirty.creds.insert((group_id, cred.credential_id));
         Ok(())
     }
 
@@ -452,6 +507,8 @@ impl GroupHost {
             body: body.clone(),
             received_at: now,
         });
+        self.dirty.groups.insert(group_id);
+        self.dirty.stream_new.push((group_id, seq));
         let targets: Vec<FanoutTarget> = g
             .creds
             .values()

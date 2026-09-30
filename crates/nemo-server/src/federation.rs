@@ -88,10 +88,11 @@ pub struct PumpStats {
 
 pub fn pin(home: &mut HomeServer, bundle: ServerBundle) -> Result<()> {
     bundle.verify()?;
-    if home.server_id() == bundle.server_id {
+    let id = bundle.server_id;
+    if home.server_id() == id {
         return Ok(());
     }
-    match home.peers.entry(bundle.server_id) {
+    match home.peers.entry(id) {
         std::collections::hash_map::Entry::Occupied(mut e) => {
             e.get_mut().bundle = bundle;
         }
@@ -99,6 +100,7 @@ pub fn pin(home: &mut HomeServer, bundle: ServerBundle) -> Result<()> {
             e.insert(PeerState::new(bundle));
         }
     }
+    home.mark_peer_dirty(id);
     Ok(())
 }
 
@@ -111,6 +113,7 @@ pub fn pin_each_other(a: &mut HomeServer, b: &mut HomeServer) -> Result<()> {
 pub fn refuse(home: &mut HomeServer, peer: ServerId) {
     if let Some(p) = home.peers.get_mut(&peer) {
         p.refused = true;
+        home.mark_peer_dirty(peer);
     }
 }
 
@@ -124,6 +127,7 @@ pub fn apply_sign_rotate(
         .map_err(|_| ServerError::NotPinned)?;
     rotate.verify(&current)?;
     p.bundle.server_sign_public_key = rotate.new_public_key;
+    home.mark_peer_dirty(peer);
     Ok(())
 }
 
@@ -148,6 +152,7 @@ pub fn pump(from: &mut HomeServer, to: &mut HomeServer) -> Result<PumpStats> {
         }
         if now.saturating_sub(from.outbound[i].enqueued_at) > OUTBOUND_MAX_AGE_SECS {
             from.outbound.remove(i);
+            from.mark_outbound_dirty();
             stats.expired += 1;
             continue;
         }
@@ -160,10 +165,12 @@ pub fn pump(from: &mut HomeServer, to: &mut HomeServer) -> Result<PumpStats> {
         match forward_one(from, to, &row) {
             Ok(()) => {
                 from.outbound.remove(i);
+                from.mark_outbound_dirty();
                 stats.delivered += 1;
             }
             Err(ServerError::Denied) | Err(ServerError::PeerRefused) => {
                 from.outbound.remove(i);
+                from.mark_outbound_dirty();
                 stats.failed += 1;
             }
             Err(ServerError::CounterGap) => {
@@ -172,6 +179,7 @@ pub fn pump(from: &mut HomeServer, to: &mut HomeServer) -> Result<PumpStats> {
                 let back = from.outbound[i].backoff_secs;
                 from.outbound[i].backoff_secs = (back.saturating_mul(2)).min(BACKOFF_CAP_SECS);
                 from.outbound[i].next_attempt = now.saturating_add(from.outbound[i].backoff_secs);
+                from.mark_outbound_dirty();
                 stats.failed += 1;
                 i += 1;
             }
@@ -179,6 +187,7 @@ pub fn pump(from: &mut HomeServer, to: &mut HomeServer) -> Result<PumpStats> {
                 let back = from.outbound[i].backoff_secs;
                 from.outbound[i].backoff_secs = (back.saturating_mul(2)).min(BACKOFF_CAP_SECS);
                 from.outbound[i].next_attempt = now.saturating_add(from.outbound[i].backoff_secs);
+                from.mark_outbound_dirty();
                 stats.failed += 1;
                 i += 1;
             }
@@ -192,6 +201,7 @@ pub(crate) fn reset_link(home: &mut HomeServer, peer: ServerId) {
         p.last_rx = 0;
         p.next_tx = 1;
         p.hello_done = false;
+        home.mark_peer_dirty(peer);
     }
 }
 
@@ -238,6 +248,7 @@ pub(crate) fn take_frame(home: &mut HomeServer, peer: ServerId, payload: Vec<u8>
     }
     let counter = p.next_tx;
     p.next_tx += 1;
+    home.mark_peer_dirty(peer);
     Ok(S2sFrame { counter, payload })
 }
 
@@ -256,6 +267,7 @@ pub(crate) fn accept_frame(home: &mut HomeServer, from: ServerId, frame: &S2sFra
         }
         p.last_rx = incoming;
     }
+    home.mark_peer_dirty(from);
     match parse_payload(&frame.payload)? {
         S2sPayload::Hello { sender, receiver } => {
             if sender != from || receiver != home.server_id() {

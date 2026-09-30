@@ -61,9 +61,9 @@ impl AppState {
         let Some(pool) = &self.db else {
             return;
         };
-        let home = self.home.lock().await;
-        let groups = self.groups.lock().await;
-        if let Err(e) = crate::pg::flush(pool, &home, &groups).await {
+        let mut home = self.home.lock().await;
+        let mut groups = self.groups.lock().await;
+        if let Err(e) = crate::pg::persist(pool, &mut home, &mut groups).await {
             crate::log_ops("nemo-server persist", e);
         }
     }

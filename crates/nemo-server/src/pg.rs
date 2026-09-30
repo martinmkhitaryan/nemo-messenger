@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use nemo_wire::cbor;
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope};
 use nemo_wire::hpke::HpkeKeypair;
-use nemo_wire::ids::{self, IdentityId, KEY_LEN};
+use nemo_wire::ids::{self, IdentityId, ServerId, KEY_LEN};
 use nemo_wire::{HomeServerBinding, RevocationStatement, ServerBundle, SigningKey};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -16,10 +16,10 @@ use thiserror::Error;
 
 use crate::federation::{OutboundRow, PeerState};
 use crate::group::{
-    CredRecord, FanoutTarget, FileSlot, GroupHost, GroupId, GroupState, MemberCred, PendingRecord,
-    StoredInvite, StreamRow,
+    CredRecord, FanoutTarget, FileSlot, GroupDirty, GroupHost, GroupId, GroupState, MemberCred,
+    PendingRecord, StoredInvite, StreamRow,
 };
-use crate::home::{DirectoryRow, HomeServer, Mailbox, StoredEnvelope, TokenKind};
+use crate::home::{DirectoryRow, HomeDirty, HomeServer, Mailbox, StoredEnvelope, TokenKind};
 
 #[derive(Debug, Error)]
 pub enum PersistError {
@@ -50,37 +50,121 @@ pub async fn load_or_init(
     s2s_port: u16,
 ) -> Result<(HomeServer, GroupHost)> {
     match load(pool).await? {
-        Some((mut home, groups)) => {
+        Some((mut home, mut groups)) => {
             if home.bundle().host != host || home.bundle().s2s_port != s2s_port as u64 {
                 home.rebind_host(host.to_string(), s2s_port);
-                flush(pool, &home, &groups).await?;
+                persist(pool, &mut home, &mut groups).await?;
             }
             Ok((home, groups))
         }
         None => {
-            let home = HomeServer::advertise(host.to_string(), s2s_port);
-            let groups = GroupHost::new();
-            flush(pool, &home, &groups).await?;
+            let mut home = HomeServer::advertise(host.to_string(), s2s_port);
+            let mut groups = GroupHost::new();
+            persist(pool, &mut home, &mut groups).await?;
             Ok((home, groups))
         }
     }
 }
 
-pub async fn flush(pool: &PgPool, home: &HomeServer, groups: &GroupHost) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        "TRUNCATE TABLE mailbox_rows, tokens, prekeys, memberships, \
-         group_files, group_stream, group_pending, group_invites, group_creds, groups, \
-         outbound, hpke_seen, peers, identities, server_identity \
-         RESTART IDENTITY CASCADE",
-    )
-    .execute(&mut *tx)
-    .await?;
+/// Incremental write-through persist. Drains the [`HomeDirty`]/[`GroupDirty`]
+/// journals and writes only what changed since the last successful call, in a
+/// single transaction ordered for foreign keys (identities before children).
+///
+/// Clean state short-circuits with zero statements, so change-free polls cost
+/// nothing. On error the journals merge back, so no change is ever lost.
+pub async fn persist(pool: &PgPool, home: &mut HomeServer, groups: &mut GroupHost) -> Result<()> {
+    if home.dirty.is_clean() && groups.dirty.is_clean() {
+        return Ok(());
+    }
+    let hd = std::mem::take(&mut home.dirty);
+    let gd = std::mem::take(&mut groups.dirty);
+    let res = persist_inner(pool, home, groups, &hd, &gd).await;
+    if res.is_err() {
+        home.dirty.absorb(hd);
+        groups.dirty.absorb(gd);
+    }
+    res
+}
 
+async fn persist_inner(
+    pool: &PgPool,
+    home: &HomeServer,
+    groups: &GroupHost,
+    hd: &HomeDirty,
+    gd: &GroupDirty,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    if hd.server_identity {
+        upsert_server_identity(&mut tx, home).await?;
+    }
+    for id in &hd.identities {
+        upsert_identity(&mut tx, home, id).await?;
+    }
+    for owner in &hd.mailbox_cleared {
+        delete_mailbox_all(&mut tx, owner).await?;
+    }
+    for (owner, seq) in &hd.mailbox_dropped {
+        delete_mailbox_exact(&mut tx, owner, *seq).await?;
+    }
+    for (owner, upto) in &hd.mailbox_acked {
+        delete_mailbox_acked(&mut tx, owner, *upto).await?;
+    }
+    insert_mailbox_rows(&mut tx, home, &hd.mailbox_new).await?;
+    for owner in &hd.tokens_dropped {
+        delete_tokens_owner(&mut tx, owner).await?;
+    }
+    for token in &hd.tokens {
+        upsert_token(&mut tx, home, token).await?;
+    }
+    for owner in &hd.prekeys {
+        rewrite_prekeys(&mut tx, home, owner).await?;
+    }
+    for owner in &hd.memberships {
+        rewrite_memberships(&mut tx, home, owner).await?;
+    }
+    for peer in &hd.peers {
+        upsert_peer(&mut tx, home, peer).await?;
+    }
+    if hd.outbound_dirty {
+        rewrite_outbound(&mut tx, home).await?;
+    }
+    if hd.seen_enc_cleared {
+        rewrite_seen(&mut tx, home).await?;
+    } else {
+        insert_seen_new(&mut tx, home, &hd.seen_enc_new).await?;
+    }
+    for gid in &gd.groups {
+        upsert_group(&mut tx, groups, gid).await?;
+    }
+    for (gid, cid) in &gd.creds {
+        upsert_cred(&mut tx, groups, gid, cid).await?;
+    }
+    for gid in &gd.invites {
+        rewrite_invites(&mut tx, groups, gid).await?;
+    }
+    for gid in &gd.pending {
+        rewrite_pending(&mut tx, groups, gid).await?;
+    }
+    insert_stream_new(&mut tx, groups, &gd.stream_new).await?;
+    for token in &gd.files {
+        upsert_file(&mut tx, groups, token).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn upsert_server_identity(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO server_identity \
-         (hpke_secret, hpke_public, sign_secret, sign_public, host, s2s_port) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         (singleton, hpke_secret, hpke_public, sign_secret, sign_public, host, s2s_port) \
+         VALUES (TRUE, $1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (singleton) DO UPDATE SET \
+         hpke_secret = excluded.hpke_secret, hpke_public = excluded.hpke_public, \
+         sign_secret = excluded.sign_secret, sign_public = excluded.sign_public, \
+         host = excluded.host, s2s_port = excluded.s2s_port",
     )
     .bind(home.hpke.secret.as_slice())
     .bind(home.hpke.public.as_slice())
@@ -88,231 +172,531 @@ pub async fn flush(pool: &PgPool, home: &HomeServer, groups: &GroupHost) -> Resu
     .bind(home.sign.verifying_key().to_bytes().as_slice())
     .bind(home.bundle.host.as_str())
     .bind(home.bundle.s2s_port as i32)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
+    Ok(())
+}
 
-    let mut ids: Vec<IdentityId> = home.mailboxes.keys().copied().collect();
-    for id in home.directory.keys() {
-        if !ids.contains(id) {
-            ids.push(*id);
-        }
-    }
-    ids.sort();
-    for id in ids {
-        insert_identity(&mut tx, home, id).await?;
-    }
+struct IdentityRow {
+    pk: [u8; KEY_LEN],
+    rev_pk: [u8; KEY_LEN],
+    binding_cbor: Vec<u8>,
+    binding_seq: i64,
+    revocation_cbor: Option<Vec<u8>>,
+    disabled: bool,
+    next_seq: i64,
+    bytes: i64,
+}
 
-    for (id, box_) in &home.mailboxes {
-        for row in box_.rows.values() {
+fn identity_row(home: &HomeServer, id: &IdentityId) -> IdentityRow {
+    let dir = home.directory.get(id);
+    let box_ = home.mailboxes.get(id);
+    IdentityRow {
+        pk: dir
+            .map(|d| d.identity_public_key)
+            .or_else(|| box_.map(|b| b.owner_pk))
+            .unwrap_or([0u8; KEY_LEN]),
+        rev_pk: dir.map(|d| d.revocation_public_key).unwrap_or([0u8; KEY_LEN]),
+        binding_cbor: dir.map(|d| encode_binding(&d.binding)).unwrap_or_default(),
+        binding_seq: dir.map(|d| d.binding_seq as i64).unwrap_or(0),
+        revocation_cbor: dir.and_then(|d| d.revocation.as_ref().map(|r| r.encode())),
+        disabled: box_.map(|b| b.disabled).unwrap_or(false),
+        next_seq: box_.map(|b| b.next_seq as i64).unwrap_or(0),
+        bytes: box_.map(|b| b.bytes as i64).unwrap_or(0),
+    }
+}
+
+async fn upsert_identity(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    id: &IdentityId,
+) -> Result<()> {
+    let r = identity_row(home, id);
+    sqlx::query(
+        "INSERT INTO identities \
+         (identity_id, identity_public_key, revocation_public_key, binding_cbor, \
+          binding_seq, revocation_cbor, mailbox_disabled, mailbox_next_seq, mailbox_bytes) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         ON CONFLICT (identity_id) DO UPDATE SET \
+         identity_public_key = excluded.identity_public_key, \
+         revocation_public_key = excluded.revocation_public_key, \
+         binding_cbor = excluded.binding_cbor, binding_seq = excluded.binding_seq, \
+         revocation_cbor = excluded.revocation_cbor, \
+         mailbox_disabled = excluded.mailbox_disabled, \
+         mailbox_next_seq = excluded.mailbox_next_seq, \
+         mailbox_bytes = excluded.mailbox_bytes",
+    )
+    .bind(id.as_slice())
+    .bind(r.pk.as_slice())
+    .bind(r.rev_pk.as_slice())
+    .bind(r.binding_cbor.as_slice())
+    .bind(r.binding_seq)
+    .bind(r.revocation_cbor.as_deref())
+    .bind(r.disabled)
+    .bind(r.next_seq)
+    .bind(r.bytes)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn delete_mailbox_all(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &IdentityId,
+) -> Result<()> {
+    sqlx::query("DELETE FROM mailbox_rows WHERE identity_id = $1")
+        .bind(owner.as_slice())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn delete_mailbox_exact(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &IdentityId,
+    seq: u64,
+) -> Result<()> {
+    sqlx::query("DELETE FROM mailbox_rows WHERE identity_id = $1 AND seq = $2")
+        .bind(owner.as_slice())
+        .bind(seq as i64)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn delete_mailbox_acked(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &IdentityId,
+    upto: u64,
+) -> Result<()> {
+    sqlx::query("DELETE FROM mailbox_rows WHERE identity_id = $1 AND seq <= $2")
+        .bind(owner.as_slice())
+        .bind(upto as i64)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn insert_mailbox_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    new_rows: &[(IdentityId, u64)],
+) -> Result<()> {
+    // Resolve against live memory; rows appended then wiped pre-persist
+    // (e.g. disabled mailbox) are already gone and must not be resurrected.
+    let mut vals: Vec<(Vec<u8>, i64, i64, i64, Vec<u8>, Vec<u8>)> = Vec::new();
+    for (owner, seq) in new_rows {
+        if let Some(row) = home.mailboxes.get(owner).and_then(|b| b.rows.get(seq)) {
             let padded = row
                 .inner
                 .encode_padded()
                 .map_err(|_| PersistError::Corrupt("inner encode"))?;
-            sqlx::query(
-                "INSERT INTO mailbox_rows \
-                 (identity_id, seq, received_at, expires_at, inner_padded, idempotency_token) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-            )
-            .bind(id.as_slice())
-            .bind(row.seq as i64)
-            .bind(row.received_at as i64)
-            .bind(row.expires_at as i64)
-            .bind(padded.as_slice())
-            .bind(row.inner.idempotency_token.as_slice())
-            .execute(&mut *tx)
-            .await?;
+            vals.push((
+                owner.to_vec(),
+                row.seq as i64,
+                row.received_at as i64,
+                row.expires_at as i64,
+                padded,
+                row.inner.idempotency_token.to_vec(),
+            ));
         }
     }
-
-    for (token, kind) in &home.tokens {
-        match kind {
-            TokenKind::Share {
-                mailbox,
-                expires_at,
-                burned,
-                reserved_prekey,
-            } => {
-                sqlx::query(
-                    "INSERT INTO tokens \
-                     (token, kind, mailbox, expires_at, burned, reserved_prekey, \
-                      grace_until, window_start, window_count) \
-                     VALUES ($1, 1, $2, $3, $4, $5, NULL, NULL, 0)",
-                )
-                .bind(token.as_slice())
-                .bind(mailbox.as_slice())
-                .bind(*expires_at as i64)
-                .bind(*burned)
-                .bind(reserved_prekey.as_deref())
-                .execute(&mut *tx)
-                .await?;
-            }
-            TokenKind::Contact {
-                mailbox,
-                grace_until,
-                window_start,
-                window_count,
-            } => {
-                sqlx::query(
-                    "INSERT INTO tokens \
-                     (token, kind, mailbox, expires_at, burned, reserved_prekey, \
-                      grace_until, window_start, window_count) \
-                     VALUES ($1, 2, $2, NULL, FALSE, NULL, $3, $4, $5)",
-                )
-                .bind(token.as_slice())
-                .bind(mailbox.as_slice())
-                .bind(grace_until.map(|g| g as i64))
-                .bind(*window_start as i64)
-                .bind(*window_count as i32)
-                .execute(&mut *tx)
-                .await?;
-            }
-        }
+    if vals.is_empty() {
+        return Ok(());
     }
+    let mut qb = sqlx::QueryBuilder::new(
+        "INSERT INTO mailbox_rows \
+         (identity_id, seq, received_at, expires_at, inner_padded, idempotency_token) ",
+    );
+    qb.push_values(vals.iter(), |mut b, v| {
+        b.push_bind(v.0.as_slice())
+            .push_bind(v.1)
+            .push_bind(v.2)
+            .push_bind(v.3)
+            .push_bind(v.4.as_slice())
+            .push_bind(v.5.as_slice());
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
 
-    for (id, queue) in &home.prekeys {
-        for blob in queue {
-            sqlx::query("INSERT INTO prekeys (identity_id, blob) VALUES ($1, $2)")
-                .bind(id.as_slice())
-                .bind(blob.as_slice())
-                .execute(&mut *tx)
-                .await?;
-        }
-    }
-
-    for (id, list) in &home.memberships {
-        for gid in list {
-            sqlx::query("INSERT INTO memberships (identity_id, group_id) VALUES ($1, $2)")
-                .bind(id.as_slice())
-                .bind(gid.0.as_slice())
-                .execute(&mut *tx)
-                .await?;
-        }
-    }
-
-    for (gid, g) in &groups.groups {
-        sqlx::query("INSERT INTO groups (group_id, next_seq, bytes) VALUES ($1, $2, $3)")
-            .bind(gid.0.as_slice())
-            .bind(g.next_seq as i64)
-            .bind(g.bytes as i64)
-            .execute(&mut *tx)
-            .await?;
-        for (cid, rec) in &g.creds {
-            sqlx::query(
-                "INSERT INTO group_creds \
-                 (group_id, credential_id, credential_secret, live, signing_pk, \
-                  fanout_capability, fanout_hpke) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(gid.0.as_slice())
-            .bind(cid.as_slice())
-            .bind(rec.secret.as_slice())
-            .bind(rec.live)
-            .bind(rec.signing_pk.as_ref().map(|p| p.as_slice()))
-            .bind(
-                rec.fanout
-                    .as_ref()
-                    .map(|f| f.delivery_capability.as_slice()),
-            )
-            .bind(rec.fanout.as_ref().map(|f| f.home_hpke_public.as_slice()))
-            .execute(&mut *tx)
-            .await?;
-        }
-        for (nonce, inv) in &g.invites {
-            sqlx::query(
-                "INSERT INTO group_invites (group_id, nonce, expires_at, invitee_binding) \
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(gid.0.as_slice())
-            .bind(nonce.as_slice())
-            .bind(inv.expires_at as i64)
-            .bind(inv.invitee_binding.as_ref().map(|b| b.as_slice()))
-            .execute(&mut *tx)
-            .await?;
-        }
-        for (pid, pending) in &g.pending {
-            sqlx::query(
-                "INSERT INTO group_pending \
-                 (group_id, pending_id, credential_id, credential_secret, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(gid.0.as_slice())
-            .bind(pid.as_slice())
-            .bind(pending.cred.credential_id.as_slice())
-            .bind(pending.cred.credential_secret.as_slice())
-            .bind(pending.expires_at as i64)
-            .execute(&mut *tx)
-            .await?;
-        }
-        for row in &g.stream {
-            sqlx::query(
-                "INSERT INTO group_stream (group_id, seq, \"type\", body, received_at) \
-                 VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(gid.0.as_slice())
-            .bind(row.seq as i64)
-            .bind(row.type_ as i16)
-            .bind(row.body.as_slice())
-            .bind(row.received_at as i64)
-            .execute(&mut *tx)
-            .await?;
-        }
-    }
-
-    for (token, slot) in &groups.files {
-        sqlx::query(
-            "INSERT INTO group_files \
-             (fetch_token, group_id, owner_cred, size_bytes, expires_at, bytes) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(token.as_slice())
-        .bind(slot.group_id.0.as_slice())
-        .bind(slot.owner.as_slice())
-        .bind(slot.size as i32)
-        .bind(slot.expires_at as i64)
-        .bind(slot.bytes.as_deref())
-        .execute(&mut *tx)
+async fn delete_tokens_owner(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &IdentityId,
+) -> Result<()> {
+    sqlx::query("DELETE FROM tokens WHERE mailbox = $1")
+        .bind(owner.as_slice())
+        .execute(&mut **tx)
         .await?;
-    }
+    Ok(())
+}
 
-    for (sid, peer) in &home.peers {
-        sqlx::query(
-            "INSERT INTO peers \
-             (server_id, bundle_cbor, refused, last_recv_counter, last_send_counter) \
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(sid.as_slice())
-        .bind(peer.bundle.encode())
-        .bind(peer.refused)
-        .bind(peer.last_rx as i64)
-        .bind(peer.next_tx as i64)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    for row in &home.outbound {
-        sqlx::query(
-            "INSERT INTO outbound (dest, outer_cbor, enqueued_at, next_attempt, backoff_secs) \
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(row.dest.as_slice())
-        .bind(row.outer.encode())
-        .bind(row.enqueued_at as i64)
-        .bind(row.next_attempt as i64)
-        .bind(row.backoff_secs as i64)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    for (enc, seq) in &home.seen_enc {
-        sqlx::query("INSERT INTO hpke_seen (enc, seq, seen_at) VALUES ($1, $2, $3)")
-            .bind(enc.as_slice())
-            .bind(*seq as i64)
-            .bind(0_i64)
-            .execute(&mut *tx)
+async fn upsert_token(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    token: &[u8; KEY_LEN],
+) -> Result<()> {
+    // Tokens removed pre-persist (mailbox disabled) are already covered by the
+    // owner delete and must not be resurrected.
+    let Some((_, kind)) = home.tokens.iter().find(|(k, _)| k == token) else {
+        return Ok(());
+    };
+    match kind {
+        TokenKind::Share {
+            mailbox,
+            expires_at,
+            burned,
+            reserved_prekey,
+        } => {
+            sqlx::query(
+                "INSERT INTO tokens \
+                 (token, kind, mailbox, expires_at, burned, reserved_prekey, \
+                  grace_until, window_start, window_count) \
+                 VALUES ($1, 1, $2, $3, $4, $5, NULL, NULL, 0) \
+                 ON CONFLICT (token) DO UPDATE SET \
+                 mailbox = excluded.mailbox, expires_at = excluded.expires_at, \
+                 burned = excluded.burned, reserved_prekey = excluded.reserved_prekey",
+            )
+            .bind(token.as_slice())
+            .bind(mailbox.as_slice())
+            .bind(*expires_at as i64)
+            .bind(*burned)
+            .bind(reserved_prekey.as_deref())
+            .execute(&mut **tx)
             .await?;
+        }
+        TokenKind::Contact {
+            mailbox,
+            grace_until,
+            window_start,
+            window_count,
+        } => {
+            sqlx::query(
+                "INSERT INTO tokens \
+                 (token, kind, mailbox, expires_at, burned, reserved_prekey, \
+                  grace_until, window_start, window_count) \
+                 VALUES ($1, 2, $2, NULL, FALSE, NULL, $3, $4, $5) \
+                 ON CONFLICT (token) DO UPDATE SET \
+                 mailbox = excluded.mailbox, grace_until = excluded.grace_until, \
+                 window_start = excluded.window_start, window_count = excluded.window_count",
+            )
+            .bind(token.as_slice())
+            .bind(mailbox.as_slice())
+            .bind(grace_until.map(|g| g as i64))
+            .bind(*window_start as i64)
+            .bind(*window_count as i32)
+            .execute(&mut **tx)
+            .await?;
+        }
     }
+    Ok(())
+}
 
-    tx.commit().await?;
+async fn rewrite_prekeys(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    owner: &IdentityId,
+) -> Result<()> {
+    sqlx::query("DELETE FROM prekeys WHERE identity_id = $1")
+        .bind(owner.as_slice())
+        .execute(&mut **tx)
+        .await?;
+    let Some(queue) = home.prekeys.get(owner) else {
+        return Ok(());
+    };
+    if queue.is_empty() {
+        return Ok(());
+    }
+    // One statement for the whole queue: restock bursts stay at 2 round trips.
+    let mut qb = sqlx::QueryBuilder::new("INSERT INTO prekeys (identity_id, blob) ");
+    qb.push_values(queue.iter(), |mut b, blob| {
+        b.push_bind(owner.as_slice()).push_bind(blob.as_slice());
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn rewrite_memberships(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    owner: &IdentityId,
+) -> Result<()> {
+    sqlx::query("DELETE FROM memberships WHERE identity_id = $1")
+        .bind(owner.as_slice())
+        .execute(&mut **tx)
+        .await?;
+    let Some(list) = home.memberships.get(owner) else {
+        return Ok(());
+    };
+    if list.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new("INSERT INTO memberships (identity_id, group_id) ");
+    qb.push_values(list.iter(), |mut b, gid| {
+        b.push_bind(owner.as_slice()).push_bind(gid.0.as_slice());
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn upsert_peer(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    peer: &ServerId,
+) -> Result<()> {
+    let Some(p) = home.peers.get(peer) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO peers \
+         (server_id, bundle_cbor, refused, last_recv_counter, last_send_counter) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (server_id) DO UPDATE SET \
+         bundle_cbor = excluded.bundle_cbor, refused = excluded.refused, \
+         last_recv_counter = excluded.last_recv_counter, \
+         last_send_counter = excluded.last_send_counter",
+    )
+    .bind(peer.as_slice())
+    .bind(p.bundle.encode())
+    .bind(p.refused)
+    .bind(p.last_rx as i64)
+    .bind(p.next_tx as i64)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn rewrite_outbound(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+) -> Result<()> {
+    sqlx::query("DELETE FROM outbound").execute(&mut **tx).await?;
+    if home.outbound.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new(
+        "INSERT INTO outbound (dest, outer_cbor, enqueued_at, next_attempt, backoff_secs) ",
+    );
+    qb.push_values(home.outbound.iter(), |mut b, row| {
+        b.push_bind(row.dest.as_slice())
+            .push_bind(row.outer.encode())
+            .push_bind(row.enqueued_at as i64)
+            .push_bind(row.next_attempt as i64)
+            .push_bind(row.backoff_secs as i64);
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn insert_seen_new(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    home: &HomeServer,
+    new_encs: &[[u8; KEY_LEN]],
+) -> Result<()> {
+    let mut vals: Vec<(Vec<u8>, i64)> = Vec::new();
+    for enc in new_encs {
+        if let Some(seq) = home.seen_enc.get(enc) {
+            vals.push((enc.to_vec(), *seq as i64));
+        }
+    }
+    if vals.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new("INSERT INTO hpke_seen (enc, seq, seen_at) ");
+    qb.push_values(vals.iter(), |mut b, v| {
+        b.push_bind(v.0.as_slice()).push_bind(v.1).push_bind(0_i64);
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn rewrite_seen(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, home: &HomeServer) -> Result<()> {
+    sqlx::query("DELETE FROM hpke_seen").execute(&mut **tx).await?;
+    if home.seen_enc.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new("INSERT INTO hpke_seen (enc, seq, seen_at) ");
+    qb.push_values(home.seen_enc.iter(), |mut b, (enc, seq)| {
+        b.push_bind(enc.as_slice()).push_bind(*seq as i64).push_bind(0_i64);
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn upsert_group(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    groups: &GroupHost,
+    gid: &GroupId,
+) -> Result<()> {
+    let Some(g) = groups.groups.get(gid) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO groups (group_id, next_seq, bytes) VALUES ($1, $2, $3) \
+         ON CONFLICT (group_id) DO UPDATE SET \
+         next_seq = excluded.next_seq, bytes = excluded.bytes",
+    )
+    .bind(gid.0.as_slice())
+    .bind(g.next_seq as i64)
+    .bind(g.bytes as i64)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn upsert_cred(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    groups: &GroupHost,
+    gid: &GroupId,
+    cid: &[u8; KEY_LEN],
+) -> Result<()> {
+    let Some(rec) = groups.groups.get(gid).and_then(|g| g.creds.get(cid)) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO group_creds \
+         (group_id, credential_id, credential_secret, live, signing_pk, \
+          fanout_capability, fanout_hpke) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (group_id, credential_id) DO UPDATE SET \
+         credential_secret = excluded.credential_secret, live = excluded.live, \
+         signing_pk = excluded.signing_pk, \
+         fanout_capability = excluded.fanout_capability, \
+         fanout_hpke = excluded.fanout_hpke",
+    )
+    .bind(gid.0.as_slice())
+    .bind(cid.as_slice())
+    .bind(rec.secret.as_slice())
+    .bind(rec.live)
+    .bind(rec.signing_pk.as_ref().map(|p| p.as_slice()))
+    .bind(rec.fanout.as_ref().map(|f| f.delivery_capability.as_slice()))
+    .bind(rec.fanout.as_ref().map(|f| f.home_hpke_public.as_slice()))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn rewrite_invites(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    groups: &GroupHost,
+    gid: &GroupId,
+) -> Result<()> {
+    sqlx::query("DELETE FROM group_invites WHERE group_id = $1")
+        .bind(gid.0.as_slice())
+        .execute(&mut **tx)
+        .await?;
+    let Some(g) = groups.groups.get(gid) else {
+        return Ok(());
+    };
+    if g.invites.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new(
+        "INSERT INTO group_invites (group_id, nonce, expires_at, invitee_binding) ",
+    );
+    qb.push_values(g.invites.iter(), |mut b, (nonce, inv)| {
+        b.push_bind(gid.0.as_slice())
+            .push_bind(nonce.as_slice())
+            .push_bind(inv.expires_at as i64)
+            .push_bind(inv.invitee_binding.as_ref().map(|x| x.as_slice()));
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn rewrite_pending(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    groups: &GroupHost,
+    gid: &GroupId,
+) -> Result<()> {
+    sqlx::query("DELETE FROM group_pending WHERE group_id = $1")
+        .bind(gid.0.as_slice())
+        .execute(&mut **tx)
+        .await?;
+    let Some(g) = groups.groups.get(gid) else {
+        return Ok(());
+    };
+    if g.pending.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new(
+        "INSERT INTO group_pending \
+         (group_id, pending_id, credential_id, credential_secret, expires_at) ",
+    );
+    qb.push_values(g.pending.iter(), |mut b, (pid, p)| {
+        b.push_bind(gid.0.as_slice())
+            .push_bind(pid.as_slice())
+            .push_bind(p.cred.credential_id.as_slice())
+            .push_bind(p.cred.credential_secret.as_slice())
+            .push_bind(p.expires_at as i64);
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn insert_stream_new(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    groups: &GroupHost,
+    new_rows: &[(GroupId, u64)],
+) -> Result<()> {
+    let mut vals: Vec<(Vec<u8>, i64, i16, Vec<u8>, i64)> = Vec::new();
+    for (gid, seq) in new_rows {
+        if let Some(row) = groups
+            .groups
+            .get(gid)
+            .and_then(|g| g.stream.iter().find(|r| r.seq == *seq))
+        {
+            vals.push((
+                gid.0.to_vec(),
+                row.seq as i64,
+                row.type_ as i16,
+                row.body.clone(),
+                row.received_at as i64,
+            ));
+        }
+    }
+    if vals.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new(
+        "INSERT INTO group_stream (group_id, seq, \"type\", body, received_at) ",
+    );
+    qb.push_values(vals.iter(), |mut b, v| {
+        b.push_bind(v.0.as_slice())
+            .push_bind(v.1)
+            .push_bind(v.2)
+            .push_bind(v.3.as_slice())
+            .push_bind(v.4);
+    });
+    qb.build().execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn upsert_file(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    groups: &GroupHost,
+    token: &[u8; KEY_LEN],
+) -> Result<()> {
+    let Some(slot) = groups.files.get(token) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO group_files \
+         (fetch_token, group_id, owner_cred, size_bytes, expires_at, bytes) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (fetch_token) DO UPDATE SET \
+         group_id = excluded.group_id, owner_cred = excluded.owner_cred, \
+         size_bytes = excluded.size_bytes, expires_at = excluded.expires_at, \
+         bytes = excluded.bytes",
+    )
+    .bind(token.as_slice())
+    .bind(slot.group_id.0.as_slice())
+    .bind(slot.owner.as_slice())
+    .bind(slot.size as i32)
+    .bind(slot.expires_at as i64)
+    .bind(slot.bytes.as_deref())
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -652,48 +1036,6 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
     }
 
     Ok(Some((home, groups)))
-}
-
-async fn insert_identity(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    home: &HomeServer,
-    id: IdentityId,
-) -> Result<()> {
-    let dir = home.directory.get(&id);
-    let box_ = home.mailboxes.get(&id);
-    let pk = dir
-        .map(|d| d.identity_public_key)
-        .or_else(|| box_.map(|b| b.owner_pk))
-        .unwrap_or([0u8; KEY_LEN]);
-    let rev_pk = dir.map(|d| d.revocation_public_key).unwrap_or([0u8; KEY_LEN]);
-    let binding_cbor = match dir {
-        Some(d) => encode_binding(&d.binding),
-        None => Vec::new(),
-    };
-    let binding_seq = dir.map(|d| d.binding_seq).unwrap_or(0);
-    let revocation_cbor = dir.and_then(|d| d.revocation.as_ref().map(|r| r.encode()));
-    let (disabled, next_seq, bytes) = match box_ {
-        Some(b) => (b.disabled, b.next_seq as i64, b.bytes as i64),
-        None => (false, 0, 0),
-    };
-    sqlx::query(
-        "INSERT INTO identities \
-         (identity_id, identity_public_key, revocation_public_key, binding_cbor, \
-          binding_seq, revocation_cbor, mailbox_disabled, mailbox_next_seq, mailbox_bytes) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(id.as_slice())
-    .bind(pk.as_slice())
-    .bind(rev_pk.as_slice())
-    .bind(binding_cbor.as_slice())
-    .bind(binding_seq as i64)
-    .bind(revocation_cbor.as_deref())
-    .bind(disabled)
-    .bind(next_seq)
-    .bind(bytes)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
 }
 
 fn key32(bytes: &[u8]) -> Result<[u8; KEY_LEN]> {

@@ -241,6 +241,7 @@ fn remove_matching_outbound(home: &mut HomeServer, row: &crate::federation::Outb
         .position(|r| r.dest == row.dest && r.outer.hpke_ciphertext == row.outer.hpke_ciphertext)
     {
         home.outbound.remove(i);
+        home.mark_outbound_dirty();
     }
 }
 
@@ -253,6 +254,7 @@ fn backoff_row(home: &mut HomeServer, row: &crate::federation::OutboundRow) {
     {
         r.backoff_secs = (r.backoff_secs.saturating_mul(2)).min(BACKOFF_CAP_SECS);
         r.next_attempt = now.saturating_add(r.backoff_secs);
+        home.mark_outbound_dirty();
     }
 }
 

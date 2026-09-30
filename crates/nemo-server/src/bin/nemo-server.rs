@@ -23,7 +23,7 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        let (mut home, groups) = match nemo_server::pg::load_or_init(&pool, &host, s2s_port).await {
+        let (mut home, mut groups) = match nemo_server::pg::load_or_init(&pool, &host, s2s_port).await {
             Ok(v) => v,
             Err(e) => {
                 nemo_server::log_ops("nemo-server load", e);
@@ -31,7 +31,7 @@ async fn main() {
             }
         };
         pin_dir(&mut home);
-        if let Err(e) = nemo_server::pg::flush(&pool, &home, &groups).await {
+        if let Err(e) = nemo_server::pg::persist(&pool, &mut home, &mut groups).await {
             nemo_server::log_ops("nemo-server persist pins", e);
             std::process::exit(1);
         }

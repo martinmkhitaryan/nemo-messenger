@@ -1,6 +1,6 @@
 //! Home-server mailbox log. No HTTP. HPKE open is this process; clients never hold the secret.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use nemo_wire::envelope::{InnerEnvelope, OuterEnvelope, TtlBucket};
 use nemo_wire::hpke::{self, open_outer, HpkeKeypair};
@@ -103,6 +103,99 @@ pub struct HomeServer {
     pub(crate) seen_enc: HashMap<[u8; KEY_LEN], u64>,
     pub(crate) peers: HashMap<ServerId, PeerState>,
     pub(crate) outbound: Vec<OutboundRow>,
+    /// Incremental-persistence journal. Mutation methods record what changed;
+    /// `pg::persist` drains it and writes only those rows. Empty means the
+    /// database already matches memory, so persist is a no-op.
+    pub(crate) dirty: HomeDirty,
+}
+
+/// What changed in [`HomeServer`] since the last successful [`crate::pg::persist`].
+///
+/// Granularity is chosen so every entry maps to a small exact statement:
+/// single-row upserts/deletes, or a per-owner rewrite for the small
+/// queue/set tables. Drain-time lookups run against live memory, so entries
+/// whose rows are already gone (e.g. appended then disabled before persist)
+/// are skipped instead of resurrected.
+#[derive(Default)]
+pub(crate) struct HomeDirty {
+    /// `server_identity` row changed (`rebind_host`).
+    pub server_identity: bool,
+    /// Upsert `identities` row (mailbox counters, binding, revocation, disabled flag).
+    pub identities: HashSet<IdentityId>,
+    /// `INSERT` these mailbox rows `(owner, seq)`.
+    pub mailbox_new: Vec<(IdentityId, u64)>,
+    /// `DELETE` rows with `seq <= upto`, merged to the max per owner.
+    pub mailbox_acked: HashMap<IdentityId, u64>,
+    /// `DELETE` these exact `(owner, seq)` rows (expiry GC).
+    pub mailbox_dropped: Vec<(IdentityId, u64)>,
+    /// `DELETE` all rows for these owners (mailbox disabled).
+    pub mailbox_cleared: HashSet<IdentityId>,
+    /// Upsert these tokens by primary key (minted or field-changed).
+    pub tokens: HashSet<[u8; KEY_LEN]>,
+    /// `DELETE` all tokens of these owners (mailbox disabled).
+    pub tokens_dropped: HashSet<IdentityId>,
+    /// Rewrite these owners' prekey queues (`DELETE` + batched `INSERT`).
+    pub prekeys: HashSet<IdentityId>,
+    /// Rewrite these owners' membership lists.
+    pub memberships: HashSet<IdentityId>,
+    /// Upsert these peer rows (bundle, refused flag, S2S counters).
+    pub peers: HashSet<ServerId>,
+    /// Rewrite the `outbound` table (federation-only, normally tiny).
+    pub outbound_dirty: bool,
+    /// `INSERT` these HPKE-dedup entries (sequence looked up in memory).
+    pub seen_enc_new: Vec<[u8; KEY_LEN]>,
+    /// Dedup window wrapped: `DELETE` all + rewrite current content.
+    pub seen_enc_cleared: bool,
+}
+
+impl HomeDirty {
+    pub fn is_clean(&self) -> bool {
+        !self.server_identity
+            && self.identities.is_empty()
+            && self.mailbox_new.is_empty()
+            && self.mailbox_acked.is_empty()
+            && self.mailbox_dropped.is_empty()
+            && self.mailbox_cleared.is_empty()
+            && self.tokens.is_empty()
+            && self.tokens_dropped.is_empty()
+            && self.prekeys.is_empty()
+            && self.memberships.is_empty()
+            && self.peers.is_empty()
+            && !self.outbound_dirty
+            && self.seen_enc_new.is_empty()
+            && !self.seen_enc_cleared
+    }
+
+    /// Merge a previously drained journal back after a failed persist, so no
+    /// change is lost. Ack high-water marks merge to the max.
+    pub fn absorb(&mut self, other: Self) {
+        self.server_identity |= other.server_identity;
+        self.identities.extend(other.identities);
+        self.mailbox_new.extend(other.mailbox_new);
+        for (owner, upto) in other.mailbox_acked {
+            self.mailbox_acked
+                .entry(owner)
+                .and_modify(|u| *u = (*u).max(upto))
+                .or_insert(upto);
+        }
+        self.mailbox_dropped.extend(other.mailbox_dropped);
+        self.mailbox_cleared.extend(other.mailbox_cleared);
+        self.tokens.extend(other.tokens);
+        self.tokens_dropped.extend(other.tokens_dropped);
+        self.prekeys.extend(other.prekeys);
+        self.memberships.extend(other.memberships);
+        self.peers.extend(other.peers);
+        self.outbound_dirty |= other.outbound_dirty;
+        self.seen_enc_new.extend(other.seen_enc_new);
+        self.seen_enc_cleared |= other.seen_enc_cleared;
+    }
+
+    pub fn ack_upto(&mut self, owner: IdentityId, upto: u64) {
+        self.mailbox_acked
+            .entry(owner)
+            .and_modify(|u| *u = (*u).max(upto))
+            .or_insert(upto);
+    }
 }
 
 impl HomeServer {
@@ -135,6 +228,7 @@ impl HomeServer {
             seen_enc: HashMap::new(),
             peers: HashMap::new(),
             outbound: Vec::new(),
+            dirty: HomeDirty::default(),
         }
     }
 
@@ -158,6 +252,7 @@ impl HomeServer {
             },
         )
         .expect("rebind bundle");
+        self.dirty.server_identity = true;
     }
 
     pub fn advertise(host: impl Into<String>, s2s_port: u16) -> Self {
@@ -198,6 +293,7 @@ impl HomeServer {
             seen_enc: HashMap::new(),
             peers: HashMap::new(),
             outbound: Vec::new(),
+            dirty: HomeDirty::default(),
         }
     }
 
@@ -231,6 +327,16 @@ impl HomeServer {
         self.peers.get(&id).is_some_and(|p| p.refused)
     }
 
+    /// Record a federation peer change (bundle, refused flag, S2S counters).
+    pub(crate) fn mark_peer_dirty(&mut self, peer: ServerId) {
+        self.dirty.peers.insert(peer);
+    }
+
+    /// Record an outbound-queue change (push, remove, backoff).
+    pub(crate) fn mark_outbound_dirty(&mut self) {
+        self.dirty.outbound_dirty = true;
+    }
+
     /// Alice → her home: same-server ingest, else outbound queue.
     pub fn enqueue(&mut self, outer: OuterEnvelope) -> Result<Enqueue> {
         if outer.destination_server_id == self.server_id() {
@@ -243,6 +349,7 @@ impl HomeServer {
             next_attempt: self.now,
             backoff_secs: 1,
         });
+        self.dirty.outbound_dirty = true;
         Ok(Enqueue::Queued)
     }
 
@@ -266,6 +373,9 @@ impl HomeServer {
     pub fn defer_outbound(&mut self, until: u64) {
         for row in &mut self.outbound {
             row.next_attempt = until;
+        }
+        if !self.outbound.is_empty() {
+            self.dirty.outbound_dirty = true;
         }
     }
 
@@ -300,6 +410,7 @@ impl HomeServer {
                 disabled: false,
             },
         );
+        self.dirty.identities.insert(identity_id);
         Ok(())
     }
 
@@ -386,6 +497,7 @@ impl HomeServer {
                 },
             );
         }
+        self.dirty.identities.insert(identity_id);
         if binding.server_id != self.server_id() {
             self.disable_mailbox(identity_id);
         }
@@ -396,6 +508,7 @@ impl HomeServer {
         let list = self.memberships.entry(identity_id).or_default();
         if !list.contains(&group_id) {
             list.push(group_id);
+            self.dirty.memberships.insert(identity_id);
         }
     }
 
@@ -414,11 +527,13 @@ impl HomeServer {
         if let Some(row) = self.directory.get_mut(&stmt.identity_id) {
             row.revocation = Some(stmt.clone());
         }
+        self.dirty.identities.insert(stmt.identity_id);
         self.disable_mailbox(stmt.identity_id);
-        Ok(self
-            .memberships
-            .remove(&stmt.identity_id)
-            .unwrap_or_default())
+        let removed = self.memberships.remove(&stmt.identity_id);
+        if removed.is_some() {
+            self.dirty.memberships.insert(stmt.identity_id);
+        }
+        Ok(removed.unwrap_or_default())
     }
 
     pub fn mailbox_disabled(&self, owner: IdentityId) -> bool {
@@ -464,6 +579,7 @@ impl HomeServer {
                 reserved_prekey: None,
             },
         ));
+        self.dirty.tokens.insert(token);
         Ok(())
     }
 
@@ -479,6 +595,7 @@ impl HomeServer {
                 window_count: 0,
             },
         ));
+        self.dirty.tokens.insert(token);
         Ok(token)
     }
 
@@ -491,6 +608,7 @@ impl HomeServer {
     ) -> Result<[u8; KEY_LEN]> {
         let new = self.mint_contact_capability(owner)?;
         let grace = self.now + CONTACT_GRACE_SECS;
+        let mut touched_old = false;
         if confirm {
             if let Some(TokenKind::Contact {
                 mailbox,
@@ -500,8 +618,12 @@ impl HomeServer {
             {
                 if *mailbox == owner {
                     *grace_until = Some(grace);
+                    touched_old = true;
                 }
             }
+        }
+        if touched_old {
+            self.dirty.tokens.insert(old);
         }
         Ok(new)
     }
@@ -509,6 +631,7 @@ impl HomeServer {
     pub fn publish_prekey(&mut self, owner: IdentityId, blob: Vec<u8>) -> Result<()> {
         self.require_mailbox(owner)?;
         self.prekeys.entry(owner).or_default().push_back(blob);
+        self.dirty.prekeys.insert(owner);
         Ok(())
     }
 
@@ -543,6 +666,8 @@ impl HomeServer {
         {
             *reserved_prekey = Some(blob.clone());
         }
+        self.dirty.prekeys.insert(mailbox);
+        self.dirty.tokens.insert(token);
         Ok(blob)
     }
 
@@ -556,8 +681,12 @@ impl HomeServer {
         let seq = self.append_inner(inner)?;
         if self.seen_enc.len() >= HPKE_ENC_WINDOW {
             self.seen_enc.clear();
+            self.dirty.seen_enc_cleared = true;
         }
         self.seen_enc.insert(enc, seq);
+        if !self.dirty.seen_enc_cleared {
+            self.dirty.seen_enc_new.push(enc);
+        }
         Ok(seq)
     }
 
@@ -587,6 +716,8 @@ impl HomeServer {
                 inner,
             },
         );
+        self.dirty.mailbox_new.push((mailbox, seq));
+        self.dirty.identities.insert(mailbox);
         self.burn_if_share(&token);
         self.gc_mailbox(mailbox);
         Ok(seq)
@@ -621,6 +752,9 @@ impl HomeServer {
             .ok_or(ServerError::OwnerAuth)?;
         let up_to = auth.cursor;
         let drop: Vec<u64> = box_.rows.keys().copied().filter(|&s| s <= up_to).collect();
+        if drop.is_empty() {
+            return Ok(());
+        }
         for seq in drop {
             if let Some(row) = box_.rows.remove(&seq) {
                 box_.bytes = box_.bytes.saturating_sub(
@@ -631,6 +765,8 @@ impl HomeServer {
                 );
             }
         }
+        self.dirty.ack_upto(owner, up_to);
+        self.dirty.identities.insert(owner);
         Ok(())
     }
 
@@ -666,10 +802,16 @@ impl HomeServer {
                 *mailbox != owner
             }
         });
+        self.dirty.mailbox_cleared.insert(owner);
+        self.dirty.tokens_dropped.insert(owner);
+        self.dirty.prekeys.insert(owner);
+        self.dirty.identities.insert(owner);
     }
 
     fn authorize_append(&mut self, token: &[u8; KEY_LEN]) -> Result<IdentityId> {
         let now = self.now;
+        let key = *token;
+        let mut touched_window = false;
         let mailbox = match self.token_mut(token) {
             Some(TokenKind::Share {
                 mailbox,
@@ -695,6 +837,7 @@ impl HomeServer {
                     return Err(ServerError::Denied);
                 }
                 *window_count += 1;
+                touched_window = true;
                 *mailbox
             }
             _ => {
@@ -702,6 +845,9 @@ impl HomeServer {
                 return Err(ServerError::Denied);
             }
         };
+        if touched_window {
+            self.dirty.tokens.insert(key);
+        }
         if self.mailboxes.get(&mailbox).is_some_and(|m| m.disabled) {
             return Err(ServerError::Denied);
         }
@@ -710,7 +856,10 @@ impl HomeServer {
 
     fn burn_if_share(&mut self, token: &[u8; KEY_LEN]) {
         if let Some(TokenKind::Share { burned, .. }) = self.token_mut(token) {
-            *burned = true;
+            if !*burned {
+                *burned = true;
+                self.dirty.tokens.insert(*token);
+            }
         }
     }
 
@@ -727,14 +876,21 @@ impl HomeServer {
             .filter(|(_, r)| r.expires_at <= now || now.saturating_sub(r.received_at) > max_age)
             .map(|(s, _)| *s)
             .collect();
-        for seq in expired {
-            remove_row(box_, seq);
+        let mut dropped: Vec<(IdentityId, u64)> =
+            expired.into_iter().map(|s| (owner, s)).collect();
+        for (_, seq) in &dropped {
+            remove_row(box_, *seq);
         }
         while box_.bytes > max_bytes {
             let Some((&oldest, _)) = box_.rows.iter().next() else {
                 break;
             };
             remove_row(box_, oldest);
+            dropped.push((owner, oldest));
+        }
+        if !dropped.is_empty() {
+            self.dirty.mailbox_dropped.extend(dropped);
+            self.dirty.identities.insert(owner);
         }
     }
 

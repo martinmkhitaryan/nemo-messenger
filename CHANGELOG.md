@@ -8,6 +8,22 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.1.1] - 2026-09-30
+
+### Fixed
+
+- Home-server Postgres persistence is incremental instead of rewriting all
+  tables on every request. Each mutating request previously ran a full
+  `TRUNCATE` + row-by-row re-`INSERT` (~350 ms with a few thousand rows),
+  and a chat message costs ~10 such requests, so receives took ~2 s against
+  a live server. Endpoints now journal what they changed in memory and the
+  write-through persist issues only the affected statements (single-row
+  upserts/deletes, batched multi-row inserts), with a no-op fast path when
+  nothing changed. Measured on the reference deploy: `fetch_now` ~2.1 s to
+  ~85 ms, `send_text` ~750 ms to ~40 ms, `register` ~8.5 s to ~0.35 s.
+  No wire or schema change; crash-reload semantics unchanged
+  (`crates/nemo-server/tests/persist.rs` covers multi-round reloads).
+
 ## [0.1.0] - 2026-09-28
 
 First release. Rust core + self-hostable home server + Compose clients
