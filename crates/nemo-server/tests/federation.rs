@@ -6,7 +6,7 @@ use nemo_wire::envelope::{InnerEnvelope, MessageType, PaddedMessage, TtlBucket};
 use nemo_wire::hpke::seal_to_server;
 use nemo_wire::ids::KEY_LEN;
 use nemo_wire::{identity_id, MailboxOwnerAuth, SigningKey};
-use rand::RngCore;
+use rand::Rng;
 
 fn wrap(
     dest_pk: &[u8; KEY_LEN],
@@ -14,7 +14,7 @@ fn wrap(
     body: Vec<u8>,
 ) -> nemo_wire::OuterEnvelope {
     let mut idem = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut idem);
+    rand::rng().fill_bytes(&mut idem);
     let inner = InnerEnvelope {
         delivery_capability: capability,
         ttl_bucket: TtlBucket::DEFAULT,
@@ -25,7 +25,7 @@ fn wrap(
 }
 
 fn register(home: &mut HomeServer) -> (SigningKey, [u8; KEY_LEN]) {
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let id = identity_id(&sk.verifying_key().to_bytes());
     home.register(id, sk.verifying_key().to_bytes()).unwrap();
     (sk, id)
@@ -124,7 +124,7 @@ fn sign_rotate_updates_pin() {
     let mut a = HomeServer::new();
     let mut b = HomeServer::new();
     pin_each_other(&mut a, &mut b).unwrap();
-    let new = SigningKey::generate(&mut rand::rngs::OsRng);
+    let new = SigningKey::generate(&mut rand::rng());
     let rotate = b.sign_rotate(new.verifying_key().to_bytes(), 1).unwrap();
     apply_sign_rotate(&mut a, b.server_id(), &rotate).unwrap();
     assert_eq!(

@@ -10,7 +10,7 @@ use nemo_wire::{
     HomeServerBinding, MailboxOwnerAuth, RemoveBundle, RevocationStatement, SigningKey,
     INTRO_TTL_30_MIN,
 };
-use rand::RngCore;
+use rand::Rng;
 
 fn wrap(
     dest_pk: &[u8; KEY_LEN],
@@ -24,7 +24,7 @@ fn wrap(
         ttl_bucket: ttl,
         idempotency_token: {
             let mut t = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         padded_message: PaddedMessage::pad(type_, body).unwrap(),
@@ -33,7 +33,7 @@ fn wrap(
 }
 
 fn register(home: &mut HomeServer) -> (SigningKey, [u8; KEY_LEN]) {
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let id = identity_id(&sk.verifying_key().to_bytes());
     home.register(id, sk.verifying_key().to_bytes()).unwrap();
     (sk, id)
@@ -129,7 +129,7 @@ fn owner_fetch_ack_not_capability() {
     .unwrap();
 
     let ts = home.now;
-    let stranger = SigningKey::generate(&mut rand::rngs::OsRng);
+    let stranger = SigningKey::generate(&mut rand::rng());
     let bad = auth(&stranger, id, 0, 16, ts);
     assert!(home.fetch(id, &bad, ts).is_err());
 
@@ -247,8 +247,8 @@ fn group_fanout_and_remove() {
     let alice_cap = alice_home.mint_contact_capability(alice_id).unwrap();
     let bob_cap = bob_home.mint_contact_capability(bob_id).unwrap();
 
-    let alice_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let bob_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let alice_group_sk = SigningKey::generate(&mut rand::rng());
+    let bob_group_sk = SigningKey::generate(&mut rand::rng());
     let mut host = GroupHost::new();
     let created = host
         .create_group(
@@ -390,8 +390,8 @@ fn hpke_enc_replay_returns_original_seq() {
 #[test]
 fn forged_invite_is_rejected() {
     let mut host = GroupHost::new();
-    let alice_sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let stranger = SigningKey::generate(&mut rand::rngs::OsRng);
+    let alice_sk = SigningKey::generate(&mut rand::rng());
+    let stranger = SigningKey::generate(&mut rand::rng());
     let created = host
         .create_group(
             alice_sk.verifying_key().to_bytes(),
@@ -418,7 +418,7 @@ fn forged_invite_is_rejected() {
 #[test]
 fn pending_join_expires_with_invite() {
     let mut host = GroupHost::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let created = host
         .create_group(
             sk.verifying_key().to_bytes(),
@@ -453,7 +453,7 @@ fn pending_join_expires_with_invite() {
 #[test]
 fn group_file_reserve_upload_fetch() {
     let mut host = GroupHost::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let created = host
         .create_group(
             sk.verifying_key().to_bytes(),
@@ -537,7 +537,7 @@ fn signed_card(home: &HomeServer, sk: &SigningKey, rev_pk: [u8; 32], seq: u64) -
         revocation_public_key: rev_pk,
         share_token: {
             let mut t = [0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         binding,
@@ -547,8 +547,8 @@ fn signed_card(home: &HomeServer, sk: &SigningKey, rev_pk: [u8; 32], seq: u64) -
 #[test]
 fn discovery_register_and_fetch() {
     let mut home = HomeServer::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let rev = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
+    let rev = SigningKey::generate(&mut rand::rng());
     let card = signed_card(&home, &sk, rev.verifying_key().to_bytes(), 1);
     let id = home.register_from_card(&card).unwrap();
     let row = home.discovery(id).unwrap();
@@ -587,8 +587,8 @@ fn enqueue_from_owner_requires_auth() {
 fn higher_binding_seq_disables_old_mailbox() {
     let mut old = HomeServer::new();
     let new = HomeServer::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let rev = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
+    let rev = SigningKey::generate(&mut rand::rng());
     let rev_pk = rev.verifying_key().to_bytes();
     let card = signed_card(&old, &sk, rev_pk, 1);
     let id = old.register_from_card(&card).unwrap();
@@ -625,11 +625,11 @@ fn higher_binding_seq_disables_old_mailbox() {
 fn revocation_wipes_and_hosts_append() {
     let mut home = HomeServer::new();
     let mut host = GroupHost::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let rev = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
+    let rev = SigningKey::generate(&mut rand::rng());
     let card = signed_card(&home, &sk, rev.verifying_key().to_bytes(), 1);
     let id = home.register_from_card(&card).unwrap();
-    let group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let group_sk = SigningKey::generate(&mut rand::rng());
     let created = host
         .create_group(
             group_sk.verifying_key().to_bytes(),

@@ -7,7 +7,6 @@ use hpke::{
     aead::ChaCha20Poly1305, kdf::HkdfSha256, kem::X25519HkdfSha256, Deserializable,
     Kem as KemTrait, OpModeR, OpModeS, Serializable,
 };
-use rand_core::{OsRng, UnwrapErr};
 
 use crate::envelope::{InnerEnvelope, OuterEnvelope};
 use crate::error::{Result, WireError};
@@ -39,7 +38,7 @@ pub struct HpkeKeypair {
 
 impl HpkeKeypair {
     pub fn generate() -> Self {
-        let (sk, pk) = Kem::gen_keypair(&mut UnwrapErr(OsRng));
+        let (sk, pk) = Kem::gen_keypair_with_rng(&mut rand::rng());
         let public = copy_fixed(pk.to_bytes().as_slice()).expect("x25519 pk");
         let secret = copy_fixed(sk.to_bytes().as_slice()).expect("x25519 sk");
         Self { public, secret }
@@ -64,13 +63,13 @@ pub fn seal(
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
     let pk = PublicKey::from_bytes(recipient_pk).map_err(|_| WireError::Hpke("recipient pk"))?;
-    let (enc, ct) = hpke::single_shot_seal::<Aead, Kdf, Kem, _>(
+    let (enc, ct) = hpke::single_shot_seal_with_rng::<Aead, Kdf, Kem>(
         &OpModeS::Base,
         &pk,
         INFO,
         plaintext,
         &aad(destination_server_id),
-        &mut UnwrapErr(OsRng),
+        &mut rand::rng(),
     )
     .map_err(|_| WireError::Hpke("seal"))?;
     let enc_bytes = enc.to_bytes();

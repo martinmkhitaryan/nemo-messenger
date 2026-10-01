@@ -6,7 +6,7 @@
 
 use nemo_wire::envelope::{MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::KEY_LEN;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::error::Result;
 use crate::mailbox;
@@ -213,7 +213,7 @@ fn uniform(min: u64, max: u64) -> u64 {
     }
     let span = max - min + 1;
     let mut b = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut b);
+    rand::rng().fill_bytes(&mut b);
     min + (u64::from_le_bytes(b) % span)
 }
 

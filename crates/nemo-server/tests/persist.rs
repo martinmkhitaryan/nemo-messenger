@@ -15,7 +15,7 @@ use nemo_wire::{
     AttachmentReserve, AttachmentSizeBucket, ContactCard, GroupInvite, HomeServerBinding,
     MailboxOwnerAuth, OuterEnvelope, RevocationStatement, SigningKey,
 };
-use rand::RngCore;
+use rand::Rng;
 
 const NOW: u64 = 1_700_000_100;
 
@@ -25,7 +25,7 @@ fn env_url() -> Option<String> {
 
 fn seal_for(home: &HomeServer, cap: [u8; KEY_LEN], body: Vec<u8>) -> OuterEnvelope {
     let mut t = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut t);
+    rand::rng().fill_bytes(&mut t);
     let inner = InnerEnvelope {
         delivery_capability: cap,
         ttl_bucket: TtlBucket::DEFAULT,
@@ -58,7 +58,7 @@ fn register_card(
     )
     .unwrap();
     let mut share = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut share);
+    rand::rng().fill_bytes(&mut share);
     let card = ContactCard {
         identity_public_key: pk,
         revocation_public_key: rev_pk,
@@ -73,7 +73,7 @@ fn register_card(
 async fn flow_survives_reload(pool: &sqlx::PgPool) {
     let mut home = HomeServer::advertise("pg-test".to_string(), 8443);
     let mut groups = GroupHost::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let pk = sk.verifying_key().to_bytes();
     let id = identity_id(&pk);
     home.register(id, pk).unwrap();
@@ -115,8 +115,8 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
     let mut home = HomeServer::advertise("pg-test-rounds".to_string(), 8443);
     let mut groups = GroupHost::new();
 
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let rev_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
+    let rev_sk = SigningKey::generate(&mut rand::rng());
     let rev_pk = rev_sk.verifying_key().to_bytes();
     let pk = sk.verifying_key().to_bytes();
     let (card, id) = register_card(&mut home, &sk, rev_pk);
@@ -156,7 +156,7 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
 
     // Invite lifecycle + fanout refresh: covers invites/pending/cred writes.
     let mut nonce = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let invite = GroupInvite::sign(&sk, created.group_id.0, nonce, 1800, None).unwrap();
     groups
         .store_invite(created.group_id, &created.cred, &invite)
@@ -205,7 +205,7 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
     let reserve = AttachmentReserve {
         fetch_token: {
             let mut t = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         size_bucket: AttachmentSizeBucket::A1,
@@ -267,7 +267,7 @@ async fn flow_clean_persist_is_noop(pool: &sqlx::PgPool) {
 async fn flow_queues_and_windows(pool: &sqlx::PgPool) {
     let mut home = HomeServer::advertise("pg-test-queues".to_string(), 8443);
     let mut groups = GroupHost::new();
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let pk = sk.verifying_key().to_bytes();
     let id = identity_id(&pk);
     home.register(id, pk).unwrap();
@@ -288,13 +288,13 @@ async fn flow_queues_and_windows(pool: &sqlx::PgPool) {
 
     // Remote-destined envelope sits in the outbound queue across reloads.
     let mut dest = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut dest);
+    rand::rng().fill_bytes(&mut dest);
     let inner = InnerEnvelope {
         delivery_capability: contact,
         ttl_bucket: TtlBucket::DEFAULT,
         idempotency_token: {
             let mut t = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         padded_message: PaddedMessage::pad(MessageType::DoubleRatchet, vec![9]).unwrap(),

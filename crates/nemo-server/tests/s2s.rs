@@ -6,7 +6,7 @@ use nemo_wire::envelope::{InnerEnvelope, MessageType, PaddedMessage, TtlBucket};
 use nemo_wire::hpke::seal_to_server;
 use nemo_wire::ids::KEY_LEN;
 use nemo_wire::{identity_id, MailboxOwnerAuth, SigningKey};
-use rand::RngCore;
+use rand::Rng;
 use tokio::net::TcpListener;
 
 fn wrap(
@@ -15,7 +15,7 @@ fn wrap(
     body: Vec<u8>,
 ) -> nemo_wire::OuterEnvelope {
     let mut idem = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut idem);
+    rand::rng().fill_bytes(&mut idem);
     let inner = InnerEnvelope {
         delivery_capability: capability,
         ttl_bucket: TtlBucket::DEFAULT,
@@ -26,7 +26,7 @@ fn wrap(
 }
 
 fn register(home: &mut HomeServer) -> (SigningKey, [u8; KEY_LEN]) {
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let id = identity_id(&sk.verifying_key().to_bytes());
     home.register(id, sk.verifying_key().to_bytes()).unwrap();
     (sk, id)

@@ -18,7 +18,7 @@ use nemo_wire::prekey::SignedPrekey;
 use nemo_wire::revocation::RevocationStatement;
 use nemo_wire::InviteeProof;
 use nemo_wire::{fingerprint, identity_id, MailboxOwnerAuth, SigningKey, VerifyingKey};
-use rand::RngCore;
+use rand::Rng;
 use rand09::TryRngCore;
 
 use crate::bundle;
@@ -53,8 +53,8 @@ pub struct Installation {
 
 impl Installation {
     pub fn create() -> Result<(Self, RevocationExport)> {
-        let identity = SigningKey::generate(&mut rand::rngs::OsRng);
-        let revocation = SigningKey::generate(&mut rand::rngs::OsRng);
+        let identity = SigningKey::generate(&mut rand::rng());
+        let revocation = SigningKey::generate(&mut rand::rng());
         let mnemonic = Mnemonic::from_entropy(&revocation.to_bytes())
             .map_err(|_| CoreError::Mnemonic)?
             .to_string();
@@ -66,7 +66,7 @@ impl Installation {
         let mut rng = rand09::rngs::OsRng.unwrap_err();
         let libsignal_id = IdentityKeyPair::generate(&mut rng);
         let mut rid = [0u8; 4];
-        rand::rngs::OsRng.fill_bytes(&mut rid);
+        rand::rng().fill_bytes(&mut rid);
         let registration_id = u32::from_le_bytes(rid).max(1);
         let id = identity_id(&identity.verifying_key().to_bytes());
         let address = ProtocolAddress::new(hex_bytes(&id), bundle::device_id());
@@ -200,7 +200,7 @@ impl Installation {
         expires_at: u64,
     ) -> Result<ContactCard> {
         let mut share_token = [0u8; KEY_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut share_token);
+        rand::rng().fill_bytes(&mut share_token);
         self.binding_seq += 1;
         self.card_with_share(server_hpke_public_key, host, expires_at, share_token)
     }

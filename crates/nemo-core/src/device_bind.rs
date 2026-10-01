@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "android"))]
 use nemo_wire::ids;
 #[cfg(not(target_os = "android"))]
-use rand::RngCore;
+use rand::Rng;
 
 use crate::error::{CoreError, Result};
 use crate::vault::KEY_LEN;
@@ -98,7 +98,7 @@ fn os_secret(salt: &[u8], create: bool) -> Result<[u8; KEY_LEN]> {
         return Err(CoreError::VaultLocked);
     }
     let mut secret = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    rand::rng().fill_bytes(&mut secret);
     let _ = keyring_store(salt, &secret);
     write_file(&path, &secret)?;
     Ok(secret)

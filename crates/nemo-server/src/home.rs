@@ -11,7 +11,7 @@ use nemo_wire::{
 };
 
 use crate::group::GroupId;
-use rand::RngCore;
+use rand::Rng;
 use subtle::ConstantTimeEq;
 
 use crate::error::{Result, ServerError};
@@ -201,7 +201,7 @@ impl HomeDirty {
 impl HomeServer {
     pub fn new() -> Self {
         let hpke = HpkeKeypair::generate();
-        let sign = SigningKey::generate(&mut rand::rngs::OsRng);
+        let sign = SigningKey::generate(&mut rand::rng());
         let bundle = ServerBundle::sign(
             &sign,
             ServerBundle {
@@ -958,7 +958,7 @@ fn envelope_expiry(now: u64, ttl: TtlBucket, max_age: u64) -> u64 {
 
 pub(crate) fn random_token() -> [u8; KEY_LEN] {
     let mut t = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut t);
+    rand::rng().fill_bytes(&mut t);
     t
 }
 

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use rand::RngCore;
+use rand::Rng;
 use rtc::interceptor::Registry;
 use rtc::media::Sample;
 use rtc::rtp_transceiver::rtp_sender::{
@@ -221,7 +221,7 @@ impl Call {
         let pc: Arc<dyn PeerConnection> = Arc::new(pc);
 
         let mut ssrc_bytes = [0u8; 4];
-        rand::rngs::OsRng.fill_bytes(&mut ssrc_bytes);
+        rand::rng().fill_bytes(&mut ssrc_bytes);
         let ssrc = u32::from_be_bytes(ssrc_bytes);
         let codec = RTCRtpCodec {
             mime_type: MIME_OPUS.into(),
@@ -231,20 +231,23 @@ impl Call {
             rtcp_feedback: vec![],
         };
         let track = Arc::new(
-            TrackLocalStaticSample::new(MediaStreamTrack::new(
-                "nemo-audio".into(),
-                "nemo-opus".into(),
-                "nemo".into(),
-                RtpCodecKind::Audio,
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(ssrc),
+            TrackLocalStaticSample::new(
+                std::time::Instant::now(),
+                MediaStreamTrack::new(
+                    "nemo-audio".into(),
+                    "nemo-opus".into(),
+                    "nemo".into(),
+                    RtpCodecKind::Audio,
+                    vec![RTCRtpEncodingParameters {
+                        rtp_coding_parameters: RTCRtpCodingParameters {
+                            ssrc: Some(ssrc),
+                            ..Default::default()
+                        },
+                        codec,
                         ..Default::default()
-                    },
-                    codec,
-                    ..Default::default()
-                }],
-            ))
+                    }],
+                ),
+            )
             .map_err(call_err)?,
         );
         pc.add_track(Arc::clone(&track) as Arc<dyn TrackLocal>)
@@ -379,8 +382,11 @@ impl Call {
     pub async fn send_silence_frames(&self, n: usize) -> Result<()> {
         let sample = Sample {
             data: Bytes::from_static(OPUS_SILENCE),
+            timestamp: std::time::Instant::now(),
             duration: Duration::from_millis(20),
-            ..Default::default()
+            packet_timestamp: 0,
+            prev_dropped_packets: 0,
+            prev_padding_packets: 0,
         };
         for _ in 0..n {
             if self.events.closed.load(Ordering::SeqCst) {
@@ -421,8 +427,11 @@ impl Call {
             };
             let sample = Sample {
                 data: payload,
+                timestamp: std::time::Instant::now(),
                 duration: Duration::from_millis(20),
-                ..Default::default()
+                packet_timestamp: 0,
+                prev_dropped_packets: 0,
+                prev_padding_packets: 0,
             };
             self.track
                 .write_sample(self.ssrc, OPUS_PT, &sample, &[])

@@ -12,7 +12,7 @@ use nemo_wire::{
     AttachmentReserve, AttachmentSizeBucket, ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite,
     HomeServerBinding, MailboxOwnerAuth, ServerBundle, SigningKey, INTRO_TTL_30_MIN,
 };
-use rand::RngCore;
+use rand::Rng;
 use tower::ServiceExt;
 
 fn unix_now() -> u64 {
@@ -37,12 +37,12 @@ fn signed_card(server_id: [u8; KEY_LEN], hpke: [u8; KEY_LEN], sk: &SigningKey) -
     .unwrap();
     ContactCard {
         identity_public_key: sk.verifying_key().to_bytes(),
-        revocation_public_key: SigningKey::generate(&mut rand::rngs::OsRng)
+        revocation_public_key: SigningKey::generate(&mut rand::rng())
             .verifying_key()
             .to_bytes(),
         share_token: {
             let mut t = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         binding,
@@ -63,7 +63,7 @@ fn wrap(dest_pk: &[u8; KEY_LEN], capability: [u8; KEY_LEN]) -> OuterEnvelope {
         ttl_bucket: TtlBucket::DEFAULT,
         idempotency_token: {
             let mut t = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         padded_message: PaddedMessage::pad(MessageType::DoubleRatchet, vec![1, 2, 3]).unwrap(),
@@ -114,7 +114,7 @@ async fn bundle_is_cbor_not_json() {
 async fn register_discovery_prekey_mailbox_and_group() {
     let state = AppState::new();
     let home = state.home.lock().await;
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let card = signed_card(home.server_id(), home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     let hpke = home.hpke_public();
@@ -383,7 +383,7 @@ async fn register_and_contact(
     server_id: [u8; KEY_LEN],
     hpke: [u8; KEY_LEN],
 ) -> (SigningKey, [u8; KEY_LEN], [u8; KEY_LEN], [u8; KEY_LEN]) {
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let card = signed_card(server_id, hpke, &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     let (status, _, _) = call(
@@ -463,8 +463,8 @@ async fn group_invite_accept_admit_and_fanout() {
     let (alice_sk, _, alice_cap, hpke) = register_and_contact(app.clone(), server_id, hpke).await;
     let (bob_sk, _, bob_cap, _) = register_and_contact(app.clone(), server_id, hpke).await;
 
-    let alice_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let bob_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let alice_group_sk = SigningKey::generate(&mut rand::rng());
+    let bob_group_sk = SigningKey::generate(&mut rand::rng());
     let (gid, cred_id, cred_secret) = create_group_http(
         app.clone(),
         alice_group_sk.verifying_key().to_bytes(),
@@ -474,7 +474,7 @@ async fn group_invite_accept_admit_and_fanout() {
     .await;
 
     let mut nonce = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let gid_arr: [u8; KEY_LEN] = ids::copy_fixed(&gid).unwrap();
     let invite =
         GroupInvite::sign(&alice_group_sk, gid_arr, nonce, INTRO_TTL_30_MIN, None).unwrap();
@@ -579,7 +579,7 @@ async fn group_file_upload_and_fetch() {
     let app = router(state.clone());
     let (sk, _, cap, hpke) = register_and_contact(app.clone(), server_id, hpke).await;
 
-    let group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let group_sk = SigningKey::generate(&mut rand::rng());
     let (gid, cred_id, cred_secret) =
         create_group_http(app.clone(), group_sk.verifying_key().to_bytes(), cap, hpke).await;
 
@@ -660,7 +660,7 @@ async fn wakeup_sends_empty_binary_on_ingest() {
     let addr = listener.local_addr().unwrap();
     let state = AppState::new();
     let home = state.home.lock().await;
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let card = signed_card(home.server_id(), home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     let hpke = home.hpke_public();
@@ -726,7 +726,7 @@ async fn wakeup_sends_empty_binary_on_ingest() {
 async fn turn_creds_are_ephemeral_and_not_identity() {
     let state = AppState::new();
     let home = state.home.lock().await;
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let card = signed_card(home.server_id(), home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     drop(home);
@@ -784,7 +784,7 @@ async fn turn_creds_are_ephemeral_and_not_identity() {
 async fn post_binding_higher_seq_disables_mailbox() {
     let state = AppState::new();
     let home = state.home.lock().await;
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     let card = signed_card(home.server_id(), home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     drop(home);
@@ -802,13 +802,13 @@ async fn post_binding_higher_seq_disables_mailbox() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     let mut other_hpke = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut other_hpke);
+    rand::rng().fill_bytes(&mut other_hpke);
     let moved = ContactCard {
         identity_public_key: card.identity_public_key,
         revocation_public_key: card.revocation_public_key,
         share_token: {
             let mut t = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut t);
+            rand::rng().fill_bytes(&mut t);
             t
         },
         binding: HomeServerBinding::sign(
@@ -838,9 +838,9 @@ async fn post_binding_higher_seq_disables_mailbox() {
     let row = state.home.lock().await.discovery(id).unwrap();
     assert_eq!(row.binding.seq, 2);
 
-    let stranger = SigningKey::generate(&mut rand::rngs::OsRng);
+    let stranger = SigningKey::generate(&mut rand::rng());
     let mut ghost_hpke = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut ghost_hpke);
+    rand::rng().fill_bytes(&mut ghost_hpke);
     let ghost = signed_card(ids::server_id(&ghost_hpke), ghost_hpke, &stranger);
     let (status, _, _) = call(
         app,

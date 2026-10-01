@@ -500,11 +500,10 @@ mod tests {
     use super::*;
     use crate::envelope::{MessageType, PaddedMessage};
     use crate::hpke::HpkeKeypair;
-    use rand::rngs::OsRng;
 
     #[test]
     fn remove_bundle_roundtrip_and_opaque_commit() {
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         let bundle = RemoveBundle::sign(&sk, [0xab; 32], vec![0, 1, 0, 2]).unwrap();
         bundle.verify_sidecar(&sk.verifying_key()).unwrap();
         let body = bundle.encode().unwrap();
@@ -516,8 +515,8 @@ mod tests {
 
     #[test]
     fn signing_key_replace() {
-        let current = SigningKey::generate(&mut OsRng);
-        let new = SigningKey::generate(&mut OsRng);
+        let current = SigningKey::generate(&mut rand::rng());
+        let new = SigningKey::generate(&mut rand::rng());
         let msg = SigningKeyReplace::sign(&current, new.verifying_key().to_bytes()).unwrap();
         msg.verify(&current.verifying_key()).unwrap();
         assert!(msg.verify(&new.verifying_key()).is_err());
@@ -538,7 +537,7 @@ mod tests {
     #[test]
     fn server_bundle_matches_hpke_id() {
         let hpke = HpkeKeypair::generate();
-        let sign_sk = SigningKey::generate(&mut OsRng);
+        let sign_sk = SigningKey::generate(&mut rand::rng());
         let bundle = ServerBundle::sign(
             &sign_sk,
             ServerBundle {
@@ -586,7 +585,7 @@ mod tests {
 
     #[test]
     fn mailbox_owner_freshness() {
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         let now = 1_700_000_000;
         let auth = MailboxOwnerAuth::sign(&sk, vec![1, 2, 3], 0, 64, now).unwrap();
         auth.verify(&sk.verifying_key(), now).unwrap();

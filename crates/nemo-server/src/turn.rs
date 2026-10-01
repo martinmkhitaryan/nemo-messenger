@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
+use rand::Rng;
 use ring::hmac;
 
 use nemo_wire::ids;
@@ -24,7 +24,7 @@ pub fn issue() -> TurnCred {
         .unwrap_or(0);
     let expiry = now.saturating_add(TURN_TTL_SECS);
     let mut nonce = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let username = format!("{expiry}:{}", ids::to_hex(&nonce));
     let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret());
     let tag = hmac::sign(&key, username.as_bytes());
@@ -48,7 +48,7 @@ fn secret() -> &'static [u8] {
                 }
             }
             let mut b = vec![0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut b);
+            rand::rng().fill_bytes(&mut b);
             b
         })
         .as_slice()

@@ -166,11 +166,10 @@ fn validate_host(host: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
 
     fn sample_card(now: u64) -> (SigningKey, ContactCard) {
-        let sk = SigningKey::generate(&mut OsRng);
-        let rev = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
+        let rev = SigningKey::generate(&mut rand::rng());
         let hpke = [9u8; 32];
         let binding = HomeServerBinding::sign(
             &sk,
@@ -209,7 +208,7 @@ mod tests {
     #[test]
     fn rejects_server_id_mismatch() {
         let now = 1_700_000_000;
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         let hpke = [9u8; 32];
         let err = HomeServerBinding::sign(
             &sk,

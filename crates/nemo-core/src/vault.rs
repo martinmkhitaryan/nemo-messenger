@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use argon2::{Algorithm, Argon2, Params, Version};
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::ids;
-use rand::RngCore;
+use rand::Rng;
 use rusqlite::{params, Connection};
 
 use crate::error::{CoreError, Result};
@@ -82,7 +82,7 @@ impl Vault {
         }
 
         let mut salt = [0u8; SALT_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
         write_kdf(&kdf_path, KDF_VERSION, &salt, M_COST_KIB, T_COST, P_COST)?;
         let mut key = derive(passphrase, &salt, M_COST_KIB, T_COST, P_COST)?;
         let mut device = crate::device_bind::resolve(device_secret, &salt, true)?;

@@ -6,7 +6,7 @@ use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::TtlBucket;
 use nemo_wire::ids::{copy_fixed, IdentityId, ServerId, KEY_LEN};
 use nemo_wire::PROTOCOL_VERSION;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::error::{CoreError, Result};
 
@@ -158,7 +158,7 @@ pub fn invite_ttl_bucket() -> TtlBucket {
 
 pub fn random_call_id() -> [u8; CALL_ID_LEN] {
     let mut id = [0u8; CALL_ID_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut id);
+    rand::rng().fill_bytes(&mut id);
     id
 }
 

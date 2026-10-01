@@ -227,14 +227,13 @@ internal object VaultStores {
  * are off the shell neither sends marks nor displays others' (WhatsApp
  * rule), so the lookup short-circuits to zero and ticks cap at delivered.
  */
-internal fun readUpToOf(store: NemoVaultStore, enabled: Boolean): (String) -> ULong =
-    { id ->
-        if (!enabled) {
-            0UL
-        } else {
-            runCatching { store.client.readUpto(id) }.getOrDefault(0UL)
-        }
+internal fun readUpToOf(store: NemoVaultStore, enabled: Boolean): (String) -> ULong = { id ->
+    if (!enabled) {
+        0UL
+    } else {
+        runCatching { store.client.readUpto(id) }.getOrDefault(0UL)
     }
+}
 
 /**
  * Subscribes the Home UI to the single [NemoVaultStore] owner. Lives here

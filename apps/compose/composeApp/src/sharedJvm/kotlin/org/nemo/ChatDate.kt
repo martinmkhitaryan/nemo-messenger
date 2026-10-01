@@ -193,8 +193,7 @@ internal fun floatingPushForPos(floatingTop: Float, floatingHeight: Float, activ
  * Programmatic animations (pin-to-bottom on send/receive, jump-to-latest)
  * also raise `isScrollInProgress` but must never summon the pill.
  */
-internal fun pillArmedForScroll(isScrollInProgress: Boolean, autoScrolling: Boolean): Boolean =
-    isScrollInProgress && !autoScrolling
+internal fun pillArmedForScroll(isScrollInProgress: Boolean, autoScrolling: Boolean): Boolean = isScrollInProgress && !autoScrolling
 
 /**
  * Dedicated state for the floating date.

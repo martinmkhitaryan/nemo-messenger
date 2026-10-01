@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use nemo_core::app::{decode_text, encode_text};
 use nemo_core::identity::Installation;
 use nemo_core::{CoreError, Vault};
-use rand::RngCore;
+use rand::Rng;
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     futures::executor::block_on(f)
@@ -12,7 +12,7 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 
 fn temp_dir() -> PathBuf {
     let mut n = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut n);
+    rand::rng().fill_bytes(&mut n);
     let dir = std::env::temp_dir().join(format!("nemo-vault-{}", nemo_wire::ids::to_hex(&n)));
     fs::create_dir_all(&dir).unwrap();
     dir

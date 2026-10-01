@@ -3,13 +3,13 @@
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, PaddedMessage, TtlBucket};
 use nemo_wire::hpke::{self, HpkeKeypair};
 use nemo_wire::ids::KEY_LEN;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::error::{CoreError, Result};
 
 pub fn random_token() -> [u8; KEY_LEN] {
     let mut t = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut t);
+    rand::rng().fill_bytes(&mut t);
     t
 }
 

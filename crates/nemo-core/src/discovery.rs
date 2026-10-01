@@ -129,7 +129,6 @@ mod tests {
     use super::*;
     use nemo_wire::ids;
     use nemo_wire::SigningKey;
-    use rand::rngs::OsRng;
 
     fn signed_pair(sk: &SigningKey, rev_pk: [u8; 32], seq: u64) -> (ContactCard, Discovery) {
         let hpke = [9u8; 32];
@@ -162,8 +161,8 @@ mod tests {
 
     #[test]
     fn resolve_uses_discovery_binding() {
-        let sk = SigningKey::generate(&mut OsRng);
-        let rev = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
+        let rev = SigningKey::generate(&mut rand::rng());
         let (card, discovery) = signed_pair(&sk, rev.verifying_key().to_bytes(), 1);
         let b = resolve_contact(&card, &discovery, 1_700_000_000).unwrap();
         assert_eq!(b.seq, 1);
@@ -171,8 +170,8 @@ mod tests {
 
     #[test]
     fn lower_seq_is_downgrade() {
-        let sk = SigningKey::generate(&mut OsRng);
-        let rev = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
+        let rev = SigningKey::generate(&mut rand::rng());
         let pk = rev.verifying_key().to_bytes();
         let (card, _) = signed_pair(&sk, pk, 2);
         let (_, discovery) = signed_pair(&sk, pk, 1);
@@ -184,8 +183,8 @@ mod tests {
 
     #[test]
     fn revoked_refuses_session_and_admit() {
-        let sk = SigningKey::generate(&mut OsRng);
-        let rev = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
+        let rev = SigningKey::generate(&mut rand::rng());
         let (card, mut discovery) = signed_pair(&sk, rev.verifying_key().to_bytes(), 1);
         discovery.revocation =
             Some(RevocationStatement::sign(&rev, card.identity_id(), 1_700_000_000).unwrap());
@@ -202,8 +201,8 @@ mod tests {
 
     #[test]
     fn pin_accepts_higher_seq() {
-        let sk = SigningKey::generate(&mut OsRng);
-        let rev = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
+        let rev = SigningKey::generate(&mut rand::rng());
         let pk = rev.verifying_key().to_bytes();
         let (card, _) = signed_pair(&sk, pk, 1);
         let (_, newer) = signed_pair(&sk, pk, 3);

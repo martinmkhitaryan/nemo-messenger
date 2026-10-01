@@ -84,12 +84,11 @@ impl RevocationStatement {
 mod tests {
     use super::*;
     use crate::ids::identity_id;
-    use rand::rngs::OsRng;
 
     #[test]
     fn revocation_roundtrip() {
-        let identity_sk = SigningKey::generate(&mut OsRng);
-        let rev_sk = SigningKey::generate(&mut OsRng);
+        let identity_sk = SigningKey::generate(&mut rand::rng());
+        let rev_sk = SigningKey::generate(&mut rand::rng());
         let id = identity_id(&identity_sk.verifying_key().to_bytes());
         let stmt = RevocationStatement::sign(&rev_sk, id, 1_700_000_000).unwrap();
         stmt.verify(&rev_sk.verifying_key()).unwrap();

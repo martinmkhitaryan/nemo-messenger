@@ -4,7 +4,7 @@ use nemo_core::mailbox;
 use nemo_core::{CoreError, Installation};
 use nemo_wire::envelope::{MessageType, TtlBucket, INNER_TEXT_OUTER};
 use nemo_wire::hpke::HpkeKeypair;
-use rand::RngCore;
+use rand::Rng;
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     futures::executor::block_on(f)
@@ -19,7 +19,7 @@ fn two_member_group() -> (Installation, Installation, Group, Group) {
     let (bob, _) = Installation::create().unwrap();
     let mut alice_group = alice.create_group().unwrap();
     let mut reserved = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut reserved);
+    rand::rng().fill_bytes(&mut reserved);
     let pending = bob.prepare_join(reserved).unwrap();
     let (_commit, welcome) = alice_group
         .admit(alice.mls_provider(), &pending.key_package)
@@ -135,7 +135,7 @@ fn welcome_through_mailbox() {
     let cap = random_capability();
     let mut alice_group = alice.create_group().unwrap();
     let mut reserved = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut reserved);
+    rand::rng().fill_bytes(&mut reserved);
     let pending = bob.prepare_join(reserved).unwrap();
     let (_commit, welcome) = alice_group
         .admit(alice.mls_provider(), &pending.key_package)

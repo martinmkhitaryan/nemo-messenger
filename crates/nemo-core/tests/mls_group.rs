@@ -3,11 +3,11 @@ use std::time::{Duration, SystemTime};
 use nemo_core::group::{Group, UPDATE_BEFORE_SEND, UPDATE_ON_ONLINE};
 use nemo_core::CoreError;
 use nemo_core::{decode_text, encode_text, Installation, Vault};
-use rand::RngCore;
+use rand::Rng;
 
 fn random_credential_id() -> [u8; 32] {
     let mut id = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut id);
+    rand::rng().fill_bytes(&mut id);
     id
 }
 
@@ -121,7 +121,7 @@ fn vault_reopen_keeps_mls_epoch() {
     assert_eq!(decode_text(&opened).unwrap(), (1, "before save".into()));
 
     let mut n = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut n);
+    rand::rng().fill_bytes(&mut n);
     let dir = std::env::temp_dir().join(format!("nemo-mls-vault-{}", nemo_wire::ids::to_hex(&n)));
     std::fs::create_dir_all(&dir).unwrap();
     let vault = Vault::create(&dir, "correct horse", &alice).unwrap();

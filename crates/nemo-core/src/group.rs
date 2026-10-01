@@ -18,7 +18,7 @@ use nemo_wire::{identity_id, GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_M
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
-use rand::RngCore;
+use rand::Rng;
 use tls_codec::{Deserialize, Serialize};
 
 use crate::error::{mls_err, CoreError, Result};
@@ -245,10 +245,10 @@ impl Group {
         bind_identity_pk: Option<&[u8; KEY_LEN]>,
     ) -> Result<GroupInvite> {
         let mut nonce = [0u8; KEY_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rng().fill_bytes(&mut nonce);
         let bind = bind_identity_pk.map(|pk| {
             let mut salt = [0u8; KEY_LEN];
-            rand::rngs::OsRng.fill_bytes(&mut salt);
+            rand::rng().fill_bytes(&mut salt);
             (nemo_wire::invitee_binding(pk, &salt), salt)
         });
         Ok(GroupInvite::sign(
@@ -400,6 +400,10 @@ impl Group {
             ProcessedMessageContent::ApplicationMessage(_) => Err(CoreError::Mls(
                 "handshake path got an application message".into(),
             )),
+            ProcessedMessageContent::OwnPendingCommit
+            | ProcessedMessageContent::OwnPrivateMessage => Err(CoreError::Mls(
+                "own pending commit/private message in handshake path".into(),
+            )),
         }
     }
 
@@ -408,10 +412,11 @@ impl Group {
             .with_capabilities(nemo_capabilities())
             .with_extensions(self.own_leaf_extensions()?)
             .build();
-        let (msg, _welcome, _info) = self
+        let bundle = self
             .mls
             .self_update(provider, &self.mls_signer, params)
             .map_err(mls_err)?;
+        let msg = bundle.into_commit();
         self.mls.merge_pending_commit(provider).map_err(mls_err)?;
         self.last_own_update = SystemTime::now();
         serialize_msg(&msg)
@@ -511,7 +516,7 @@ impl Group {
         Ok(())
     }
 
-    fn own_leaf_extensions(&self) -> Result<Extensions> {
+    fn own_leaf_extensions(&self) -> Result<Extensions<LeafNode>> {
         leaf_extensions(
             self.credential_id,
             self.group_signing.verifying_key().to_bytes(),
@@ -778,7 +783,7 @@ impl PendingJoin {
     }
 }
 
-fn group_create_config(leaf: Extensions) -> Result<MlsGroupCreateConfig> {
+fn group_create_config(leaf: Extensions<LeafNode>) -> Result<MlsGroupCreateConfig> {
     Ok(MlsGroupCreateConfig::builder()
         .ciphersuite(CIPHERSUITE)
         .use_ratchet_tree_extension(true)
@@ -805,7 +810,7 @@ fn nemo_capabilities() -> Capabilities {
 fn leaf_extensions(
     credential_id: [u8; KEY_LEN],
     group_signing_pk: [u8; KEY_LEN],
-) -> Result<Extensions> {
+) -> Result<Extensions<LeafNode>> {
     Extensions::from_vec(vec![
         Extension::Unknown(CREDENTIAL_ID_EXT, UnknownExtension(credential_id.to_vec())),
         Extension::Unknown(
@@ -831,7 +836,7 @@ fn credential_with_key(identity_pk: [u8; KEY_LEN], signer: &SignatureKeyPair) ->
 }
 
 fn new_group_keys(provider: &MlsProvider) -> Result<(SignatureKeyPair, SigningKey)> {
-    let group_signing = SigningKey::generate(&mut rand::rngs::OsRng);
+    let group_signing = SigningKey::generate(&mut rand::rng());
     let mls_signer = SignatureKeyPair::from_raw(
         CIPHERSUITE.signature_algorithm(),
         group_signing.to_bytes().to_vec(),
@@ -843,7 +848,7 @@ fn new_group_keys(provider: &MlsProvider) -> Result<(SignatureKeyPair, SigningKe
 
 fn random_id() -> [u8; KEY_LEN] {
     let mut id = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut id);
+    rand::rng().fill_bytes(&mut id);
     id
 }
 
@@ -859,15 +864,8 @@ fn decode_mls(bytes: &[u8]) -> Result<MlsMessageIn> {
     MlsMessageIn::tls_deserialize(&mut cur).map_err(mls_err)
 }
 
-fn extension_bytes(exts: &Extensions, ty: u16) -> Option<Vec<u8>> {
-    for ext in exts.iter() {
-        if let Extension::Unknown(t, UnknownExtension(data)) = ext {
-            if *t == ty {
-                return Some(data.clone());
-            }
-        }
-    }
-    None
+fn extension_bytes(exts: &Extensions<LeafNode>, ty: u16) -> Option<Vec<u8>> {
+    exts.unknown(ty).map(|e| e.0.clone())
 }
 
 fn is_reinit(proposal: &QueuedProposal) -> bool {

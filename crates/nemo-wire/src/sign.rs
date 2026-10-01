@@ -51,11 +51,10 @@ pub fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
 
     #[test]
     fn context_mismatch_fails() {
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         let pk = sk.verifying_key();
         let payload = b"hello";
         let sig = sign(&sk, REVOCATION, payload).unwrap();

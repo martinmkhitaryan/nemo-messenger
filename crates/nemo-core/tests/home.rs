@@ -14,7 +14,7 @@ use nemo_core::{CoreError, Vault};
 use nemo_server::{router, AppState};
 use nemo_wire::envelope::{MessageType, TtlBucket};
 use nemo_wire::{GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_MIN};
-use rand::RngCore;
+use rand::Rng;
 use tower::ServiceExt;
 
 fn now_unix() -> u64 {
@@ -172,8 +172,8 @@ async fn group_join_through_home_client() {
     let alice_cap = alice.mint_contact().await.unwrap();
     let bob_cap = bob.mint_contact().await.unwrap();
 
-    let alice_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
-    let bob_group_sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let alice_group_sk = SigningKey::generate(&mut rand::rng());
+    let bob_group_sk = SigningKey::generate(&mut rand::rng());
     let created = alice
         .create_group(alice_group_sk.verifying_key().to_bytes(), alice_cap)
         .await
@@ -288,7 +288,7 @@ async fn wakeup_empty_binary_then_fetch() {
 
 fn temp_vault() -> std::path::PathBuf {
     let mut n = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut n);
+    rand::rng().fill_bytes(&mut n);
     let dir = std::env::temp_dir().join(format!("nemo-home-vault-{}", nemo_wire::ids::to_hex(&n)));
     std::fs::create_dir_all(&dir).unwrap();
     dir

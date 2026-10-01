@@ -293,12 +293,11 @@ pub fn verify_bound_invite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
 
     #[test]
     fn invite_admit_proof_roundtrip() {
-        let member = SigningKey::generate(&mut OsRng);
-        let invitee = SigningKey::generate(&mut OsRng);
+        let member = SigningKey::generate(&mut rand::rng());
+        let invitee = SigningKey::generate(&mut rand::rng());
         let mut nonce = [0u8; 32];
         nonce[0] = 9;
         let salt = [3u8; 32];
@@ -325,7 +324,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_ttl_and_unbound_as_bound() {
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         assert!(GroupInvite::sign(&sk, [1u8; 32], [2u8; 32], 99, None).is_err());
         let invite = GroupInvite::sign(&sk, [1u8; 32], [2u8; 32], INTRO_TTL_5_MIN, None).unwrap();
         let proof = InviteeProof::sign(&sk, [1u8; 32], [2u8; 32]).unwrap();

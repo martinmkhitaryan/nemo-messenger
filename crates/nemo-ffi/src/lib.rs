@@ -2937,13 +2937,13 @@ fn send_app(
 mod tests {
     use super::*;
     use nemo_server::{router, AppState};
-    use rand::RngCore;
+    use rand::Rng;
     use std::fs;
     use std::sync::Arc;
 
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
         let mut n = [0u8; 8];
-        rand::rngs::OsRng.fill_bytes(&mut n);
+        rand::rng().fill_bytes(&mut n);
         let dir = std::env::temp_dir().join(format!("{prefix}-{}", ids::to_hex(&n)));
         fs::create_dir_all(&dir).unwrap();
         dir

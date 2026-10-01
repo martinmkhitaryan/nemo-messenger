@@ -82,14 +82,13 @@ impl SignedPrekey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
 
     #[test]
     fn prekey_blob_is_opaque() {
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         let blob = SignedPrekey::sign(&sk, 7, vec![0xde, 0xad]).unwrap();
         blob.verify(&sk.verifying_key()).unwrap();
-        let other = SigningKey::generate(&mut OsRng);
+        let other = SigningKey::generate(&mut rand::rng());
         assert!(blob.verify(&other.verifying_key()).is_err());
         assert_eq!(SignedPrekey::decode(&blob.encode()).unwrap(), blob);
     }
