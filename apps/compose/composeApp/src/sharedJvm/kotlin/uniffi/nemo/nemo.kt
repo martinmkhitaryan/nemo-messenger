@@ -59,7 +59,7 @@ open class RustBuffer : Structure() {
     companion object {
         internal fun alloc(size: ULong = 0UL) = uniffiRustCall() { status ->
             // Note: need to convert the size to a `Long` value to make this work with JVM.
-            UniffiLib.INSTANCE.ffi_nemo_ffi_rustbuffer_alloc(size.toLong(), status)
+            UniffiLib.ffi_nemo_ffi_rustbuffer_alloc(size.toLong(), status)
         }.also {
             if(it.data == null) {
                throw RuntimeException("RustBuffer.alloc() returned null data pointer (size=${size})")
@@ -75,49 +75,15 @@ open class RustBuffer : Structure() {
         }
 
         internal fun free(buf: RustBuffer.ByValue) = uniffiRustCall() { status ->
-            UniffiLib.INSTANCE.ffi_nemo_ffi_rustbuffer_free(buf, status)
+            UniffiLib.ffi_nemo_ffi_rustbuffer_free(buf, status)
         }
     }
 
     @Suppress("TooGenericExceptionThrown")
     fun asByteBuffer() =
-        this.data?.getByteBuffer(0, this.len.toLong())?.also {
+        this.data?.getByteBuffer(0, this.len)?.also {
             it.order(ByteOrder.BIG_ENDIAN)
         }
-}
-
-/**
- * The equivalent of the `*mut RustBuffer` type.
- * Required for callbacks taking in an out pointer.
- *
- * Size is the sum of all values in the struct.
- *
- * @suppress
- */
-class RustBufferByReference : ByReference(16) {
-    /**
-     * Set the pointed-to `RustBuffer` to the given value.
-     */
-    fun setValue(value: RustBuffer.ByValue) {
-        // NOTE: The offsets are as they are in the C-like struct.
-        val pointer = getPointer()
-        pointer.setLong(0, value.capacity)
-        pointer.setLong(8, value.len)
-        pointer.setPointer(16, value.data)
-    }
-
-    /**
-     * Get a `RustBuffer.ByValue` from this reference.
-     */
-    fun getValue(): RustBuffer.ByValue {
-        val pointer = getPointer()
-        val value = RustBuffer.ByValue()
-        value.writeField("capacity", pointer.getLong(0))
-        value.writeField("len", pointer.getLong(8))
-        value.writeField("data", pointer.getLong(16))
-
-        return value
-    }
 }
 
 // This is a helper for safely passing byte references into the rust code.
@@ -132,6 +98,43 @@ internal open class ForeignBytes : Structure() {
     @JvmField var data: Pointer? = null
 
     class ByValue : ForeignBytes(), Structure.ByValue
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Only `lower` is valid — zero-copy byte buffers only flow foreign -> Rust,
+// and only in argument position. `lift`, `read`, `write`, and
+// `allocationSize` have no sound implementation here and all panic at
+// runtime. The `FfiConverter` interface is implemented so that the
+// compiler enforces the full method set (rather than relying on eyeball).
+//
+// The provided `ByteBuffer` MUST be direct — only direct buffers have a
+// stable native address that JNA can expose via `getDirectBufferPointer`.
+// The returned `ForeignBytes.ByValue` is only valid for the duration of
+// the FFI call; the Rust side treats it as a borrow.
+internal object FfiConverterByRefBytes : FfiConverter<java.nio.ByteBuffer, ForeignBytes.ByValue> {
+    override fun lower(value: java.nio.ByteBuffer): ForeignBytes.ByValue {
+        require(value.isDirect) { "UniFFI zero-copy &[u8] requires a direct ByteBuffer. Use ByteBuffer.allocateDirect()." }
+        val remaining = value.remaining()
+        val fb = ForeignBytes.ByValue()
+        fb.len = remaining
+        // Zero-length direct buffers: skip getDirectBufferPointer (platform-variable behavior)
+        // and pass null. The Rust side treats (null, 0) as &[].
+        fb.data = if (remaining == 0) null else com.sun.jna.Native.getDirectBufferPointer(value)
+        return fb
+    }
+
+    override fun lift(value: ForeignBytes.ByValue): java.nio.ByteBuffer =
+        error("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+
+    override fun read(buf: java.nio.ByteBuffer): java.nio.ByteBuffer =
+        error("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+
+    override fun write(value: java.nio.ByteBuffer, buf: java.nio.ByteBuffer): Unit =
+        error("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+
+    override fun allocationSize(value: java.nio.ByteBuffer): ULong =
+        error("ByRef bytes have no RustBuffer allocation size: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
 }
 /**
  * The FfiConverter interface handles converter types to and from the FFI
@@ -316,8 +319,9 @@ internal inline fun<T> uniffiTraitInterfaceCall(
     try {
         writeReturn(makeCall())
     } catch(e: kotlin.Exception) {
+        val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
         callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-        callStatus.error_buf = FfiConverterString.lower(e.toString())
+        callStatus.error_buf = FfiConverterString.lower(err)
     }
 }
 
@@ -334,26 +338,39 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
             callStatus.code = UNIFFI_CALL_ERROR
             callStatus.error_buf = lowerError(e)
         } else {
+            val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
             callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-            callStatus.error_buf = FfiConverterString.lower(e.toString())
+            callStatus.error_buf = FfiConverterString.lower(err)
         }
     }
 }
+// Initial value and increment amount for handles. 
+// These ensure that Kotlin-generated handles always have the lowest bit set
+private const val UNIFFI_HANDLEMAP_INITIAL = 1.toLong()
+private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
+
 // Map handles to objects
 //
 // This is used pass an opaque 64-bit handle representing a foreign object to the Rust code.
 internal class UniffiHandleMap<T: Any> {
     private val map = ConcurrentHashMap<Long, T>()
-    private val counter = java.util.concurrent.atomic.AtomicLong(0)
+    // Start 
+    private val counter = java.util.concurrent.atomic.AtomicLong(UNIFFI_HANDLEMAP_INITIAL)
 
     val size: Int
         get() = map.size
 
     // Insert a new object into the handle map and get a handle for it
     fun insert(obj: T): Long {
-        val handle = counter.getAndAdd(1)
+        val handle = counter.getAndAdd(UNIFFI_HANDLEMAP_DELTA)
         map.put(handle, obj)
         return handle
+    }
+
+    // Clone a handle, creating a new one
+    fun clone(handle: Long): Long {
+        val obj = map.get(handle) ?: throw InternalException("UniffiHandleMap.clone: Invalid handle")
+        return insert(obj)
     }
 
     // Get an object from the handle map
@@ -378,810 +395,609 @@ private fun findLibraryName(componentName: String): String {
     return "nemo_ffi"
 }
 
-private inline fun <reified Lib : Library> loadIndirect(
-    componentName: String
-): Lib {
-    return Native.load<Lib>(findLibraryName(componentName), Lib::class.java)
-}
-
 // Define FFI callback types
 internal interface UniffiRustFutureContinuationCallback : com.sun.jna.Callback {
     fun callback(`data`: Long,`pollResult`: Byte,)
 }
-internal interface UniffiForeignFutureFree : com.sun.jna.Callback {
+internal interface UniffiForeignFutureDroppedCallback : com.sun.jna.Callback {
     fun callback(`handle`: Long,)
 }
 internal interface UniffiCallbackInterfaceFree : com.sun.jna.Callback {
     fun callback(`handle`: Long,)
 }
+internal interface UniffiCallbackInterfaceClone : com.sun.jna.Callback {
+    fun callback(`handle`: Long,)
+    : Long
+}
 @Structure.FieldOrder("handle", "free")
-internal open class UniffiForeignFuture(
+internal open class UniffiForeignFutureDroppedCallbackStruct(
     @JvmField internal var `handle`: Long = 0.toLong(),
-    @JvmField internal var `free`: UniffiForeignFutureFree? = null,
+    @JvmField internal var `free`: UniffiForeignFutureDroppedCallback? = null,
 ) : Structure() {
     class UniffiByValue(
         `handle`: Long = 0.toLong(),
-        `free`: UniffiForeignFutureFree? = null,
-    ): UniffiForeignFuture(`handle`,`free`,), Structure.ByValue
+        `free`: UniffiForeignFutureDroppedCallback? = null,
+    ): UniffiForeignFutureDroppedCallbackStruct(`handle`,`free`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFuture) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureDroppedCallbackStruct) {
         `handle` = other.`handle`
         `free` = other.`free`
     }
 
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU8(
+internal open class UniffiForeignFutureResultU8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU8(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU8(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU8 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU8.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU8.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI8(
+internal open class UniffiForeignFutureResultI8(
     @JvmField internal var `returnValue`: Byte = 0.toByte(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Byte = 0.toByte(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI8(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI8(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI8) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI8) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI8 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI8.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI8.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU16(
+internal open class UniffiForeignFutureResultU16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU16(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU16(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU16 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU16.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU16.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI16(
+internal open class UniffiForeignFutureResultI16(
     @JvmField internal var `returnValue`: Short = 0.toShort(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Short = 0.toShort(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI16(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI16(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI16) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI16) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI16 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI16.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI16.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU32(
+internal open class UniffiForeignFutureResultU32(
     @JvmField internal var `returnValue`: Int = 0,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU32(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU32(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU32 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU32.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU32.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI32(
+internal open class UniffiForeignFutureResultI32(
     @JvmField internal var `returnValue`: Int = 0,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Int = 0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI32(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI32(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI32 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI32.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI32.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructU64(
+internal open class UniffiForeignFutureResultU64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructU64(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultU64(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructU64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultU64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteU64 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructU64.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultU64.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructI64(
+internal open class UniffiForeignFutureResultI64(
     @JvmField internal var `returnValue`: Long = 0.toLong(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Long = 0.toLong(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructI64(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultI64(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructI64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultI64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteI64 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructI64.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultI64.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructF32(
+internal open class UniffiForeignFutureResultF32(
     @JvmField internal var `returnValue`: Float = 0.0f,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Float = 0.0f,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructF32(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultF32(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructF32) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultF32) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteF32 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructF32.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultF32.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructF64(
+internal open class UniffiForeignFutureResultF64(
     @JvmField internal var `returnValue`: Double = 0.0,
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: Double = 0.0,
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructF64(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultF64(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructF64) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultF64) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteF64 : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructF64.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultF64.UniffiByValue,)
 }
 @Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructPointer(
-    @JvmField internal var `returnValue`: Pointer = Pointer.NULL,
-    @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-) : Structure() {
-    class UniffiByValue(
-        `returnValue`: Pointer = Pointer.NULL,
-        `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructPointer(`returnValue`,`callStatus`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructPointer) {
-        `returnValue` = other.`returnValue`
-        `callStatus` = other.`callStatus`
-    }
-
-}
-internal interface UniffiForeignFutureCompletePointer : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructPointer.UniffiByValue,)
-}
-@Structure.FieldOrder("returnValue", "callStatus")
-internal open class UniffiForeignFutureStructRustBuffer(
+internal open class UniffiForeignFutureResultRustBuffer(
     @JvmField internal var `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `returnValue`: RustBuffer.ByValue = RustBuffer.ByValue(),
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructRustBuffer(`returnValue`,`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultRustBuffer(`returnValue`,`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructRustBuffer) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultRustBuffer) {
         `returnValue` = other.`returnValue`
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteRustBuffer : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructRustBuffer.UniffiByValue,)
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultRustBuffer.UniffiByValue,)
 }
 @Structure.FieldOrder("callStatus")
-internal open class UniffiForeignFutureStructVoid(
+internal open class UniffiForeignFutureResultVoid(
     @JvmField internal var `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
 ) : Structure() {
     class UniffiByValue(
         `callStatus`: UniffiRustCallStatus.ByValue = UniffiRustCallStatus.ByValue(),
-    ): UniffiForeignFutureStructVoid(`callStatus`,), Structure.ByValue
+    ): UniffiForeignFutureResultVoid(`callStatus`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiForeignFutureStructVoid) {
+   internal fun uniffiSetValue(other: UniffiForeignFutureResultVoid) {
         `callStatus` = other.`callStatus`
     }
 
 }
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
-    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructVoid.UniffiByValue,)
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// For large crates we prevent `MethodTooLargeException` (see #2340)
-// N.B. the name of the extension is very misleading, since it is 
-// rather `InterfaceTooLargeException`, caused by too many methods 
-// in the interface for large crates.
-//
-// By splitting the otherwise huge interface into two parts
-// * UniffiLib 
-// * IntegrityCheckingUniffiLib (this)
-// we allow for ~2x as many methods in the UniffiLib interface.
-// 
-// The `ffi_uniffi_contract_version` method and all checksum methods are put 
-// into `IntegrityCheckingUniffiLib` and these methods are called only once,
-// when the library is loaded.
-internal interface IntegrityCheckingUniffiLib : Library {
-    // Integrity check functions only
-    fun uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_acked_upto(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_add_contact(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_admit_join(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_answer_call(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_call_state(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_create_group(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_delete_message(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_disappear_secs(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_end_call(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_expire_now(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_inbox(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_list_groups(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_mark_read(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_preview_contact(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_react(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_read_upto(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_register(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_reject_call(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_save(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_send_file(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_send_text(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_set_nickname(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_start_call(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic(
-): Short
-fun uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup(
-): Short
-fun uniffi_nemo_ffi_checksum_constructor_nemoclient_create(
-): Short
-fun uniffi_nemo_ffi_checksum_constructor_nemoclient_create_at(
-): Short
-fun uniffi_nemo_ffi_checksum_constructor_nemoclient_open_at(
-): Short
-fun ffi_nemo_ffi_uniffi_contract_version(
-): Int
-
+    fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
 
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
-internal interface UniffiLib : Library {
-    companion object {
-        internal val INSTANCE: UniffiLib by lazy {
-            val componentName = "nemo"
-            // For large crates we prevent `MethodTooLargeException` (see #2340)
-            // N.B. the name of the extension is very misleading, since it is 
-            // rather `InterfaceTooLargeException`, caused by too many methods 
-            // in the interface for large crates.
-            //
-            // By splitting the otherwise huge interface into two parts
-            // * UniffiLib (this)
-            // * IntegrityCheckingUniffiLib
-            // And all checksum methods are put into `IntegrityCheckingUniffiLib`
-            // we allow for ~2x as many methods in the UniffiLib interface.
-            // 
-            // Thus we first load the library with `loadIndirect` as `IntegrityCheckingUniffiLib`
-            // so that we can (optionally!) call `uniffiCheckApiChecksums`...
-            loadIndirect<IntegrityCheckingUniffiLib>(componentName)
-                .also { lib: IntegrityCheckingUniffiLib ->
-                    uniffiCheckContractApiVersion(lib)
-                    uniffiCheckApiChecksums(lib)
-                }
-            // ... and then we load the library as `UniffiLib`
-            // N.B. we cannot use `loadIndirect` once and then try to cast it to `UniffiLib`
-            // => results in `java.lang.ClassCastException: com.sun.proxy.$Proxy cannot be cast to ...`
-            // error. So we must call `loadIndirect` twice. For crates large enough
-            // to trigger this issue, the performance impact is negligible, running on
-            // a macOS M1 machine the `loadIndirect` call takes ~50ms.
-            val lib = loadIndirect<UniffiLib>(componentName)
-            // No need to check the contract version and checksums, since 
-            // we already did that with `IntegrityCheckingUniffiLib` above.
-            // Loading of library with integrity check done.
-            lib
-        }
-        
-        // The Cleaner for the whole library
-        internal val CLEANER: UniffiCleaner by lazy {
-            UniffiCleaner.create()
-        }
+
+// For large crates we prevent `MethodTooLargeException` (see #2340)
+// N.B. the name of the extension is very misleading, since it is
+// rather `InterfaceTooLargeException`, caused by too many methods
+// in the interface for large crates.
+//
+// By splitting the otherwise huge interface into two parts
+// * UniffiLib (this)
+// * IntegrityCheckingUniffiLib
+// And all checksum methods are put into `IntegrityCheckingUniffiLib`
+// we allow for ~2x as many methods in the UniffiLib interface.
+//
+// Note: above all written when we used JNA's `loadIndirect` etc.
+// We now use JNA's "direct mapping" - unclear if same considerations apply exactly.
+internal object IntegrityCheckingUniffiLib {
+    init {
+        Native.register(IntegrityCheckingUniffiLib::class.java, findLibraryName(componentName = "nemo"))
+        uniffiCheckContractApiVersion(this)
+        uniffiCheckApiChecksums(this)
     }
 
-    // FFI functions
-    fun uniffi_nemo_ffi_fn_clone_nemoclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_nemo_ffi_fn_free_nemoclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_constructor_nemoclient_create(uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`deviceSecret`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`deviceSecret`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(`ptr`: Pointer,`inviteUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_acked_upto(`ptr`: Pointer,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun uniffi_nemo_ffi_fn_method_nemoclient_add_contact(`ptr`: Pointer,`cardOrUri`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_admit_join(`ptr`: Pointer,`joinRequestUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_answer_call(`ptr`: Pointer,`callIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_call_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_create_group(`ptr`: Pointer,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_delete_message(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`target`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_disappear_secs(`ptr`: Pointer,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun uniffi_nemo_ffi_fn_method_nemoclient_end_call(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_expire_now(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`tokenHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_inbox(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_list_groups(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_mark_read(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`upto`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`identityIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_preview_contact(`ptr`: Pointer,`cardOrUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_pull_playback_pcm(`ptr`: Pointer,`maxSamples`: Int,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(`ptr`: Pointer,`samples`: RustBuffer.ByValue,`sampleRate`: Int,`channels`: Int,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_react(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`target`: Long,`emoji`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_read_upto(`ptr`: Pointer,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun uniffi_nemo_ffi_fn_method_nemoclient_register(`ptr`: Pointer,`homeHttpsBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_reject_call(`ptr`: Pointer,`callIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`credentialIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_save(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_send_file(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`seconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_set_nickname(`ptr`: Pointer,`identityIdHex`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(`ptr`: Pointer,`mode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_nemo_ffi_fn_method_nemoclient_start_call(`ptr`: Pointer,`peerIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun ffi_nemo_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_nemo_ffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_nemo_ffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun ffi_nemo_ffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_nemo_ffi_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_u8(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_u8(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Byte
-fun ffi_nemo_ffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_i8(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_i8(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Byte
-fun ffi_nemo_ffi_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_u16(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_u16(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Short
-fun ffi_nemo_ffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_i16(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_i16(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Short
-fun ffi_nemo_ffi_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_u32(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_u32(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Int
-fun ffi_nemo_ffi_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_i32(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_i32(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Int
-fun ffi_nemo_ffi_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_u64(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_u64(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun ffi_nemo_ffi_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_i64(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_i64(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-fun ffi_nemo_ffi_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_f32(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_f32(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Float
-fun ffi_nemo_ffi_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_f64(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_f64(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Double
-fun ffi_nemo_ffi_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_pointer(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_pointer(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Pointer
-fun ffi_nemo_ffi_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_rust_buffer(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_rust_buffer(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun ffi_nemo_ffi_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_cancel_void(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_free_void(`handle`: Long,
-): Unit
-fun ffi_nemo_ffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
+    internal fun ensureInitialized() = Unit
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_acked_upto(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_add_contact(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_admit_join(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_answer_call(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_call_state(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_create_group(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_delete_message(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_disappear_secs(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_end_call(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_expire_now(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_inbox(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_list_groups(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_mark_read(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_preview_contact(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_react(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_read_upto(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_register(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_reject_call(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_save(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_send_file(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_send_text(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_set_nickname(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_start_call(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_constructor_nemoclient_create(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_constructor_nemoclient_create_at(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_constructor_nemoclient_open_at(
+    ): Int
+    external fun ffi_nemo_ffi_uniffi_contract_version(
+    ): Int
 
+        
+}
+
+internal object UniffiLib {
+    
+    // The Cleaner for the whole library
+    internal val CLEANER: UniffiCleaner by lazy {
+        UniffiCleaner.create()
+    }
+    
+
+    init {
+        Native.register(UniffiLib::class.java, findLibraryName(componentName = "nemo"))
+        
+    }
+
+    internal fun ensureInitialized() = Unit
+    external fun uniffi_nemo_ffi_fn_clone_nemoclient(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_free_nemoclient(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_constructor_nemoclient_create(uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`deviceSecret`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(`dir`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`deviceSecret`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(`ptr`: Long,`inviteUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_acked_upto(`ptr`: Long,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_add_contact(`ptr`: Long,`cardOrUri`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_admit_join(`ptr`: Long,`joinRequestUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_answer_call(`ptr`: Long,`callIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_call_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_create_group(`ptr`: Long,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_delete_message(`ptr`: Long,`convId`: RustBuffer.ByValue,`target`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_disappear_secs(`ptr`: Long,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_end_call(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_expire_now(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,`tokenHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_inbox(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_list_groups(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_mark_read(`ptr`: Long,`convId`: RustBuffer.ByValue,`upto`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,`identityIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_preview_contact(`ptr`: Long,`cardOrUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_pull_playback_pcm(`ptr`: Long,`maxSamples`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(`ptr`: Long,`samples`: RustBuffer.ByValue,`sampleRate`: Int,`channels`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_react(`ptr`: Long,`convId`: RustBuffer.ByValue,`target`: Long,`emoji`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_read_upto(`ptr`: Long,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_register(`ptr`: Long,`homeHttpsBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_reject_call(`ptr`: Long,`callIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,`credentialIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_save(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_send_file(`ptr`: Long,`peerIdHex`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_send_text(`ptr`: Long,`peerIdHex`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(`ptr`: Long,`convId`: RustBuffer.ByValue,`seconds`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_set_nickname(`ptr`: Long,`identityIdHex`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(`ptr`: Long,`mode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_start_call(`ptr`: Long,`peerIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun ffi_nemo_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_nemo_ffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_nemo_ffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun ffi_nemo_ffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_nemo_ffi_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_u8(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_u8(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_nemo_ffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_i8(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_i8(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
+    external fun ffi_nemo_ffi_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_u16(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_u16(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_nemo_ffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_i16(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_i16(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Short
+    external fun ffi_nemo_ffi_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_u32(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_u32(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_nemo_ffi_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_i32(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_i32(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
+    external fun ffi_nemo_ffi_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_u64(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_u64(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun ffi_nemo_ffi_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_i64(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_i64(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun ffi_nemo_ffi_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_f32(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_f32(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Float
+    external fun ffi_nemo_ffi_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_f64(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_f64(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Double
+    external fun ffi_nemo_ffi_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_rust_buffer(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_rust_buffer(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun ffi_nemo_ffi_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_cancel_void(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_free_void(`handle`: Long,
+    ): Unit
+    external fun ffi_nemo_ffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+
+        
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
     // Get the bindings contract version from our ComponentInterface
-    val bindings_contract_version = 29
+    val bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     val scaffolding_contract_version = lib.ffi_nemo_ffi_uniffi_contract_version()
     if (bindings_contract_version != scaffolding_contract_version) {
@@ -1190,145 +1006,145 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite() != 58462.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite() and 0xFFFF) != 39264) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_acked_upto() != 44781.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_acked_upto() and 0xFFFF) != 40870) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_add_contact() != 35738.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_add_contact() and 0xFFFF) != 12268) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_admit_join() != 8209.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_admit_join() and 0xFFFF) != 61556) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_answer_call() != 48612.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_answer_call() and 0xFFFF) != 47303) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_call_state() != 10726.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_call_state() and 0xFFFF) != 16303) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_create_group() != 37877.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_create_group() and 0xFFFF) != 7352) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_delete_message() != 33187.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_delete_message() and 0xFFFF) != 1090) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_disappear_secs() != 24410.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_disappear_secs() and 0xFFFF) != 42334) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_end_call() != 39164.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_end_call() and 0xFFFF) != 15225) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_expire_now() != 51495.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_expire_now() and 0xFFFF) != 2898) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file() != 52061.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_group_file() and 0xFFFF) != 54205) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now() != 43341.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_fetch_now() and 0xFFFF) != 28718) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint() != 51303.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_fingerprint() and 0xFFFF) != 49053) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids() != 62415.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids() and 0xFFFF) != 59161) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex() != 45632.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex() and 0xFFFF) != 46282) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_inbox() != 58219.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_inbox() and 0xFFFF) != 43708) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts() != 64862.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts() and 0xFFFF) != 63808) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() != 46878.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() and 0xFFFF) != 40598) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mark_read() != 54454.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mark_read() and 0xFFFF) != 42354) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite() != 61694.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite() and 0xFFFF) != 29837) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite() != 996.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite() and 0xFFFF) != 14399) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri() != 36588.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_share_uri() and 0xFFFF) != 11356) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_preview_contact() != 61487.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_preview_contact() and 0xFFFF) != 17017) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode() != 38096.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_privacy_mode() and 0xFFFF) != 18699) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm() != 2636.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm() and 0xFFFF) != 13569) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm() != 15853.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm() and 0xFFFF) != 8068) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_react() != 16594.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_react() and 0xFFFF) != 26674) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_read_upto() != 25671.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_read_upto() and 0xFFFF) != 56314) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp() != 14250.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp() and 0xFFFF) != 39699) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_register() != 63416.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_register() and 0xFFFF) != 58642) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_reject_call() != 9377.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_reject_call() and 0xFFFF) != 30414) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member() != 22502.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_remove_group_member() and 0xFFFF) != 22565) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_save() != 52281.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_save() and 0xFFFF) != 58115) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_file() != 61094.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_file() and 0xFFFF) != 49035) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file() != 6194.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_file() and 0xFFFF) != 9054) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text() != 28860.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_group_text() and 0xFFFF) != 27524) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_text() != 55458.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_send_text() and 0xFFFF) != 2466) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear() != 33112.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_disappear() and 0xFFFF) != 55493) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_nickname() != 53565.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_nickname() and 0xFFFF) != 13860) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode() != 15075.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_set_privacy_mode() and 0xFFFF) != 43358) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_start_call() != 26344.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_start_call() and 0xFFFF) != 46983) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic() != 40697.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic() and 0xFFFF) != 64557) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup() != 8888.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup() and 0xFFFF) != 37310) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create() != 13485.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create() and 0xFFFF) != 2380) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create_at() != 60682.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_create_at() and 0xFFFF) != 44265) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_open_at() != 1505.toShort()) {
+    if ((lib.uniffi_nemo_ffi_checksum_constructor_nemoclient_open_at() and 0xFFFF) != 7262) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1337,7 +1153,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
  * @suppress
  */
 public fun uniffiEnsureInitialized() {
-    UniffiLib.INSTANCE
+    // Call arbitrary methods on IntegrityCheckingUniffiLib and UniffiLib to ensure that
+    // their init blocks run. This ensures initialization across crates works as expected.
+    IntegrityCheckingUniffiLib.ensureInitialized()
+    UniffiLib.ensureInitialized()
 }
 
 // Async support
@@ -1404,11 +1223,22 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
     }
 
 /** 
+ * Placeholder object used to signal that we're constructing an interface with a FFI handle.
+ *
+ * This is the first argument for interface constructors that input a raw handle. It exists is that
+ * so we can avoid signature conflicts when an interface has a regular constructor than inputs a
+ * Long.
+ *
+ * @suppress
+ * */
+object UniffiWithHandle
+
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
  * */
-object NoPointer
+object NoHandle
 /**
  * The cleaner interface for Object finalization code to run.
  * This is the entry point to any implementation that we're using.
@@ -1643,21 +1473,18 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 }
 
 
-// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
-//
-// Each instance implements core operations for working with the Rust `Arc<T>` and the
-// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
 //
 // There's some subtlety here, because we have to be careful not to operate on a Rust
 // struct after it has been dropped, and because we must expose a public API for freeing
 // theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
 //
-//   * Each instance holds an opaque pointer to the underlying Rust struct.
-//     Method calls need to read this pointer from the object's state and pass it in to
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
 //     the Rust FFI.
 //
-//   * When an instance is no longer needed, its pointer should be passed to a
+//   * When an instance is no longer needed, its handle should be passed to a
 //     special destructor function provided by the Rust FFI, which will drop the
 //     underlying Rust struct.
 //
@@ -1682,13 +1509,13 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 //      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
 //         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
 //
-// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// If we try to implement this with mutual exclusion on access to the handle, there is the
 // possibility of a race between a method call and a concurrent call to `destroy`:
 //
-//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
-//      before it can pass the pointer over the FFI to Rust.
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
 //    * Thread B calls `destroy` and frees the underlying Rust struct.
-//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
 //      a use-after-free.
 //
 // One possible solution would be to use a `ReadWriteLock`, with each method call taking
@@ -1867,27 +1694,38 @@ public interface NemoClientInterface {
 open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
 {
 
-    constructor(pointer: Pointer) {
-        this.pointer = pointer
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     /**
+     * @suppress
+     *
      * This constructor can be used to instantiate a fake object. Only used for tests. Any
      * attempt to actually use an object constructed this way will fail as there is no
      * connected Rust object.
      */
     @Suppress("UNUSED_PARAMETER")
-    constructor(noPointer: NoPointer) {
-        this.pointer = null
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
     }
 
-    protected val pointer: Pointer?
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
 
     override fun destroy() {
         // Only allow a single call to this method.
@@ -1895,7 +1733,7 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -1905,7 +1743,7 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
         this.destroy()
     }
 
-    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
         // Check and increment the call counter, to keep the object alive.
         // This needs a compare-and-set retry loop in case of concurrent updates.
         do {
@@ -1917,42 +1755,52 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
                 throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
             }
         } while (! this.callCounter.compareAndSet(c, c + 1L))
-        // Now we can safely do the method call without the pointer being freed concurrently.
+        // Now we can safely do the method call without the handle being freed concurrently.
         try {
-            return block(this.uniffiClonePointer())
+            return block(this.uniffiCloneHandle())
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
 
     // Use a static inner class instead of a closure so as not to accidentally
     // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
         override fun run() {
-            pointer?.let { ptr ->
-                uniffiRustCall { status ->
-                    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_free_nemoclient(ptr, status)
-                }
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_nemo_ffi_fn_free_nemoclient(handle, status)
             }
         }
     }
 
-    fun uniffiClonePointer(): Pointer {
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
         return uniffiRustCall() { status ->
-            UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_clone_nemoclient(pointer!!, status)
+            UniffiLib.uniffi_nemo_ffi_fn_clone_nemoclient(handle, status)
         }
     }
 
     
     @Throws(FfiException::class)override fun `acceptGroupInvite`(`inviteUri`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(
-        it, FfiConverterString.lower(`inviteUri`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(
+        it,
+        
+        FfiConverterString.lower(`inviteUri`),_status)
 }
     }
     )
@@ -1967,10 +1815,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
      */
     @Throws(FfiException::class)override fun `ackedUpto`(`convId`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_acked_upto(
-        it, FfiConverterString.lower(`convId`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_acked_upto(
+        it,
+        
+        FfiConverterString.lower(`convId`),_status)
 }
     }
     )
@@ -1980,10 +1830,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `addContact`(`cardOrUri`: kotlin.String, `nickname`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_add_contact(
-        it, FfiConverterString.lower(`cardOrUri`),FfiConverterString.lower(`nickname`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_add_contact(
+        it,
+        
+        FfiConverterString.lower(`cardOrUri`),
+        FfiConverterString.lower(`nickname`),_status)
 }
     }
     )
@@ -1993,10 +1846,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `admitJoin`(`joinRequestUri`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_admit_join(
-        it, FfiConverterString.lower(`joinRequestUri`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_admit_join(
+        it,
+        
+        FfiConverterString.lower(`joinRequestUri`),_status)
 }
     }
     )
@@ -2006,10 +1861,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `answerCall`(`callIdHex`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_answer_call(
-        it, FfiConverterString.lower(`callIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_answer_call(
+        it,
+        
+        FfiConverterString.lower(`callIdHex`),_status)
 }
     }
     )
@@ -2019,10 +1876,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `callState`(): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_call_state(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_call_state(
+        it,
+        _status)
 }
     }
     )
@@ -2032,10 +1890,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `createGroup`(`nickname`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_create_group(
-        it, FfiConverterString.lower(`nickname`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_create_group(
+        it,
+        
+        FfiConverterString.lower(`nickname`),_status)
 }
     }
     )
@@ -2045,10 +1905,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `deleteMessage`(`convId`: kotlin.String, `target`: kotlin.ULong): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_delete_message(
-        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`target`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_delete_message(
+        it,
+        
+        FfiConverterString.lower(`convId`),
+        FfiConverterULong.lower(`target`),_status)
 }
     }
     )
@@ -2058,10 +1921,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `disappearSecs`(`convId`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_disappear_secs(
-        it, FfiConverterString.lower(`convId`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_disappear_secs(
+        it,
+        
+        FfiConverterString.lower(`convId`),_status)
 }
     }
     )
@@ -2071,10 +1936,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `endCall`(): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_end_call(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_end_call(
+        it,
+        _status)
 }
     }
     )
@@ -2084,10 +1950,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `expireNow`(): List<DisplayRow> {
             return FfiConverterSequenceTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_expire_now(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_expire_now(
+        it,
+        _status)
 }
     }
     )
@@ -2097,10 +1964,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `fetchGroupFile`(`groupIdHex`: kotlin.String, `tokenHex`: kotlin.String): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(
-        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`tokenHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_fetch_group_file(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),
+        FfiConverterString.lower(`tokenHex`),_status)
 }
     }
     )
@@ -2110,10 +1980,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `fetchNow`(): List<DisplayRow> {
             return FfiConverterSequenceTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_fetch_now(
+        it,
+        _status)
 }
     }
     )
@@ -2123,10 +1994,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `fingerprint`(): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(
+        it,
+        _status)
 }
     }
     )
@@ -2136,10 +2008,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `groupMemberIds`(`groupIdHex`: kotlin.String): List<kotlin.String> {
             return FfiConverterSequenceString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(
-        it, FfiConverterString.lower(`groupIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),_status)
 }
     }
     )
@@ -2149,10 +2023,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `identityIdHex`(): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(
+        it,
+        _status)
 }
     }
     )
@@ -2162,10 +2037,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `inbox`(): List<DisplayRow> {
             return FfiConverterSequenceTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_inbox(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_inbox(
+        it,
+        _status)
 }
     }
     )
@@ -2175,10 +2051,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `listContacts`(): List<ContactRow> {
             return FfiConverterSequenceTypeContactRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(
+        it,
+        _status)
 }
     }
     )
@@ -2188,10 +2065,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `listGroups`(): List<GroupRow> {
             return FfiConverterSequenceTypeGroupRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_list_groups(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_list_groups(
+        it,
+        _status)
 }
     }
     )
@@ -2207,10 +2085,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
      */
     @Throws(FfiException::class)override fun `markRead`(`convId`: kotlin.String, `upto`: kotlin.ULong)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mark_read(
-        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`upto`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_mark_read(
+        it,
+        
+        FfiConverterString.lower(`convId`),
+        FfiConverterULong.lower(`upto`),_status)
 }
     }
     
@@ -2219,10 +2100,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `mintBoundGroupInvite`(`groupIdHex`: kotlin.String, `identityIdHex`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(
-        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`identityIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),
+        FfiConverterString.lower(`identityIdHex`),_status)
 }
     }
     )
@@ -2232,10 +2116,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(
-        it, FfiConverterString.lower(`groupIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),_status)
 }
     }
     )
@@ -2245,10 +2131,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `mintShareUri`(): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_mint_share_uri(
+        it,
+        _status)
 }
     }
     )
@@ -2258,10 +2145,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `previewContact`(`cardOrUri`: kotlin.String): ContactPreview {
             return FfiConverterTypeContactPreview.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_preview_contact(
-        it, FfiConverterString.lower(`cardOrUri`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_preview_contact(
+        it,
+        
+        FfiConverterString.lower(`cardOrUri`),_status)
 }
     }
     )
@@ -2271,10 +2160,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `privacyMode`(): kotlin.String {
             return FfiConverterString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_privacy_mode(
+        it,
+        _status)
 }
     }
     )
@@ -2284,10 +2174,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `pullPlaybackPcm`(`maxSamples`: kotlin.UInt): List<kotlin.Short> {
             return FfiConverterSequenceShort.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_pull_playback_pcm(
-        it, FfiConverterUInt.lower(`maxSamples`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_pull_playback_pcm(
+        it,
+        
+        FfiConverterUInt.lower(`maxSamples`),_status)
 }
     }
     )
@@ -2300,10 +2192,14 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
      */
     @Throws(FfiException::class)override fun `pushCapturePcm`(`samples`: List<kotlin.Short>, `sampleRate`: kotlin.UInt, `channels`: kotlin.UInt)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(
-        it, FfiConverterSequenceShort.lower(`samples`),FfiConverterUInt.lower(`sampleRate`),FfiConverterUInt.lower(`channels`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(
+        it,
+        
+        FfiConverterSequenceShort.lower(`samples`),
+        FfiConverterUInt.lower(`sampleRate`),
+        FfiConverterUInt.lower(`channels`),_status)
 }
     }
     
@@ -2312,10 +2208,14 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `react`(`convId`: kotlin.String, `target`: kotlin.ULong, `emoji`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_react(
-        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`target`),FfiConverterString.lower(`emoji`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_react(
+        it,
+        
+        FfiConverterString.lower(`convId`),
+        FfiConverterULong.lower(`target`),
+        FfiConverterString.lower(`emoji`),_status)
 }
     }
     )
@@ -2329,10 +2229,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
      */
     @Throws(FfiException::class)override fun `readUpto`(`convId`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_read_upto(
-        it, FfiConverterString.lower(`convId`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_read_upto(
+        it,
+        
+        FfiConverterString.lower(`convId`),_status)
 }
     }
     )
@@ -2342,10 +2244,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `receivedRtp`(): kotlin.ULong {
             return FfiConverterULong.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(
+        it,
+        _status)
 }
     }
     )
@@ -2355,10 +2258,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `register`(`homeHttpsBase`: kotlin.String)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_register(
-        it, FfiConverterString.lower(`homeHttpsBase`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_register(
+        it,
+        
+        FfiConverterString.lower(`homeHttpsBase`),_status)
 }
     }
     
@@ -2367,10 +2272,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `rejectCall`(`callIdHex`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_reject_call(
-        it, FfiConverterString.lower(`callIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_reject_call(
+        it,
+        
+        FfiConverterString.lower(`callIdHex`),_status)
 }
     }
     )
@@ -2380,10 +2287,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `removeGroupMember`(`groupIdHex`: kotlin.String, `credentialIdHex`: kotlin.String)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(
-        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`credentialIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_remove_group_member(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),
+        FfiConverterString.lower(`credentialIdHex`),_status)
 }
     }
     
@@ -2392,10 +2302,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `save`()
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_save(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_save(
+        it,
+        _status)
 }
     }
     
@@ -2404,10 +2315,15 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `sendFile`(`peerIdHex`: kotlin.String, `name`: kotlin.String, `mime`: kotlin.String, `bytes`: kotlin.ByteArray): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_file(
-        it, FfiConverterString.lower(`peerIdHex`),FfiConverterString.lower(`name`),FfiConverterString.lower(`mime`),FfiConverterByteArray.lower(`bytes`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_send_file(
+        it,
+        
+        FfiConverterString.lower(`peerIdHex`),
+        FfiConverterString.lower(`name`),
+        FfiConverterString.lower(`mime`),
+        FfiConverterByteArray.lower(`bytes`),_status)
 }
     }
     )
@@ -2417,10 +2333,15 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `sendGroupFile`(`groupIdHex`: kotlin.String, `name`: kotlin.String, `mime`: kotlin.String, `bytes`: kotlin.ByteArray): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(
-        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`name`),FfiConverterString.lower(`mime`),FfiConverterByteArray.lower(`bytes`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_send_group_file(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),
+        FfiConverterString.lower(`name`),
+        FfiConverterString.lower(`mime`),
+        FfiConverterByteArray.lower(`bytes`),_status)
 }
     }
     )
@@ -2430,10 +2351,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `sendGroupText`(`groupIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(
-        it, FfiConverterString.lower(`groupIdHex`),FfiConverterString.lower(`text`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_send_group_text(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),
+        FfiConverterString.lower(`text`),_status)
 }
     }
     )
@@ -2443,10 +2367,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `sendText`(`peerIdHex`: kotlin.String, `text`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_send_text(
-        it, FfiConverterString.lower(`peerIdHex`),FfiConverterString.lower(`text`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_send_text(
+        it,
+        
+        FfiConverterString.lower(`peerIdHex`),
+        FfiConverterString.lower(`text`),_status)
 }
     }
     )
@@ -2456,10 +2383,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `setDisappear`(`convId`: kotlin.String, `seconds`: kotlin.ULong): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(
-        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`seconds`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_set_disappear(
+        it,
+        
+        FfiConverterString.lower(`convId`),
+        FfiConverterULong.lower(`seconds`),_status)
 }
     }
     )
@@ -2472,10 +2402,13 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
      */
     @Throws(FfiException::class)override fun `setNickname`(`identityIdHex`: kotlin.String, `nickname`: kotlin.String)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_set_nickname(
-        it, FfiConverterString.lower(`identityIdHex`),FfiConverterString.lower(`nickname`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_set_nickname(
+        it,
+        
+        FfiConverterString.lower(`identityIdHex`),
+        FfiConverterString.lower(`nickname`),_status)
 }
     }
     
@@ -2484,10 +2417,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `setPrivacyMode`(`mode`: kotlin.String)
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(
-        it, FfiConverterString.lower(`mode`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_set_privacy_mode(
+        it,
+        
+        FfiConverterString.lower(`mode`),_status)
 }
     }
     
@@ -2496,10 +2431,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `startCall`(`peerIdHex`: kotlin.String): DisplayRow {
             return FfiConverterTypeDisplayRow.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_start_call(
-        it, FfiConverterString.lower(`peerIdHex`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_start_call(
+        it,
+        
+        FfiConverterString.lower(`peerIdHex`),_status)
 }
     }
     )
@@ -2512,10 +2449,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
      */
     @Throws(FfiException::class)override fun `takeRevocationMnemonic`(): kotlin.String? {
             return FfiConverterOptionalString.lift(
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(
+        it,
+        _status)
 }
     }
     )
@@ -2525,10 +2463,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
     @Throws(FfiException::class)override fun `waitWakeup`()
         = 
-    callWithPointer {
+    callWithHandle {
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(
-        it, _status)
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(
+        it,
+        _status)
 }
     }
     
@@ -2537,12 +2476,16 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+
+
+    
     companion object {
         
     @Throws(FfiException::class) fun `create`(): NemoClient {
             return FfiConverterTypeNemoClient.lift(
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_constructor_nemoclient_create(
+    UniffiLib.uniffi_nemo_ffi_fn_constructor_nemoclient_create(
+    
         _status)
 }
     )
@@ -2559,8 +2502,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     @Throws(FfiException::class) fun `createAt`(`dir`: kotlin.String, `passphrase`: kotlin.String, `deviceSecret`: kotlin.ByteArray): NemoClient {
             return FfiConverterTypeNemoClient.lift(
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(
-        FfiConverterString.lower(`dir`),FfiConverterString.lower(`passphrase`),FfiConverterByteArray.lower(`deviceSecret`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_constructor_nemoclient_create_at(
+    
+        
+        FfiConverterString.lower(`dir`),
+        FfiConverterString.lower(`passphrase`),
+        FfiConverterByteArray.lower(`deviceSecret`),_status)
 }
     )
     }
@@ -2570,8 +2517,12 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     @Throws(FfiException::class) fun `openAt`(`dir`: kotlin.String, `passphrase`: kotlin.String, `deviceSecret`: kotlin.ByteArray): NemoClient {
             return FfiConverterTypeNemoClient.lift(
     uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(
-        FfiConverterString.lower(`dir`),FfiConverterString.lower(`passphrase`),FfiConverterByteArray.lower(`deviceSecret`),_status)
+    UniffiLib.uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(
+    
+        
+        FfiConverterString.lower(`dir`),
+        FfiConverterString.lower(`passphrase`),
+        FfiConverterByteArray.lower(`deviceSecret`),_status)
 }
     )
     }
@@ -2582,31 +2533,27 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 }
 
+
 /**
  * @suppress
  */
-public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Pointer> {
-
-    override fun lower(value: NemoClient): Pointer {
-        return value.uniffiClonePointer()
+public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Long> {
+    override fun lower(value: NemoClient): Long {
+        return value.uniffiCloneHandle()
     }
 
-    override fun lift(value: Pointer): NemoClient {
-        return NemoClient(value)
+    override fun lift(value: Long): NemoClient {
+        return NemoClient(UniffiWithHandle, value)
     }
 
     override fun read(buf: ByteBuffer): NemoClient {
-        // The Rust code always writes pointers as 8 bytes, and will
-        // fail to compile if they don't fit.
-        return lift(Pointer(buf.getLong()))
+        return lift(buf.getLong())
     }
 
     override fun allocationSize(value: NemoClient) = 8UL
 
     override fun write(value: NemoClient, buf: ByteBuffer) {
-        // The Rust code always expects pointers written as 8 bytes,
-        // and will fail to compile if they don't fit.
-        buf.putLong(Pointer.nativeValue(lower(value)))
+        buf.putLong(lower(value))
     }
 }
 
@@ -2616,9 +2563,15 @@ public object FfiConverterTypeNemoClient: FfiConverter<NemoClient, Pointer> {
  * Identity shown before adding a contact. No keys besides the public fingerprint.
  */
 data class ContactPreview (
-    var `identityIdHex`: kotlin.String, 
+    var `identityIdHex`: kotlin.String
+    , 
     var `fingerprint`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -2651,9 +2604,15 @@ public object FfiConverterTypeContactPreview: FfiConverterRustBuffer<ContactPrev
  * Local nickname for a 1:1 contact. No keys.
  */
 data class ContactRow (
-    var `identityId`: kotlin.String, 
+    var `identityId`: kotlin.String
+    , 
     var `nickname`: kotlin.String
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -2686,24 +2645,42 @@ public object FfiConverterTypeContactRow: FfiConverterRustBuffer<ContactRow> {
  * Decrypted 1:1 or group text/file for the shell. Never includes ratchet or MLS keys.
  */
 data class DisplayRow (
-    var `convId`: kotlin.String, 
-    var `convSeq`: kotlin.ULong, 
-    var `text`: kotlin.String, 
-    var `sentAt`: kotlin.ULong, 
-    var `fileName`: kotlin.String, 
-    var `fileMime`: kotlin.String, 
-    var `fileBytes`: kotlin.ByteArray, 
-    var `fetchToken`: kotlin.String, 
-    var `kind`: kotlin.String, 
-    var `emoji`: kotlin.String, 
-    var `target`: kotlin.ULong, 
-    var `hidden`: kotlin.Boolean, 
-    var `displayedAt`: kotlin.ULong, 
+    var `convId`: kotlin.String
+    , 
+    var `convSeq`: kotlin.ULong
+    , 
+    var `text`: kotlin.String
+    , 
+    var `sentAt`: kotlin.ULong
+    , 
+    var `fileName`: kotlin.String
+    , 
+    var `fileMime`: kotlin.String
+    , 
+    var `fileBytes`: kotlin.ByteArray
+    , 
+    var `fetchToken`: kotlin.String
+    , 
+    var `kind`: kotlin.String
+    , 
+    var `emoji`: kotlin.String
+    , 
+    var `target`: kotlin.ULong
+    , 
+    var `hidden`: kotlin.Boolean
+    , 
+    var `displayedAt`: kotlin.ULong
+    , 
     /**
      * True if this installation authored the row (survives vault reload).
      */
     var `outgoing`: kotlin.Boolean
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
@@ -2772,10 +2749,17 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
  * Hosted MLS group the shell can list. No signing keys.
  */
 data class GroupRow (
-    var `groupId`: kotlin.String, 
-    var `nickname`: kotlin.String, 
+    var `groupId`: kotlin.String
+    , 
+    var `nickname`: kotlin.String
+    , 
     var `memberCount`: kotlin.ULong
-) {
+    
+){
+    
+
+    
+
     
     companion object
 }
