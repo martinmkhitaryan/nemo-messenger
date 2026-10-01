@@ -240,7 +240,7 @@ private const val UNREAD_CONTEXT_ABOVE = 2
 
 private data class ChatTarget(val id: String, val title: String, val isGroup: Boolean)
 
-/** Ticks for outgoing bubbles (peer read receipts are off by default). */
+/** Ticks for outgoing bubbles: single ✓ on network accept, ✓✓ on peer protocol_ack. */
 internal enum class OutgoingStatus {
     Pending,
     Sent,
@@ -575,6 +575,9 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             inbox,
                                             outgoing,
                                             outgoingStatus,
+                                            ackedUpTo = { id ->
+                                                runCatching { c.ackedUpto(id) }.getOrDefault(0UL)
+                                            },
                                         )
                                         VaultStores.findByClient(c)
                                             ?.seed(inbox, contacts.toMap(), groups.toMap())
@@ -1317,8 +1320,9 @@ private fun sendChat(
                     !m.fetchToken.startsWith("local:")
             }.map { it.index }.sortedDescending()
             for (i in dupes) messages.removeAt(i)
-            // Network send finished. ✓✓ until real protocol_ack lands in the shell.
-            outgoingStatus[localId] = OutgoingStatus.Delivered
+            // Network send finished: single ✓ (Sent). The second tick (✓✓)
+            // arrives only via a real peer protocol_ack (see applyIncoming).
+            outgoingStatus[localId] = OutgoingStatus.Sent
         } catch (e: Throwable) {
             outgoingStatus[localId] = OutgoingStatus.Failed
             snackbar.showSnackbar(e.message ?: e.toString())
@@ -1373,7 +1377,8 @@ private fun attachFilePath(
                     !m.fetchToken.startsWith("local:")
             }.map { it.index }.sortedDescending()
             for (i in dupes) messages.removeAt(i)
-            outgoingStatus[localId] = OutgoingStatus.Delivered
+            // Single ✓ (Sent); ✓✓ comes only via peer protocol_ack.
+            outgoingStatus[localId] = OutgoingStatus.Sent
             snackbar.showSnackbar("Sent ${f.name}")
         } catch (e: Throwable) {
             outgoingStatus[localId] = OutgoingStatus.Failed
@@ -3194,6 +3199,8 @@ internal fun applyIncoming(
     rows: List<DisplayRow>,
     outgoing: MutableMap<String, Boolean>? = null,
     outgoingStatus: MutableMap<String, OutgoingStatus>? = null,
+    /** Peer-confirmed seq per conversation (FFI `ackedUpto`). */
+    ackedUpTo: (String) -> ULong = { _ -> 0UL },
 ) {
     for (row in rows) {
         if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
@@ -3215,8 +3222,23 @@ internal fun applyIncoming(
             val key = outgoingMapKey(row)
             outgoing[key] = true
             if (outgoingStatus != null && outgoingStatus[key] == null) {
-                outgoingStatus[key] = OutgoingStatus.Delivered
+                outgoingStatus[key] = OutgoingStatus.Sent
             }
+        }
+    }
+    if (outgoingStatus != null) {
+        // Real read receipts: flip Sent to Delivered (✓✓) from peer-confirmed
+        // seqs. Runs on every batch because acks arrive inside fetches, not
+        // as events. One lookup per conversation, cached per pass.
+        val confirmed = mutableMapOf<String, ULong>()
+        for (m in messages) {
+            if (!m.outgoing || m.convSeq == 0UL) continue
+            val key = outgoingMapKey(m)
+            if (outgoingStatus[key] == OutgoingStatus.Delivered) continue
+            val upto = confirmed.getOrPut(m.convId) {
+                runCatching { ackedUpTo(m.convId) }.getOrDefault(0UL)
+            }
+            if (m.convSeq <= upto) outgoingStatus[key] = OutgoingStatus.Delivered
         }
     }
 }

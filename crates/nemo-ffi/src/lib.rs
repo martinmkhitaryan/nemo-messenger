@@ -115,6 +115,9 @@ struct Inner {
     inbox: Vec<DisplayRow>,
     nicknames: HashMap<String, String>,
     next_seq: HashMap<String, u64>,
+    /// Per-conversation read-receipt high-water mark from inbound
+    /// `protocol_ack` (clamped to what exists locally). Powers ✓✓.
+    acked: HashMap<String, u64>,
     groups: Vec<LiveGroup>,
     pending: HashMap<[u8; KEY_LEN], PendingEntry>,
     minted: HashMap<[u8; KEY_LEN], GroupInvite>,
@@ -126,6 +129,12 @@ struct Inner {
     group_discovery_at: HashMap<[u8; KEY_LEN], u64>,
     /// Peers we already sent a capability intro to (avoid minting a token every send).
     intro_sent: std::collections::HashSet<[u8; KEY_LEN]>,
+    /// Last `(binding_seq, server_id)` gossiped per peer. Binding state only
+    /// changes on rehome, and the transport is reliable, so repeats carry no
+    /// new information; the ADR-0006 tripwire still fires on every change.
+    /// Deliberately not persisted: after a restart each peer gets one extra
+    /// gossip on next contact (self-healing).
+    gossip_sent: HashMap<ids::IdentityId, (u64, ids::ServerId)>,
 }
 
 /// One installation. The shell must not persist ratchet or MLS keys.
@@ -225,6 +234,31 @@ fn pump_trickle(inner: Arc<Mutex<Inner>>, call: Arc<Call>, peer_hex: String) {
                 now,
                 false,
             );
+        }
+    });
+}
+
+/// Synchronous prekey stock published on register/unlock: enough for
+/// immediate contact adds. The remainder tops up via [`spawn_restock`].
+const SYNC_PREKEY_STOCK: usize = 5;
+
+/// Top up one-time prekeys without blocking the caller. Runs on its own
+/// short-lived thread (same blocking pattern as every other FFI call): it
+/// takes the same `Inner` lock as everything else, so it cannot race other
+/// calls; it exits immediately when there is nothing to do (unregistered,
+/// stock full, or vault gone) and holds no reference to `NemoClient` itself.
+fn spawn_restock(inner: Arc<Mutex<Inner>>) {
+    std::thread::spawn(move || {
+        let mut guard = match inner.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let session = match guard.state.as_mut() {
+            Some(ClientState::Registered(session)) => session,
+            _ => return,
+        };
+        if block_on(session.restock_publish()).unwrap_or(0) > 0 {
+            let _ = persist(&guard);
         }
     });
 }
@@ -384,6 +418,26 @@ fn ensure_intro_sent(
     Ok(())
 }
 
+/// Send our home-server binding gossip unless this exact `(binding_seq,
+/// server_id)` was already sent to this peer. Binding state only changes on
+/// rehome and delivery is reliable, so a repeat carries no new information —
+/// but every change is still broadcast immediately, preserving the
+/// anti-equivocation tripwire (ADR-0006). Returns whether a message was sent.
+fn send_cached_binding_gossip(
+    session: &mut HomeSession<HttpHome>,
+    gossip_sent: &mut HashMap<ids::IdentityId, (u64, ids::ServerId)>,
+    peer: ids::IdentityId,
+    now: u64,
+) -> Result<bool, FfiError> {
+    let binding = (session.install.binding_seq(), session.bundle.server_id);
+    if gossip_sent.get(&peer) == Some(&binding) {
+        return Ok(false);
+    }
+    send_own_binding_gossip(session, peer, now)?;
+    gossip_sent.insert(peer, binding);
+    Ok(true)
+}
+
 fn remap_conv_id(
     inbox: &mut [DisplayRow],
     next_seq: &mut HashMap<String, u64>,
@@ -500,6 +554,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
                     .map(to_inbox_row)
                     .collect::<Vec<_>>(),
                 &inner.next_seq,
+                &inner.acked,
             )?;
             let pending: Vec<_> = inner
                 .pending
@@ -520,6 +575,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
                     .map(to_inbox_row)
                     .collect::<Vec<_>>(),
                 &inner.next_seq,
+                &inner.acked,
             )?;
         }
         None => return Err(FfiError::Core("busy".into())),
@@ -598,6 +654,7 @@ fn empty_inner(
         inbox: Vec::new(),
         nicknames: HashMap::new(),
         next_seq: HashMap::new(),
+        acked: HashMap::new(),
         groups: Vec::new(),
         pending: HashMap::new(),
         minted: HashMap::new(),
@@ -608,6 +665,7 @@ fn empty_inner(
         call_connected: false,
         group_discovery_at: HashMap::new(),
         intro_sent: std::collections::HashSet::new(),
+        gossip_sent: HashMap::new(),
     }
 }
 
@@ -970,9 +1028,10 @@ impl NemoClient {
             inner.nicknames = nicks;
             inner.disappear = timers;
         }
-        if let Ok((rows, seqs)) = inner.vault.as_ref().unwrap().load_inbox() {
+        if let Ok((rows, seqs, acked)) = inner.vault.as_ref().unwrap().load_inbox() {
             inner.inbox = rows.into_iter().map(from_inbox_row).collect();
             inner.next_seq = seqs;
+            inner.acked = acked;
         }
         let invites = inner
             .vault
@@ -998,11 +1057,15 @@ impl NemoClient {
             persist(&inner)?;
         }
         if let Some(ClientState::Registered(session)) = inner.state.as_mut() {
-            let _ = block_on(session.restock_publish());
+            // Small synchronous stock so contact adds work immediately; the
+            // remainder tops up in the background without blocking unlock.
+            let _ = block_on(session.restock_publish_upto(SYNC_PREKEY_STOCK));
         }
-        Ok(Arc::new(Self {
+        let client = Arc::new(Self {
             inner: Arc::new(Mutex::new(inner)),
-        }))
+        });
+        spawn_restock(Arc::clone(&client.inner));
+        Ok(client)
     }
 
     pub fn identity_id_hex(&self) -> Result<String, FfiError> {
@@ -1067,12 +1130,16 @@ impl NemoClient {
                 match block_on(async {
                     let (mut session, _) = HomeSession::register(transport, install, now).await?;
                     session.set_home_base(&home_https_base);
-                    session.restock_publish().await?;
+                    // Small synchronous stock so contact adds work immediately;
+                    // the remainder tops up in the background (register used
+                    // to block on the full restock here).
+                    session.restock_publish_upto(SYNC_PREKEY_STOCK).await?;
                     Ok::<_, CoreError>(session)
                 }) {
                     Ok(session) => {
                         inner.state = Some(ClientState::Registered(session));
                         persist(&inner)?;
+                        spawn_restock(Arc::clone(&self.inner));
                         Ok(())
                     }
                     Err(err) => {
@@ -1115,7 +1182,12 @@ impl NemoClient {
                         let peers: Vec<_> = session.contacts.keys().copied().collect();
                         for peer in peers {
                             let _ = send_own_contact_capability(&mut session, peer, now);
-                            let _ = send_own_binding_gossip(&mut session, peer, now);
+                            let _ = send_cached_binding_gossip(
+                                &mut session,
+                                &mut inner.gossip_sent,
+                                peer,
+                                now,
+                            );
                         }
                         inner.state = Some(ClientState::Registered(session));
                         persist(&inner)?;
@@ -1183,7 +1255,7 @@ impl NemoClient {
         let ttl = ttl_for(&inner.disappear, &peer_id_hex);
         {
             let Inner {
-                state, intro_sent, ..
+                state, intro_sent, gossip_sent, ..
             } = &mut *inner;
             let session = match state {
                 Some(ClientState::Registered(session)) => session,
@@ -1192,7 +1264,7 @@ impl NemoClient {
             };
             block_on(session.send_to(&peer, ttl, &ptext, now))?;
             let _ = ensure_intro_sent(session, intro_sent, peer, now);
-            let _ = send_own_binding_gossip(session, peer, now);
+            let _ = send_cached_binding_gossip(session, gossip_sent, peer, now);
         }
         let row = DisplayRow {
             conv_id: peer_id_hex,
@@ -1224,6 +1296,7 @@ impl NemoClient {
                 pending,
                 inbox,
                 next_seq,
+                acked,
                 nicknames,
                 disappear,
                 pending_invites,
@@ -1231,6 +1304,7 @@ impl NemoClient {
                 call_peer,
                 call_connected,
                 group_discovery_at,
+                gossip_sent,
                 ..
             } = &mut *inner;
             let session = match state {
@@ -1389,9 +1463,21 @@ impl NemoClient {
                                 ));
                             }
                             Ok(AppMessage {
-                                body: AppBody::ProtocolAck { .. },
+                                body: AppBody::ProtocolAck { upto },
                                 ..
-                            }) => {}
+                            }) => {
+                                // Read receipt: peer decrypted everything up to
+                                // `upto` in this conversation. Clamp to what
+                                // exists locally so a faulty peer cannot mark
+                                // unsent messages delivered.
+                                let peer_hex = ids::to_hex(&peer);
+                                let known = *next_seq.get(&peer_hex).unwrap_or(&0);
+                                let mark = upto.min(known);
+                                acked
+                                    .entry(peer_hex)
+                                    .and_modify(|u| *u = (*u).max(mark))
+                                    .or_insert(mark);
+                            }
                             Ok(AppMessage {
                                 header,
                                 body:
@@ -1789,7 +1875,7 @@ impl NemoClient {
                         continue;
                     }
                     let _ = send_own_contact_capability(session, peer, now);
-                    let _ = send_own_binding_gossip(session, peer, now);
+                    let _ = send_cached_binding_gossip(session, gossip_sent, peer, now);
                 }
                 new_rows
             };
@@ -2067,7 +2153,7 @@ impl NemoClient {
         })?;
         {
             let Inner {
-                state, intro_sent, ..
+                state, intro_sent, gossip_sent, ..
             } = &mut *inner;
             let session = match state {
                 Some(ClientState::Registered(session)) => session,
@@ -2076,7 +2162,7 @@ impl NemoClient {
             };
             block_on(session.send_attachment(&peer, TtlBucket::DEFAULT, &ptext, now))?;
             let _ = ensure_intro_sent(session, intro_sent, peer, now);
-            let _ = send_own_binding_gossip(session, peer, now);
+            let _ = send_cached_binding_gossip(session, gossip_sent, peer, now);
         }
         let Inner {
             inbox, next_seq, ..
@@ -2581,6 +2667,14 @@ impl NemoClient {
     pub fn inbox(&self) -> Result<Vec<DisplayRow>, FfiError> {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         Ok(inner.inbox.clone())
+    }
+
+    /// Highest `conv_seq` the peer confirmed decrypting in this conversation
+    /// (inbound `protocol_ack`), or 0 if none. The shell renders outgoing rows
+    /// with `conv_seq <= upto` as delivered (✓✓).
+    pub fn acked_upto(&self, conv_id: String) -> Result<u64, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        Ok(inner.acked.get(&conv_id).copied().unwrap_or(0))
     }
 }
 
@@ -3654,5 +3748,175 @@ mod tests {
         drop(bob);
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn protocol_ack_marks_messages_delivered_and_survives_reopen() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-ack-a");
+        let bob_dir = temp_dir("nemo-ffi-ack-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+        assert_eq!(bob.acked_upto(alice_id.clone()).unwrap(), 0);
+
+        let sent = bob.send_text(alice_id.clone(), "read me".into()).unwrap();
+        // Alice's fetch auto-sends a protocol_ack back to Bob.
+        let rows = alice.fetch_now().unwrap();
+        assert!(rows.iter().any(|r| r.text == "read me"));
+        let rows = bob.fetch_now().unwrap();
+        assert!(rows.iter().all(|r| r.text != "read me"));
+        assert_eq!(bob.acked_upto(alice_id.clone()).unwrap(), sent.conv_seq);
+
+        // A second, newer message moves the mark forward (monotonic).
+        let sent2 = bob.send_text(alice_id.clone(), "read me too".into()).unwrap();
+        alice.fetch_now().unwrap();
+        bob.fetch_now().unwrap();
+        assert_eq!(bob.acked_upto(alice_id.clone()).unwrap(), sent2.conv_seq);
+        assert!(sent2.conv_seq > sent.conv_seq);
+
+        // Marks survive vault reopen (unlock).
+        let bob_path = bob_dir.to_string_lossy().into_owned();
+        drop(bob);
+        let bob2 = NemoClient::open_at(bob_path, "correct horse".into(), Vec::new()).unwrap();
+        assert_eq!(bob2.identity_id_hex().unwrap(), bob_id);
+        assert_eq!(bob2.acked_upto(alice_id).unwrap(), sent2.conv_seq);
+        drop(alice);
+        drop(bob2);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn binding_gossip_tripwire_still_fires_after_rehome() {
+        // Gossip is cached per (seq, server): steady-state resends are
+        // skipped, but a rehome (new seq) must still reach the peer and heal
+        // the pin. Proved end to end over federated servers: without the
+        // fresh gossip Bob's reply would still target the disabled old
+        // mailbox and never arrive.
+        let (a_base, a_state) = serve_home_state();
+        let (b_base, b_state) = serve_home_state();
+        pin_servers(&a_state, &b_state);
+        let alice_dir = temp_dir("nemo-ffi-gossip-a");
+        let bob_dir = temp_dir("nemo-ffi-gossip-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(a_base.clone()).unwrap();
+        bob.register(a_base).unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+        // Warm the gossip cache on both sides with pre-rehome traffic.
+        for i in 0..2 {
+            alice.send_text(bob_id.clone(), format!("a{i}")).unwrap();
+            let rows = bob.fetch_now().unwrap();
+            assert!(rows.iter().any(|r| r.text == format!("a{i}")));
+            bob.fetch_now().unwrap();
+            alice.fetch_now().unwrap();
+        }
+        // Rehome Alice A -> B. Her next send queues as S2S outbound on B.
+        alice.register(b_base).unwrap();
+        alice.send_text(bob_id.clone(), "after move".into()).unwrap();
+        pump_servers(&b_state, &a_state);
+        // Bob heals silently: text arrives, no spurious conflict row.
+        let rows = bob.fetch_now().unwrap();
+        assert!(rows.iter().any(|r| r.text == "after move"));
+        assert!(rows.iter().all(|r| r.kind != "binding_conflict"));
+        // Bob's reply routes to the NEW home only if the pin healed.
+        bob.send_text(alice_id.clone(), "healed".into()).unwrap();
+        pump_servers(&a_state, &b_state);
+        let rows = alice.fetch_now().unwrap();
+        assert!(rows.iter().any(|r| r.text == "healed"));
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    /// Serve a home and keep its state for peering/pumping (federation tests).
+    fn serve_home_state() -> (String, nemo_server::AppState) {
+        let listener = runtime()
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = nemo_server::AppState::new();
+        let st = state.clone();
+        runtime().spawn(async move {
+            axum::serve(listener, nemo_server::router(st))
+                .await
+                .expect("serve");
+        });
+        (format!("http://{addr}"), state)
+    }
+
+    fn pin_servers(a: &nemo_server::AppState, b: &nemo_server::AppState) {
+        runtime().block_on(async {
+            let mut ha = a.home.lock().await;
+            let mut hb = b.home.lock().await;
+            nemo_server::pin_each_other(&mut ha, &mut hb).unwrap();
+        });
+    }
+
+    fn pump_servers(from: &nemo_server::AppState, to: &nemo_server::AppState) {
+        runtime().block_on(async {
+            let mut f = from.home.lock().await;
+            let mut t = to.home.lock().await;
+            nemo_server::pump(&mut f, &mut t).unwrap();
+        });
+    }
+
+    #[test]
+    fn register_and_unlock_do_not_block_on_full_restock() {
+        // Only a small synchronous stock publishes inline; the rest fills in
+        // the background. Ten fresh peers must all be able to add this client
+        // (each consumes one prekey) without waiting on a full restock.
+        // Peers stay vaultless (fast, no Argon2): registration and contact
+        // adds do not need a vault.
+        let base = serve_home();
+        let dir = temp_dir("nemo-ffi-restock");
+        let alice = client_at(&dir);
+        let t = std::time::Instant::now();
+        alice.register(base.clone()).unwrap();
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(20),
+            "register blocked: {:?}",
+            t.elapsed()
+        );
+        let mut peers = Vec::new();
+        for _ in 0..10 {
+            let peer = NemoClient::create().unwrap();
+            peer.register(base.clone()).unwrap();
+            peers.push(peer);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        for peer in &peers {
+            loop {
+                match peer.add_contact(alice.mint_share_uri().unwrap(), "A".into()) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "background restock never filled stock: {e}"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            }
+        }
+        drop(peers);
+        drop(alice);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -802,6 +802,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -818,6 +820,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_acked_upto(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_add_contact(
 ): Short
@@ -966,6 +970,8 @@ fun uniffi_nemo_ffi_fn_constructor_nemoclient_open_at(`dir`: RustBuffer.ByValue,
 ): Pointer
 fun uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(`ptr`: Pointer,`inviteUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_acked_upto(`ptr`: Pointer,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
 fun uniffi_nemo_ffi_fn_method_nemoclient_add_contact(`ptr`: Pointer,`cardOrUri`: RustBuffer.ByValue,`nickname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_admit_join(`ptr`: Pointer,`joinRequestUri`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1173,6 +1179,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_accept_group_invite() != 58462.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_acked_upto() != 44781.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_add_contact() != 35738.toShort()) {
@@ -1721,6 +1730,13 @@ public interface NemoClientInterface {
     
     fun `acceptGroupInvite`(`inviteUri`: kotlin.String): kotlin.String
     
+    /**
+     * Highest `conv_seq` the peer confirmed decrypting in this conversation
+     * (inbound `protocol_ack`), or 0 if none. The shell renders outgoing rows
+     * with `conv_seq <= upto` as delivered (✓✓).
+     */
+    fun `ackedUpto`(`convId`: kotlin.String): kotlin.ULong
+    
     fun `addContact`(`cardOrUri`: kotlin.String, `nickname`: kotlin.String): kotlin.String
     
     fun `admitJoin`(`joinRequestUri`: kotlin.String): kotlin.String
@@ -1905,6 +1921,24 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_accept_group_invite(
         it, FfiConverterString.lower(`inviteUri`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Highest `conv_seq` the peer confirmed decrypting in this conversation
+     * (inbound `protocol_ack`), or 0 if none. The shell renders outgoing rows
+     * with `conv_seq <= upto` as delivered (✓✓).
+     */
+    @Throws(FfiException::class)override fun `ackedUpto`(`convId`: kotlin.String): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_acked_upto(
+        it, FfiConverterString.lower(`convId`),_status)
 }
     }
     )

@@ -872,6 +872,18 @@ impl<T: HomeTransport> HomeSession<T> {
         Ok(n)
     }
 
+    /// Publish one-time prekeys until at least `target` are unused. Used for
+    /// the small synchronous stock on register/unlock; the remainder tops up
+    /// in the background (see FFI `spawn_restock`).
+    pub async fn restock_publish_upto(&mut self, target: usize) -> Result<usize> {
+        let mut n = 0;
+        while self.install.unused_one_time_prekeys() < target {
+            self.publish_prekey().await?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     pub async fn submit_revocation(&self, stmt: &RevocationStatement) -> Result<()> {
         let res = self
             .transport

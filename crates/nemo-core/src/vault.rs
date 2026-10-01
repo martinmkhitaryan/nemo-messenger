@@ -282,11 +282,15 @@ impl Vault {
         Ok((nicknames, disappear))
     }
 
-    /// Decrypted display rows + per-conversation seq counters.
+    /// Decrypted display rows + per-conversation seq counters + per-conversation
+    /// read-receipt high-water marks (`protocol_ack` uptos). Key 3 is new and
+    /// optional: vaults written before it existed load with empty marks, and
+    /// old readers ignore the unknown key, so no migration is needed.
     pub fn save_inbox(
         &self,
         rows: &[InboxRow],
         next_seq: &HashMap<String, u64>,
+        acked: &HashMap<String, u64>,
     ) -> Result<()> {
         let mut encoded_rows = Vec::with_capacity(rows.len());
         for row in rows {
@@ -301,19 +305,29 @@ impl Vault {
                 Value::Uint(next_seq[&k]),
             ]));
         }
+        let mut acks = Vec::new();
+        let mut akeys: Vec<_> = acked.keys().cloned().collect();
+        akeys.sort();
+        for k in akeys {
+            acks.push(Value::Array(vec![
+                Value::Text(k.clone()),
+                Value::Uint(acked[&k]),
+            ]));
+        }
         self.put(
             INBOX_KEY,
             &cbor::encode(&Value::Map(vec![
                 (0, Value::Uint(1)),
                 (1, Value::Array(encoded_rows)),
                 (2, Value::Array(seqs)),
+                (3, Value::Array(acks)),
             ])),
         )
     }
 
-    pub fn load_inbox(&self) -> Result<(Vec<InboxRow>, HashMap<String, u64>)> {
+    pub fn load_inbox(&self) -> Result<(Vec<InboxRow>, HashMap<String, u64>, HashMap<String, u64>)> {
         let Some(bytes) = self.get_opt(INBOX_KEY)? else {
-            return Ok((Vec::new(), HashMap::new()));
+            return Ok((Vec::new(), HashMap::new(), HashMap::new()));
         };
         let Value::Map(m) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
             return Err(CoreError::VaultCorrupt);
@@ -345,7 +359,23 @@ impl Vault {
             let seq = cbor::expect_uint(&row[1]).map_err(|_| CoreError::VaultCorrupt)?;
             next_seq.insert(k, seq);
         }
-        Ok((rows, next_seq))
+        let mut acked = HashMap::new();
+        if let Some(v) = cbor::map_get_opt(&m, 3) {
+            for item in cbor::expect_array(v).map_err(|_| CoreError::VaultCorrupt)? {
+                let Value::Array(row) = item else {
+                    return Err(CoreError::VaultCorrupt);
+                };
+                if row.len() != 2 {
+                    return Err(CoreError::VaultCorrupt);
+                }
+                let k = cbor::expect_text(&row[0])
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned();
+                let seq = cbor::expect_uint(&row[1]).map_err(|_| CoreError::VaultCorrupt)?;
+                acked.insert(k, seq);
+            }
+        }
+        Ok((rows, next_seq, acked))
     }
 
     pub fn save_pending(

@@ -239,7 +239,13 @@ internal fun BindVaultStore(
         s.start()
         // Seed from the store snapshot, then heal from anything the background
         // persisted while we were away. Deltas stream below via freshRows.
-        applyIncoming(messages, s.messagesFlow.value, outgoing, outgoingStatus)
+        applyIncoming(
+            messages,
+            s.messagesFlow.value,
+            outgoing,
+            outgoingStatus,
+            ackedUpTo = { id -> runCatching { s.client.ackedUpto(id) }.getOrDefault(0UL) },
+        )
         contacts.clear()
         contacts.putAll(s.contactsFlow.value)
         groups.clear()
@@ -254,7 +260,13 @@ internal fun BindVaultStore(
         val s = store ?: return@LaunchedEffect
         if (!atHome) return@LaunchedEffect
         s.freshRows.collect { rows ->
-            applyIncoming(messages, rows, outgoing, outgoingStatus)
+            applyIncoming(
+                messages,
+                rows,
+                outgoing,
+                outgoingStatus,
+                ackedUpTo = { id -> runCatching { s.client.ackedUpto(id) }.getOrDefault(0UL) },
+            )
         }
     }
 

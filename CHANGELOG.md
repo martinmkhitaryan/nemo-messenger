@@ -8,6 +8,26 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [Unreleased]
+
+### Added
+
+- Real read receipts: inbound `protocol_ack` messages are now recorded per
+  conversation, persisted in the vault across unlocks, and exposed to the
+  shell as `NemoClient.acked_upto()`. Outgoing bubbles show single ✓ on
+  network accept and ✓✓ only when the peer confirms decryption.
+
+### Changed
+
+- Binding gossip is sent only when `(binding_seq, server_id)` actually
+  changed for a peer (cached, self-healing after restart) instead of on
+  every message. Steady-state 1:1 traffic drops ~2 POSTs per message; the
+  ADR-0006 anti-equivocation tripwire still fires immediately on rehome
+  (covered by a federated rehome test with S2S pump).
+- Prekey restock no longer blocks register/unlock: a small synchronous
+  stock (5) publishes inline and the remainder tops up on a background
+  thread.
+
 ## [0.1.1] - 2026-09-30
 
 ### Fixed
