@@ -686,22 +686,11 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                             OnboardScaffold(
                                 headline = "Revocation phrase",
                                 footnote = "Write it down offline. It revokes this identity — it cannot unlock or restore anything.",
-                                footer = {
-                                    TextButton(
-                                        onClick = {
-                                            val phrase = mnemonic.orEmpty()
-                                            if (phrase.isNotEmpty()) {
-                                                copyToClipboard(phrase)
-                                                scope.launch { snackbar.showSnackbar("Copied") }
-                                            }
-                                        },
-                                    ) { Text("Copy phrase") }
-                                },
                             ) {
                                 SelectionContainer {
                                     Column(
                                         Modifier.fillMaxWidth(),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
                                         words.chunked(3).forEachIndexed { rowIdx, rowWords ->
                                             Row(
@@ -716,7 +705,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     Row(
                                                         modifier = Modifier
                                                             .weight(1f)
-                                                            .height(44.dp)
+                                                            .height(34.dp)
                                                             .clip(RoundedCornerShape(10.dp))
                                                             .background(chipBg)
                                                             .padding(horizontal = 6.dp),
@@ -751,7 +740,18 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                         }
                                     }
                                 }
-                                Spacer(Modifier.height(20.dp))
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = {
+                                        val phrase = mnemonic.orEmpty()
+                                        if (phrase.isNotEmpty()) {
+                                            copyToClipboard(phrase)
+                                            scope.launch { snackbar.showSnackbar("Copied") }
+                                        }
+                                    },
+                                ) { Text("Copy phrase") }
+                                Spacer(Modifier.height(4.dp))
                                 Button(
                                     modifier = Modifier.fillMaxWidth().height(52.dp),
                                     onClick = {
