@@ -1057,16 +1057,29 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                             vaultDir = vaultDir,
                                                             readReceiptsEnabled = readReceipts,
                                                             isForeground = isForeground,
-                                                            onAcceptInvite = { uri ->
+                                                            onAcceptInvite = { uri, sender ->
                                                                 runIo {
                                                                     val j = withContext(Dispatchers.IO) {
                                                                         c?.acceptGroupInvite(uri.trim()).orEmpty()
                                                                     }
                                                                     copyToClipboard(j)
-                                                                    joinUri = j
-                                                                    joinSendTo = ""
-                                                                    sheet = Sheet.JoinGroup
-                                                                    snackbar.showSnackbar("Invite accepted — pick a member to send the join request")
+                                                                    val sent = runCatching {
+                                                                        withContext(Dispatchers.IO) {
+                                                                            c?.sendText(sender, j)
+                                                                        }
+                                                                    }.getOrNull()
+                                                                    if (sent != null) {
+                                                                        messages.add(sent)
+                                                                        markOutgoing(sent)
+                                                                        snackbar.showSnackbar("Join request sent — they tap Admit")
+                                                                    } else {
+                                                                        // Invite came from outside a 1:1
+                                                                        // (group thread, clipboard): manual send.
+                                                                        joinUri = j
+                                                                        joinSendTo = ""
+                                                                        sheet = Sheet.JoinGroup
+                                                                        snackbar.showSnackbar("Invite accepted — pick a member to send the join request")
+                                                                    }
                                                                 }
                                                             },
                                                             onCopyInvite = { uri ->
@@ -1162,16 +1175,29 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     vaultDir = vaultDir,
                                                     readReceiptsEnabled = readReceipts,
                                                     isForeground = isForeground,
-                                                    onAcceptInvite = { uri ->
+                                                    onAcceptInvite = { uri, sender ->
                                                         runIo {
                                                             val j = withContext(Dispatchers.IO) {
                                                                 c?.acceptGroupInvite(uri.trim()).orEmpty()
                                                             }
                                                             copyToClipboard(j)
-                                                            joinUri = j
-                                                            joinSendTo = ""
-                                                            sheet = Sheet.JoinGroup
-                                                            snackbar.showSnackbar("Invite accepted — pick a member to send the join request")
+                                                            val sent = runCatching {
+                                                                withContext(Dispatchers.IO) {
+                                                                    c?.sendText(sender, j)
+                                                                }
+                                                            }.getOrNull()
+                                                            if (sent != null) {
+                                                                messages.add(sent)
+                                                                markOutgoing(sent)
+                                                                snackbar.showSnackbar("Join request sent — they tap Admit")
+                                                            } else {
+                                                                // Invite came from outside a 1:1
+                                                                // (group thread, clipboard): manual send.
+                                                                joinUri = j
+                                                                joinSendTo = ""
+                                                                sheet = Sheet.JoinGroup
+                                                                snackbar.showSnackbar("Invite accepted — pick a member to send the join request")
+                                                            }
                                                         }
                                                     },
                                                     onCopyInvite = { uri ->
@@ -1922,7 +1948,7 @@ private fun ChatThread(
     onVisibleRead: (ULong) -> Unit = {},
     onAdmitJoin: ((String) -> Unit)? = null,
     onCopyJoin: ((String) -> Unit)? = null,
-    onAcceptInvite: ((String) -> Unit)? = null,
+    onAcceptInvite: ((String, String) -> Unit)? = null,
     onCopyInvite: ((String) -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
@@ -2478,7 +2504,7 @@ private fun ActiveChatThread(
     vaultDir: File,
     readReceiptsEnabled: Boolean,
     isForeground: Boolean,
-    onAcceptInvite: ((String) -> Unit)? = null,
+    onAcceptInvite: ((String, String) -> Unit)? = null,
     onCopyInvite: ((String) -> Unit)? = null,
 ) {
     val pickFile = rememberPickFile { path ->

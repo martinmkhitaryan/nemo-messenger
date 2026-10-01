@@ -532,7 +532,7 @@ internal fun DatedMessageItem(
     onSave: (DisplayRow) -> Unit,
     onAdmitJoin: ((String) -> Unit)? = null,
     onCopyJoin: ((String) -> Unit)? = null,
-    onAcceptInvite: ((String) -> Unit)? = null,
+    onAcceptInvite: ((String, String) -> Unit)? = null,
     onCopyInvite: ((String) -> Unit)? = null,
 ) {
     val key = outgoingMapKey(row)
@@ -596,7 +596,7 @@ internal fun DatedMessageItem(
             onSave = { onSave(row) },
             onAdmitJoin = onAdmitJoin,
             onCopyJoin = onCopyJoin,
-            onAcceptInvite = onAcceptInvite,
+            onAcceptInvite = onAcceptInvite?.let { cb -> { text: String -> cb(text, row.convId) } },
             onCopyInvite = onCopyInvite,
             // No animateItem: with reverseLayout, a new message shifts every
             // visible index and placement animation makes the thread shake.
