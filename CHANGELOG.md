@@ -8,7 +8,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-01
 
 ### Added
 
@@ -20,12 +20,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   full-emphasis ✓✓ on viewed. 1:1 chats only; group read receipts are
   future work (see README). Per-device setting, on by default; turning it
   off hides sending and display both ways.
-
-### Added
-
-- Real read receipts: inbound `protocol_ack` messages are now recorded per
-  conversation, persisted in the vault across unlocks, and exposed to the
-  shell as `NemoClient.acked_upto()`. Outgoing bubbles show single ✓ on
+- Real delivery receipts: inbound `protocol_ack` messages are now recorded
+  per conversation, persisted in the vault across unlocks, and exposed to
+  the shell as `NemoClient.acked_upto()`. Outgoing bubbles show single ✓ on
   network accept and ✓✓ only when the peer confirms decryption.
 
 ### Changed
@@ -38,6 +35,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Prekey restock no longer blocks register/unlock: a small synchronous
   stock (5) publishes inline and the remainder tops up on a background
   thread.
+
+### Fixed
+
+- Delivery ticks refresh on every fetch cycle, not just on new rows:
+  ack-only fetches previously updated FFI state invisibly, so double ticks
+  appeared only after the peer replied.
+- Initial viewport is reported once marking enables, so single-message
+  chats mark viewed on open without scrolling.
+- Floating date pill shows only for finger scrolling, never for
+  programmatic pin-to-bottom animations on send/receive.
 
 ## [0.1.1] - 2026-09-30
 
@@ -72,24 +79,8 @@ and a physical device:
 - Notifications: foreground `SyncService` wake + `PollWorker`
   fallback, generic-text alerts. No FCM by design.
 
-Not manually tested in 0.1.0 (implemented, covered by automated
-tests where noted in `docs/testing.md`): groups, 1:1 voice calls
-(no live-audio check passed), High/Maximum cover traffic and Tor,
-server federation.
-
-Left to test (required before 1.0.0):
-
-- Groups: New group -> copy invite -> Join group with `nemo-j:` request
-  -> admit -> both sides send, on desktop and Android
-  (`docs/testing.md` freeze checklist).
-- 1:1 live call: audible speech with real mic (not silence frames),
-  ringing/reject/cancel, mic permission, via coturn on desktop two-pane
-  (headphones on one side), emulator, and physical device.
-- Privacy modes: High cover traffic, Maximum constant-rate slots,
-  Tor SOCKS for non-loopback homes.
-- Server federation: two homes with pinned peer bundles
-  (`NEMO_PEERS_DIR`, S2S mTLS), one identity per home, cross-server
-  1:1 text both directions.
+Manual testing status (tested, untested, and the must-test list before
+1.0.0) now lives in [`docs/manual-testing.md`](docs/manual-testing.md).
 
 ### Identity and vault
 

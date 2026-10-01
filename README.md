@@ -14,12 +14,9 @@
 **Build and run (home + desktop + Android):** [`deploy/README.md`](deploy/README.md) · [`scripts/`](scripts/)
 **Changelog:** [`CHANGELOG.md`](CHANGELOG.md)
 
-> Manually tested in 0.1.0 (desktop two-pane, Android emulator, physical
-> device): identity/contacts, 1:1 text, 1:1 file attachments,
-> notifications. Left to test: MLS groups (invite/join/admit/send), audible
-> 1:1 calls via TURN, High/Maximum cover + Tor, server federation.
-> Read receipts are 1:1-only; group read receipts come after groups are
-> manually tested. No FCM by design.
+> Manual testing status (tested, untested, must-test before 1.0.0):
+> [`docs/manual-testing.md`](docs/manual-testing.md).
+> No FCM by design.
 > See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
