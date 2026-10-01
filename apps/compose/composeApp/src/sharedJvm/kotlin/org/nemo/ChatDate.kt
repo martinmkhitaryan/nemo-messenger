@@ -530,6 +530,10 @@ internal fun DatedMessageItem(
     onReact: (DisplayRow) -> Unit,
     onDelete: (DisplayRow) -> Unit,
     onSave: (DisplayRow) -> Unit,
+    onAdmitJoin: ((String) -> Unit)? = null,
+    onCopyJoin: ((String) -> Unit)? = null,
+    onAcceptInvite: ((String) -> Unit)? = null,
+    onCopyInvite: ((String) -> Unit)? = null,
 ) {
     val key = outgoingMapKey(row)
     val mine = row.outgoing || outgoing[key] == true
@@ -590,6 +594,10 @@ internal fun DatedMessageItem(
             onReact = { onReact(row) },
             onDelete = { onDelete(row) },
             onSave = { onSave(row) },
+            onAdmitJoin = onAdmitJoin,
+            onCopyJoin = onCopyJoin,
+            onAcceptInvite = onAcceptInvite,
+            onCopyInvite = onCopyInvite,
             // No animateItem: with reverseLayout, a new message shifts every
             // visible index and placement animation makes the thread shake.
             modifier = Modifier.padding(top = gap),

@@ -20,6 +20,8 @@ internal fun previewLine(row: DisplayRow): String = when {
     row.kind == "revoked" -> "Identity revoked"
     row.kind == "binding_conflict" -> "Home-server binding conflict"
     row.fileName.isNotEmpty() -> "📎 ${row.fileName}"
+    isJoinRequestUri(row.text) -> "Group join request"
+    isGroupInviteUri(row.text) -> "Group invite"
     else -> row.text
 }
 
@@ -50,3 +52,12 @@ internal fun formatTime(sentAt: ULong): String {
         ""
     }
 }
+
+/** Join-request / invite URIs travel as plain 1:1 text in the auto-relay
+ * variant; the manual copy-paste variant stays. Recognition is prefix-only —
+ * validation happens in `admitJoin`. */
+internal fun isJoinRequestUri(text: String): Boolean =
+    text.trimStart().startsWith("nemo-j:1:")
+
+internal fun isGroupInviteUri(text: String): Boolean =
+    text.trimStart().startsWith("nemo-g:1:")

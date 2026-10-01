@@ -158,6 +158,79 @@ class ExchangeTest {
         }
     }
 
+    @Test
+    fun groupJoinRelayViaOneToOneText() {
+        val root = repoRoot()
+        val lib = File(root, "target/debug/libnemo_ffi.so")
+        assertTrue(lib.isFile, "build nemo-ffi first (libnemo_ffi.so)")
+        System.setProperty("jna.library.path", lib.parentFile.absolutePath)
+
+        val server = File(root, "target/debug/nemo-server")
+        assertTrue(server.isFile, "build nemo-server first")
+        val listen = "127.0.0.1:18789"
+        val proc = ProcessBuilder(server.absolutePath)
+            .directory(root)
+            .redirectErrorStream(true)
+            .apply {
+                environment()["NEMO_LISTEN"] = listen
+                environment()["NEMO_S2S_LISTEN"] = "127.0.0.1:19445"
+                environment().remove("DATABASE_URL")
+            }
+            .start()
+        try {
+            waitForBundle("http://$listen/v1/bundle")
+            val aliceDir = Files.createTempDirectory("nemo-ra-").toFile()
+            val bobDir = Files.createTempDirectory("nemo-rb-").toFile()
+            val pass = "correct horse"
+            val home = "http://$listen"
+
+            val alice = NemoClient.createAt(aliceDir.absolutePath, pass, ByteArray(0))
+            val bob = NemoClient.createAt(bobDir.absolutePath, pass, ByteArray(0))
+            alice.takeRevocationMnemonic()
+            bob.takeRevocationMnemonic()
+            alice.register(home)
+            bob.register(home)
+            // 1:1 channels for the auto-relay variant (both directions).
+            val aliceCard = alice.mintShareUri()
+            bob.addContact(aliceCard, "Alice")
+            val aliceId = alice.identityIdHex()
+            val bobCard = bob.mintShareUri()
+            alice.addContact(bobCard, "Bob")
+            val bobId = bob.identityIdHex()
+
+            val gid = alice.createGroup("relay crew")
+            val invite = alice.mintGroupInvite(gid)
+            assertTrue(invite.startsWith("nemo-g:1:"))
+
+            // Auto-relay leg 1: the invite travels as plain 1:1 text.
+            alice.sendText(bobId, invite)
+            val relayedInvite = bob.fetchNow().firstOrNull { it.text.startsWith("nemo-g:1:") }
+            assertTrue(relayedInvite != null, "bob receives the relayed invite as 1:1 text")
+            val join = bob.acceptGroupInvite(relayedInvite.text)
+            assertTrue(join.startsWith("nemo-j:1:"))
+
+            // Auto-relay: the join request travels as plain 1:1 text.
+            bob.sendText(aliceId, join)
+            val relayed = alice.fetchNow().firstOrNull { it.text.startsWith("nemo-j:1:") }
+            assertTrue(relayed != null, "alice receives the relayed join request as 1:1 text")
+
+            // Manual paste variant still works: admit from the received text.
+            alice.admitJoin(relayed.text)
+            alice.sendGroupText(gid, "welcome via relay")
+            val first = bob.fetchNow()
+            assertEquals(1, first.size)
+            assertEquals("welcome via relay", first[0].text)
+
+            alice.close()
+            bob.close()
+            aliceDir.deleteRecursively()
+            bobDir.deleteRecursively()
+        } finally {
+            proc.destroy()
+            proc.waitFor()
+        }
+    }
+
     private fun repoRoot(): File {
         var dir = File(System.getProperty("user.dir")).absoluteFile
         repeat(8) {

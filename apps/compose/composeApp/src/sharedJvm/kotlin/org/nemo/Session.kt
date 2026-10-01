@@ -77,6 +77,9 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
@@ -350,7 +353,10 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     }
     var groupName by remember { mutableStateOf("") }
     var invitePaste by remember { mutableStateOf("") }
+    var inviteUri by remember { mutableStateOf("") }
+    var inviteSendTo by remember { mutableStateOf("") }
     var joinUri by remember { mutableStateOf("") }
+    var joinSendTo by remember { mutableStateOf("") }
     var joinPaste by remember { mutableStateOf("") }
     var memberCred by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf("") }
@@ -859,6 +865,27 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             joinUri = joinUri,
                                             joinPaste = joinPaste,
                                             onJoinPaste = { joinPaste = it },
+                                            inviteUri = inviteUri,
+                                            inviteSendTo = inviteSendTo,
+                                            onInviteSendTo = { inviteSendTo = it },
+                                            roster = contacts.toMap(),
+                                            onSendInvite = {
+                                                runIo {
+                                                    val target = inviteSendTo
+                                                    val text = inviteUri
+                                                    if (target.isBlank() || text.isBlank()) return@runIo
+                                                    val row = withContext(Dispatchers.IO) {
+                                                        c?.sendText(target, text)
+                                                    } ?: return@runIo
+                                                    messages.add(row)
+                                                    markOutgoing(row)
+                                                    inviteUri = ""
+                                                    inviteSendTo = ""
+                                                    showSettings = false
+                                                    selected = ChatTarget(target, contacts[target] ?: shortId(target), false)
+                                                    snackbar.showSnackbar("Invite sent — they accept it in the chat")
+                                                }
+                                            },
                                             memberCred = memberCred,
                                             disappearSecs = disappearSecs,
                                             onDisappearSecs = { disappearSecs = it },
@@ -909,8 +936,9 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     val uri = withContext(Dispatchers.IO) {
                                                         c?.mintGroupInvite(id).orEmpty()
                                                     }
+                                                    inviteUri = uri
                                                     copyToClipboard(uri)
-                                                    snackbar.showSnackbar("Invite copied")
+                                                    snackbar.showSnackbar("Invite copied — or send it via 1:1 below")
                                                 }
                                             },
                                             onSaveNickname = {
@@ -1029,6 +1057,24 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                             vaultDir = vaultDir,
                                                             readReceiptsEnabled = readReceipts,
                                                             isForeground = isForeground,
+                                                            onAcceptInvite = { uri ->
+                                                                runIo {
+                                                                    val j = withContext(Dispatchers.IO) {
+                                                                        c?.acceptGroupInvite(uri.trim()).orEmpty()
+                                                                    }
+                                                                    copyToClipboard(j)
+                                                                    joinUri = j
+                                                                    joinSendTo = ""
+                                                                    sheet = Sheet.JoinGroup
+                                                                    snackbar.showSnackbar("Invite accepted — pick a member to send the join request")
+                                                                }
+                                                            },
+                                                            onCopyInvite = { uri ->
+                                                                copyToClipboard(uri)
+                                                                scope.launch {
+                                                                    snackbar.showSnackbar("Invite copied — paste it in Join group")
+                                                                }
+                                                            },
                                                         )
                                                     }
                                                 }
@@ -1116,6 +1162,24 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     vaultDir = vaultDir,
                                                     readReceiptsEnabled = readReceipts,
                                                     isForeground = isForeground,
+                                                    onAcceptInvite = { uri ->
+                                                        runIo {
+                                                            val j = withContext(Dispatchers.IO) {
+                                                                c?.acceptGroupInvite(uri.trim()).orEmpty()
+                                                            }
+                                                            copyToClipboard(j)
+                                                            joinUri = j
+                                                            joinSendTo = ""
+                                                            sheet = Sheet.JoinGroup
+                                                            snackbar.showSnackbar("Invite accepted — pick a member to send the join request")
+                                                        }
+                                                    },
+                                                    onCopyInvite = { uri ->
+                                                        copyToClipboard(uri)
+                                                        scope.launch {
+                                                            snackbar.showSnackbar("Invite copied — paste it in Join group")
+                                                        }
+                                                    },
                                                 )
                                             }
                                         }
@@ -1182,8 +1246,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     }
                                                     copyToClipboard(joinUri)
                                                     invitePaste = ""
-                                                    sheet = Sheet.None
-                                                    snackbar.showSnackbar("Join request copied — send it to a member")
+                                                    snackbar.showSnackbar("Join request ready — send via 1:1 or copy it manually")
                                                 }
                                             },
                                         ) {
@@ -1197,6 +1260,72 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                 singleLine = true,
                                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                             )
+                                            if (joinUri.isNotEmpty()) {
+                                                var sendMenu by remember { mutableStateOf(false) }
+                                                Text(
+                                                    "Join request ready (also copied to clipboard).",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                                )
+                                                Text(
+                                                    "Send it directly instead of copying:",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                )
+                                                ExposedDropdownMenuBox(
+                                                    expanded = sendMenu,
+                                                    onExpandedChange = { sendMenu = it },
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                                ) {
+                                                    OutlinedTextField(
+                                                        value = contacts[joinSendTo] ?: joinSendTo.ifBlank { "" },
+                                                        onValueChange = {},
+                                                        readOnly = true,
+                                                        label = { Text("1:1 contact") },
+                                                        placeholder = { Text("Pick a group member") },
+                                                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(sendMenu) },
+                                                        modifier = Modifier.fillMaxWidth().menuAnchor(
+                                                            ExposedDropdownMenuAnchorType.PrimaryNotEditable,
+                                                            enabled = true,
+                                                        ),
+                                                        singleLine = true,
+                                                    )
+                                                    ExposedDropdownMenu(
+                                                        expanded = sendMenu,
+                                                        onDismissRequest = { sendMenu = false },
+                                                    ) {
+                                                        contacts.forEach { (id, name) ->
+                                                            DropdownMenuItem(
+                                                                text = { Text(name.ifBlank { shortId(id) }) },
+                                                                onClick = {
+                                                                    joinSendTo = id
+                                                                    sendMenu = false
+                                                                },
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Button(
+                                                    enabled = !busy && joinSendTo.isNotBlank(),
+                                                    onClick = {
+                                                        runIo {
+                                                            val target = joinSendTo
+                                                            val row = withContext(Dispatchers.IO) {
+                                                                c?.sendText(target, joinUri)
+                                                            } ?: return@runIo
+                                                            messages.add(row)
+                                                            markOutgoing(row)
+                                                            joinUri = ""
+                                                            joinSendTo = ""
+                                                            sheet = Sheet.None
+                                                            snackbar.showSnackbar("Join request sent — the member taps Admit")
+                                                        }
+                                                    },
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                                ) {
+                                                    Text("Send join request via 1:1")
+                                                }
+                                            }
                                         }
                                         Sheet.None -> {}
                                     }
@@ -1449,7 +1578,7 @@ private fun ChatListPane(
                         }
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = listBg,
                     scrolledContainerColor = listBg,
                 ),
@@ -1791,6 +1920,10 @@ private fun ChatThread(
     entryMark: ULong = 0UL,
     readMark: ULong = 0UL,
     onVisibleRead: (ULong) -> Unit = {},
+    onAdmitJoin: ((String) -> Unit)? = null,
+    onCopyJoin: ((String) -> Unit)? = null,
+    onAcceptInvite: ((String) -> Unit)? = null,
+    onCopyInvite: ((String) -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -2250,6 +2383,10 @@ private fun ChatThread(
                                 onReact = onReact,
                                 onDelete = onDelete,
                                 onSave = onSave,
+                                onAdmitJoin = onAdmitJoin,
+                                onCopyJoin = onCopyJoin,
+                                onAcceptInvite = onAcceptInvite,
+                                onCopyInvite = onCopyInvite,
                             )
                         }
                     }
@@ -2341,6 +2478,8 @@ private fun ActiveChatThread(
     vaultDir: File,
     readReceiptsEnabled: Boolean,
     isForeground: Boolean,
+    onAcceptInvite: ((String) -> Unit)? = null,
+    onCopyInvite: ((String) -> Unit)? = null,
 ) {
     val pickFile = rememberPickFile { path ->
         attachFilePath(
@@ -2486,6 +2625,22 @@ private fun ActiveChatThread(
                 }
             }
         },
+        onAdmitJoin = { uri ->
+            runIo {
+                withContext(Dispatchers.IO) {
+                    c?.admitJoin(uri.trim())
+                }
+                snackbar.showSnackbar("Admitted member")
+            }
+        },
+        onCopyJoin = { uri ->
+            copyToClipboard(uri)
+            scope.launch {
+                snackbar.showSnackbar("Join request copied — paste in Settings to admit manually")
+            }
+        },
+        onAcceptInvite = onAcceptInvite,
+        onCopyInvite = onCopyInvite,
     )
 }
 
@@ -2549,6 +2704,10 @@ internal fun MessageBubble(
     modifier: Modifier = Modifier,
     conceal: Boolean = false,
     onBubbleCoords: ((LayoutCoordinates) -> Unit)? = null,
+    onAdmitJoin: ((String) -> Unit)? = null,
+    onCopyJoin: ((String) -> Unit)? = null,
+    onAcceptInvite: ((String) -> Unit)? = null,
+    onCopyInvite: ((String) -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     val dark = nemoDarkTheme()
@@ -2656,18 +2815,66 @@ internal fun MessageBubble(
                     .clickable(enabled = !conceal) { menu = true }
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
-                BubbleContent(
-                    text = bubbleText(row),
-                    timeLabel = formatTime(row.sentAt),
-                    bodyColor = bodyColor,
-                    metaColor = metaColor,
-                    hasStatus = mine && status != null,
-                    status = {
-                        if (mine && status != null) {
-                            DeliveryTicks(status = status, tint = metaColor)
-                        }
-                    },
-                )
+                if (isGroupInviteUri(row.text) && (onAcceptInvite != null || onCopyInvite != null)) {
+                    GroupInviteCard(
+                        mine = mine,
+                        timeLabel = formatTime(row.sentAt),
+                        bodyColor = bodyColor,
+                        metaColor = metaColor,
+                        hasStatus = mine && status != null,
+                        status = {
+                            if (mine && status != null) {
+                                DeliveryTicks(status = status, tint = metaColor)
+                            }
+                        },
+                        onAccept = if (!mine && onAcceptInvite != null) {
+                            { onAcceptInvite(row.text) }
+                        } else {
+                            null
+                        },
+                        onCopy = if (onCopyInvite != null) {
+                            { onCopyInvite(row.text) }
+                        } else {
+                            null
+                        },
+                    )
+                } else if (isJoinRequestUri(row.text) && (onAdmitJoin != null || onCopyJoin != null)) {
+                    JoinRequestCard(
+                        mine = mine,
+                        timeLabel = formatTime(row.sentAt),
+                        bodyColor = bodyColor,
+                        metaColor = metaColor,
+                        hasStatus = mine && status != null,
+                        status = {
+                            if (mine && status != null) {
+                                DeliveryTicks(status = status, tint = metaColor)
+                            }
+                        },
+                        onAdmit = if (!mine && onAdmitJoin != null) {
+                            { onAdmitJoin(row.text) }
+                        } else {
+                            null
+                        },
+                        onCopy = if (onCopyJoin != null) {
+                            { onCopyJoin(row.text) }
+                        } else {
+                            null
+                        },
+                    )
+                } else {
+                    BubbleContent(
+                        text = bubbleText(row),
+                        timeLabel = formatTime(row.sentAt),
+                        bodyColor = bodyColor,
+                        metaColor = metaColor,
+                        hasStatus = mine && status != null,
+                        status = {
+                            if (mine && status != null) {
+                                DeliveryTicks(status = status, tint = metaColor)
+                            }
+                        },
+                    )
+                }
             }
             DropdownMenu(
                 expanded = menu,
@@ -2691,6 +2898,102 @@ internal fun MessageBubble(
                     onDelete()
                 })
             }
+        }
+    }
+}
+
+@Composable
+private fun GroupInviteCard(
+    mine: Boolean,
+    timeLabel: String,
+    bodyColor: Color,
+    metaColor: Color,
+    hasStatus: Boolean,
+    status: @Composable () -> Unit,
+    onAccept: (() -> Unit)?,
+    onCopy: (() -> Unit)?,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = "Group invite",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = bodyColor,
+        )
+        Text(
+            text = if (mine) {
+                "Sent — they tap Accept in this chat."
+            } else {
+                "A group member invites you. Accepting creates a join request you send back."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = bodyColor,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (onAccept != null) {
+                Button(onClick = onAccept) { Text("Accept") }
+            }
+            if (onCopy != null) {
+                TextButton(onClick = onCopy) { Text("Copy") }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(text = timeLabel, style = MaterialTheme.typography.labelSmall, color = metaColor)
+            if (hasStatus) status()
+        }
+    }
+}
+
+@Composable
+private fun JoinRequestCard(
+    mine: Boolean,
+    timeLabel: String,
+    bodyColor: Color,
+    metaColor: Color,
+    hasStatus: Boolean,
+    status: @Composable () -> Unit,
+    onAdmit: (() -> Unit)?,
+    onCopy: (() -> Unit)?,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = "Group join request",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = bodyColor,
+        )
+        Text(
+            text = if (mine) {
+                "Sent — the member taps Admit on their side."
+            } else {
+                "Someone asks to join a group you belong to. Verify them, then admit."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = bodyColor,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (onAdmit != null) {
+                Button(onClick = onAdmit) { Text("Admit") }
+            }
+            if (onCopy != null) {
+                TextButton(onClick = onCopy) { Text("Copy") }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(text = timeLabel, style = MaterialTheme.typography.labelSmall, color = metaColor)
+            if (hasStatus) status()
         }
     }
 }
@@ -2743,6 +3046,11 @@ private fun SettingsScreen(
     joinUri: String,
     joinPaste: String,
     onJoinPaste: (String) -> Unit,
+    inviteUri: String,
+    inviteSendTo: String,
+    onInviteSendTo: (String) -> Unit,
+    roster: Map<String, String>,
+    onSendInvite: () -> Unit,
     memberCred: String,
     disappearSecs: String,
     onDisappearSecs: (String) -> Unit,
@@ -2959,6 +3267,54 @@ private fun SettingsScreen(
                 if (selected?.isGroup == true) {
                     Button(enabled = !busy, onClick = onInviteGroup, modifier = Modifier.fillMaxWidth()) {
                         Text("Copy invite for ${selected.title}")
+                    }
+                }
+                if (inviteUri.isNotEmpty() && selected?.isGroup == true) {
+                    var inviteMenu by remember { mutableStateOf(false) }
+                    Text(
+                        "Invite ready (also copied to clipboard). Send it directly:",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
+                    ExposedDropdownMenuBox(
+                        expanded = inviteMenu,
+                        onExpandedChange = { inviteMenu = it },
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = roster[inviteSendTo] ?: inviteSendTo.ifBlank { "" },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("1:1 contact") },
+                            placeholder = { Text("Pick who to invite") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(inviteMenu) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(
+                                ExposedDropdownMenuAnchorType.PrimaryNotEditable,
+                                enabled = true,
+                            ),
+                            singleLine = true,
+                        )
+                        ExposedDropdownMenu(
+                            expanded = inviteMenu,
+                            onDismissRequest = { inviteMenu = false },
+                        ) {
+                            roster.forEach { (id, name) ->
+                                DropdownMenuItem(
+                                    text = { Text(name.ifBlank { shortId(id) }) },
+                                    onClick = {
+                                        onInviteSendTo(id)
+                                        inviteMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    Button(
+                        enabled = !busy && inviteSendTo.isNotBlank(),
+                        onClick = onSendInvite,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    ) {
+                        Text("Send invite via 1:1")
                     }
                 }
                 OutlinedTextField(

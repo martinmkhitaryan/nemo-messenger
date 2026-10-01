@@ -41,7 +41,7 @@ class CreateScreenTest {
         compose.onNodeWithTag("create-identity").performClick()
         // Cold CI emulators (full boot, software rendering) can take well over
         // 5 s to dispatch the click, run validation and animate the snackbar.
-        compose.waitUntil(20_000) {
+        compose.waitUntil(40_000) {
             compose.onAllNodesWithText("Passphrase must be at least 8 characters")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
