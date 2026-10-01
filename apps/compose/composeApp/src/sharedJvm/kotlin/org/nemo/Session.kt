@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -1849,6 +1850,7 @@ private fun ChatThread(
     var overlayWindowOrigin by remember { mutableStateOf(Offset.Zero) }
     var rootHeightPx by remember { mutableFloatStateOf(1f) }
     var pendingFly by remember(chat.id) { mutableStateOf<PendingMessageSend?>(null) }
+    var showMenagerie by remember(chat.id) { mutableStateOf(false) }
     val activeFlies = remember(chat.id) { mutableStateListOf<MessageSendAnimation>() }
     val flyTargets = remember(chat.id) { mutableStateMapOf<String, Rect>() }
     // Platform split: mobile morphs composer → bubble;
@@ -2021,12 +2023,14 @@ private fun ChatThread(
                         }
                     }
                     Surface(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).clip(pillShape).combinedClickable(
+                            onClick = onSettings,
+                            onLongClick = { showMenagerie = true },
+                        ),
                         shape = pillShape,
                         color = pillColor,
                         shadowElevation = 2.dp,
                         tonalElevation = 0.dp,
-                        onClick = onSettings,
                     ) {
                         Row(
                             Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2300,6 +2304,9 @@ private fun ChatThread(
                     )
                 }
             }
+        }
+        if (showMenagerie) {
+            MenagerieEasterEggDialog(onDismiss = { showMenagerie = false })
         }
     }
 }
