@@ -136,7 +136,7 @@ Upload: after reserve, body length MUST equal the reserved A* bucket. First succ
 | --- | --- | --- |
 | `transport_ack` | Owner → home server `ack(up_to_seq)` | Ciphertext stored on client |
 | `protocol_ack` | Inside E2EE (phase 7) | Decrypted and processed; optional; batch |
-| `user_receipt` | Inside E2EE, off by default | Read; never on a server |
+| `user_receipt` | Inside E2EE, `read` message (phase 7) | Viewed by a human; sent only when the chat is open and in the foreground; 1:1 only for now (group receipts are future work) |
 
 ---
 

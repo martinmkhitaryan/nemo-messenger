@@ -27,7 +27,11 @@ ack(mailbox_capability, up_to_seq)                -> deletes acknowledged envelo
 ```text
 transport_ack   client -> its own server: "delete up to seq N". Means: ciphertext stored durably on the client.
 protocol_ack    inside the encrypted channel, recipient -> sender. Means: decrypted and processed. Optional.
-user_receipt    application feature (read receipt). Off by default. Never visible to any server.
+user_receipt    the `read` message: recipient -> sender with the highest viewed conv_seq. Means: a human
+                viewed it. Sent only when the chat is open and in the foreground (never from background
+                fetch), 1:1 chats only; group read receipts are future work (groups are not manually
+                tested yet). Never visible to any server. Users can disable read receipts per device;
+                disabling hides both sending and display.
 ```
 
 - Servers know only transport acks. A transport ack must never be interpreted or displayed as "read".

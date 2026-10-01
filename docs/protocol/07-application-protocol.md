@@ -35,6 +35,7 @@ No UUID. `conv_seq` is local to the pair or group as the clients agree (start at
 | `reaction` | 5 `target` (`conv_seq`), 6 `emoji` (tstr, max 32) | |
 | `delete` | 5 `target` | Delete-for-everyone **request**; cooperating clients hide; not enforcement |
 | `protocol_ack` | 5 `upto` (`conv_seq`) | Batch allowed |
+| `read` | 5 `upto` (`conv_seq`) | Human-viewed; sent only when the chat is viewed; 1:1 only |
 | `capability` | 5 `contact_capability` (bstr 32) | Recipient's new write token for this conversation |
 | `binding_gossip` | 5 `identity_id`, 6 `seq`, 7 `server_id` | Gossip home-server binding |
 | `disappear` | 5 `seconds` (uint) or 0 = off | Per-conversation setting; last one wins; show in UI |

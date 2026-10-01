@@ -98,6 +98,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -240,11 +241,13 @@ private const val UNREAD_CONTEXT_ABOVE = 2
 
 private data class ChatTarget(val id: String, val title: String, val isGroup: Boolean)
 
-/** Ticks for outgoing bubbles: single ✓ on network accept, ✓✓ on peer protocol_ack. */
+/** Ticks for outgoing bubbles: single ✓ on network accept, faded ✓✓ on
+ * peer delivery, full-emphasis ✓✓ once the peer views it (read receipts). */
 internal enum class OutgoingStatus {
     Pending,
     Sent,
     Delivered,
+    Read,
     Failed,
 }
 
@@ -335,6 +338,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     var shareUri by remember { mutableStateOf("") }
     var privacyMode by remember { mutableStateOf("normal") }
     var notifyMode by remember { mutableStateOf(loadNotifyMode()) }
+    var readReceipts by remember { mutableStateOf(loadReadReceiptsEnabled()) }
     var pendingNotify by remember { mutableStateOf<NemoNotifyMode?>(null) }
     var notificationsAllowed by remember { mutableStateOf(areNotificationsAllowed()) }
     val ensureNotifications = rememberEnsureNotifications {
@@ -431,7 +435,15 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         outgoing = outgoing,
         outgoingStatus = outgoingStatus,
         selectedId = selected?.id,
+        readReceiptsEnabled = readReceipts,
     )
+
+    // Foreground flag for peer read-mark flushing (backgrounding flushes the
+    // accumulated viewed max). Desktop stays foreground.
+    var isForeground by remember(store) { mutableStateOf(true) }
+    LaunchedEffect(store) {
+        store?.appForeground?.collect { isForeground = it }
+    }
 
     // Foreground sync is the default but needs the system permission to show
     // anything — ask once on entry instead of failing silently.
@@ -577,6 +589,13 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             outgoingStatus,
                                             ackedUpTo = { id ->
                                                 runCatching { c.ackedUpto(id) }.getOrDefault(0UL)
+                                            },
+                                            readUpTo = { id ->
+                                                if (!readReceipts) {
+                                                    0UL
+                                                } else {
+                                                    runCatching { c.readUpto(id) }.getOrDefault(0UL)
+                                                }
                                             },
                                         )
                                         VaultStores.findByClient(c)
@@ -935,6 +954,11 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     privacyMode = mode
                                                 }
                                             },
+                                            readReceiptsEnabled = readReceipts,
+                                            onReadReceipts = { enabled ->
+                                                saveReadReceiptsEnabled(enabled)
+                                                readReceipts = enabled
+                                            },
                                             notifyMode = notifyMode,
                                             onNotifyMode = { mode ->
                                                 pendingNotify = mode
@@ -1007,6 +1031,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                             saveFile = saveFile,
                                                             lastRead = lastRead,
                                                             vaultDir = vaultDir,
+                                                            readReceiptsEnabled = readReceipts,
+                                                            isForeground = isForeground,
                                                         )
                                                     }
                                                 }
@@ -1092,6 +1118,8 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     saveFile = saveFile,
                                                     lastRead = lastRead,
                                                     vaultDir = vaultDir,
+                                                    readReceiptsEnabled = readReceipts,
+                                                    isForeground = isForeground,
                                                 )
                                             }
                                         }
@@ -2374,6 +2402,8 @@ private fun ActiveChatThread(
     saveFile: (String, ByteArray) -> Unit,
     lastRead: MutableMap<String, ULong>,
     vaultDir: File,
+    readReceiptsEnabled: Boolean,
+    isForeground: Boolean,
 ) {
     val pickFile = rememberPickFile { path ->
         attachFilePath(
@@ -2389,12 +2419,42 @@ private fun ActiveChatThread(
     }
     var micAction by remember(target.id) { mutableStateOf<(() -> Unit)?>(null) }
     val requestMic = rememberEnsureMic { micAction?.invoke() }
+    // Peer read receipts: highest viewed seq this visit. Flushed (not streamed)
+    // on leave, on background, and as soon as the newest message is visible —
+    // never from background fetch. 1:1 only, gated by the setting.
+    var maxViewedRead by remember(target.id) { mutableStateOf(0UL) }
+    var lastSentRead by remember(target.id) { mutableStateOf(0UL) }
+    fun flushReadMark() {
+        if (!readReceiptsEnabled || target.isGroup) return
+        val upto = maxViewedRead
+        if (upto == 0UL || upto <= lastSentRead) return
+        lastSentRead = upto
+        val cc = c ?: return
+        val id = target.id
+        scope.launch(Dispatchers.IO) { runCatching { cc.markRead(id, upto) } }
+    }
+    DisposableEffect(target.id) {
+        onDispose { flushReadMark() }
+    }
+    LaunchedEffect(isForeground) {
+        if (!isForeground) flushReadMark()
+    }
     ChatThread(
         chat = target,
         messages = messages.filter { it.convId == target.id },
         entryMark = remember(target.id) { lastRead[target.id] ?: 0UL },
         readMark = lastRead[target.id] ?: 0UL,
-        onVisibleRead = { seq -> markVisibleRead(lastRead, vaultDir, scope, target.id, seq) },
+        onVisibleRead = { seq ->
+            markVisibleRead(lastRead, vaultDir, scope, target.id, seq)
+            // Viewport-tracked peer receipts: accumulate the max, flush when
+            // the newest message is on screen (live reading). Leave and
+            // background flush the rest (see effects above).
+            if (seq > maxViewedRead) {
+                maxViewedRead = seq
+                val latest = messages.filter { it.convId == target.id }.maxOfOrNull { it.convSeq } ?: 0UL
+                if (latest > 0UL && seq >= latest) flushReadMark()
+            }
+        },
         outgoing = outgoing,
         outgoingStatus = outgoingStatus,
         draft = draft,
@@ -2704,17 +2764,26 @@ private fun DeliveryTicks(status: OutgoingStatus, tint: Color) {
         OutgoingStatus.Pending -> Icons.Filled.AccessTime to "Sending"
         OutgoingStatus.Sent -> Icons.Filled.Done to "Sent"
         OutgoingStatus.Delivered -> Icons.Filled.DoneAll to "Delivered"
+        OutgoingStatus.Read -> Icons.Filled.DoneAll to "Read"
         OutgoingStatus.Failed -> Icons.Filled.ErrorOutline to "Failed"
     }
     val color = when (status) {
         OutgoingStatus.Failed -> MaterialTheme.colorScheme.error
         // Mono bubbles are inverse, so the brand accent is invisible on them —
-        // delivered ticks follow the message text instead. Blue keeps blue.
-        OutgoingStatus.Delivered ->
+        // ticks follow the message text instead. Blue keeps blue.
+        // Read is full emphasis; delivered is the same hue at reduced alpha
+        // so the pair adapts to every theme without hardcoded colors.
+        OutgoingStatus.Read ->
             if (LocalNemoPalette.current.mono) {
                 LocalNemoPalette.current.mineBody
             } else {
                 MaterialTheme.colorScheme.primary
+            }
+        OutgoingStatus.Delivered ->
+            if (LocalNemoPalette.current.mono) {
+                LocalNemoPalette.current.mineBody.copy(alpha = 0.6f)
+            } else {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
             }
         else -> tint
     }
@@ -2753,6 +2822,8 @@ private fun SettingsScreen(
     onDisappear: () -> Unit,
     privacyMode: String,
     onPrivacyMode: (String) -> Unit,
+    readReceiptsEnabled: Boolean,
+    onReadReceipts: (Boolean) -> Unit,
     notifyMode: NemoNotifyMode,
     onNotifyMode: (NemoNotifyMode) -> Unit,
     notificationsAllowed: Boolean,
@@ -2871,6 +2942,21 @@ private fun SettingsScreen(
                         Text(label, modifier = Modifier.weight(1f).padding(end = 12.dp), style = MaterialTheme.typography.bodyMedium)
                         Switch(checked = privacyMode == id, onCheckedChange = { if (it) onPrivacyMode(id) })
                     }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("Read receipts", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Send ✓✓ when you view a chat, and see others'. Off hides both ways. 1:1 chats only.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = readReceiptsEnabled, onCheckedChange = onReadReceipts)
                 }
             }
             item {
@@ -3201,6 +3287,8 @@ internal fun applyIncoming(
     outgoingStatus: MutableMap<String, OutgoingStatus>? = null,
     /** Peer-confirmed seq per conversation (FFI `ackedUpto`). */
     ackedUpTo: (String) -> ULong = { _ -> 0UL },
+    /** Peer-viewed seq per conversation (FFI `readUpto`). Zero disables. */
+    readUpTo: (String) -> ULong = { _ -> 0UL },
 ) {
     for (row in rows) {
         if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
@@ -3227,18 +3315,26 @@ internal fun applyIncoming(
         }
     }
     if (outgoingStatus != null) {
-        // Real read receipts: flip Sent to Delivered (✓✓) from peer-confirmed
-        // seqs. Runs on every batch because acks arrive inside fetches, not
-        // as events. One lookup per conversation, cached per pass.
+        // Real receipts: Sent -> Delivered (peer fetched, ✓✓ faded) ->
+        // Read (peer viewed, ✓✓ full). Runs on every batch because acks and
+        // read marks arrive inside fetches, not as events. One lookup per
+        // conversation, cached per pass.
         val confirmed = mutableMapOf<String, ULong>()
+        val viewed = mutableMapOf<String, ULong>()
         for (m in messages) {
             if (!m.outgoing || m.convSeq == 0UL) continue
             val key = outgoingMapKey(m)
-            if (outgoingStatus[key] == OutgoingStatus.Delivered) continue
+            if (outgoingStatus[key] == OutgoingStatus.Read) continue
             val upto = confirmed.getOrPut(m.convId) {
                 runCatching { ackedUpTo(m.convId) }.getOrDefault(0UL)
             }
-            if (m.convSeq <= upto) outgoingStatus[key] = OutgoingStatus.Delivered
+            if (m.convSeq <= upto && outgoingStatus[key] != OutgoingStatus.Delivered) {
+                outgoingStatus[key] = OutgoingStatus.Delivered
+            }
+            val seen = viewed.getOrPut(m.convId) {
+                runCatching { readUpTo(m.convId) }.getOrDefault(0UL)
+            }
+            if (m.convSeq <= seen) outgoingStatus[key] = OutgoingStatus.Read
         }
     }
 }

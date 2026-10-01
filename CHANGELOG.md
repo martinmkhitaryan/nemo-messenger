@@ -12,6 +12,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Human read receipts: new `read { upto }` message type (the documented
+  `user_receipt`), sent only when a chat is open and in the foreground —
+  never from background fetch. Tracked per conversation, persisted in the
+  vault, exposed as `NemoClient.mark_read()` / `read_upto()`. Ticks are now
+  three-tier and theme-adaptive: single ✓ on send, faded ✓✓ on delivery,
+  full-emphasis ✓✓ on viewed. 1:1 chats only; group read receipts are
+  future work (see README). Per-device setting, on by default; turning it
+  off hides sending and display both ways.
+
+### Added
+
 - Real read receipts: inbound `protocol_ack` messages are now recorded per
   conversation, persisted in the vault across unlocks, and exposed to the
   shell as `NemoClient.acked_upto()`. Outgoing bubbles show single ✓ on

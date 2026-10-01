@@ -804,6 +804,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -857,6 +861,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_list_contacts(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_list_groups(
 ): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_mark_read(
+): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_mint_group_invite(
@@ -872,6 +878,8 @@ fun uniffi_nemo_ffi_checksum_method_nemoclient_pull_playback_pcm(
 fun uniffi_nemo_ffi_checksum_method_nemoclient_push_capture_pcm(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_react(
+): Short
+fun uniffi_nemo_ffi_checksum_method_nemoclient_read_upto(
 ): Short
 fun uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp(
 ): Short
@@ -1006,6 +1014,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_list_contacts(`ptr`: Pointer,uniffi_out
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_list_groups(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_mark_read(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`upto`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_bound_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,`identityIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_nemo_ffi_fn_method_nemoclient_mint_group_invite(`ptr`: Pointer,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1022,6 +1032,8 @@ fun uniffi_nemo_ffi_fn_method_nemoclient_push_capture_pcm(`ptr`: Pointer,`sample
 ): Unit
 fun uniffi_nemo_ffi_fn_method_nemoclient_react(`ptr`: Pointer,`convId`: RustBuffer.ByValue,`target`: Long,`emoji`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_nemo_ffi_fn_method_nemoclient_read_upto(`ptr`: Pointer,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
 fun uniffi_nemo_ffi_fn_method_nemoclient_received_rtp(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun uniffi_nemo_ffi_fn_method_nemoclient_register(`ptr`: Pointer,`homeHttpsBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1235,6 +1247,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() != 46878.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mark_read() != 54454.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite() != 61694.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1257,6 +1272,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_react() != 16594.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_read_upto() != 25671.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp() != 14250.toShort()) {
@@ -1771,6 +1789,14 @@ public interface NemoClientInterface {
     
     fun `listGroups`(): List<GroupRow>
     
+    /**
+     * Tell the peer we viewed everything up to `upto` in a 1:1
+     * conversation. The shell calls this (gated by the read-receipts
+     * setting) when the chat is open and messages are visible — never from
+     * background fetch. 1:1 only; groups have no read receipts yet.
+     */
+    fun `markRead`(`convId`: kotlin.String, `upto`: kotlin.ULong)
+    
     fun `mintBoundGroupInvite`(`groupIdHex`: kotlin.String, `identityIdHex`: kotlin.String): kotlin.String
     
     fun `mintGroupInvite`(`groupIdHex`: kotlin.String): kotlin.String
@@ -1789,6 +1815,12 @@ public interface NemoClientInterface {
     fun `pushCapturePcm`(`samples`: List<kotlin.Short>, `sampleRate`: kotlin.UInt, `channels`: kotlin.UInt)
     
     fun `react`(`convId`: kotlin.String, `target`: kotlin.ULong, `emoji`: kotlin.String): DisplayRow
+    
+    /**
+     * Highest `conv_seq` the peer confirmed *viewing* in this conversation
+     * (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
+     */
+    fun `readUpto`(`convId`: kotlin.String): kotlin.ULong
     
     fun `receivedRtp`(): kotlin.ULong
     
@@ -2167,6 +2199,24 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    /**
+     * Tell the peer we viewed everything up to `upto` in a 1:1
+     * conversation. The shell calls this (gated by the read-receipts
+     * setting) when the chat is open and messages are visible — never from
+     * background fetch. 1:1 only; groups have no read receipts yet.
+     */
+    @Throws(FfiException::class)override fun `markRead`(`convId`: kotlin.String, `upto`: kotlin.ULong)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_mark_read(
+        it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`upto`),_status)
+}
+    }
+    
+    
+
+    
     @Throws(FfiException::class)override fun `mintBoundGroupInvite`(`groupIdHex`: kotlin.String, `identityIdHex`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
@@ -2266,6 +2316,23 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_react(
         it, FfiConverterString.lower(`convId`),FfiConverterULong.lower(`target`),FfiConverterString.lower(`emoji`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Highest `conv_seq` the peer confirmed *viewing* in this conversation
+     * (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
+     */
+    @Throws(FfiException::class)override fun `readUpto`(`convId`: kotlin.String): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithPointer {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_nemo_ffi_fn_method_nemoclient_read_upto(
+        it, FfiConverterString.lower(`convId`),_status)
 }
     }
     )

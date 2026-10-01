@@ -118,6 +118,9 @@ struct Inner {
     /// Per-conversation read-receipt high-water mark from inbound
     /// `protocol_ack` (clamped to what exists locally). Powers ✓✓.
     acked: HashMap<String, u64>,
+    /// Per-conversation human-read high-water mark from inbound `read`
+    /// (clamped like `acked`). Powers the full-emphasis ✓✓. 1:1 only.
+    read: HashMap<String, u64>,
     groups: Vec<LiveGroup>,
     pending: HashMap<[u8; KEY_LEN], PendingEntry>,
     minted: HashMap<[u8; KEY_LEN], GroupInvite>,
@@ -555,6 +558,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
                     .collect::<Vec<_>>(),
                 &inner.next_seq,
                 &inner.acked,
+                &inner.read,
             )?;
             let pending: Vec<_> = inner
                 .pending
@@ -576,6 +580,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
                     .collect::<Vec<_>>(),
                 &inner.next_seq,
                 &inner.acked,
+                &inner.read,
             )?;
         }
         None => return Err(FfiError::Core("busy".into())),
@@ -655,6 +660,7 @@ fn empty_inner(
         nicknames: HashMap::new(),
         next_seq: HashMap::new(),
         acked: HashMap::new(),
+        read: HashMap::new(),
         groups: Vec::new(),
         pending: HashMap::new(),
         minted: HashMap::new(),
@@ -1028,10 +1034,11 @@ impl NemoClient {
             inner.nicknames = nicks;
             inner.disappear = timers;
         }
-        if let Ok((rows, seqs, acked)) = inner.vault.as_ref().unwrap().load_inbox() {
+        if let Ok((rows, seqs, acked, read)) = inner.vault.as_ref().unwrap().load_inbox() {
             inner.inbox = rows.into_iter().map(from_inbox_row).collect();
             inner.next_seq = seqs;
             inner.acked = acked;
+            inner.read = read;
         }
         let invites = inner
             .vault
@@ -1297,6 +1304,7 @@ impl NemoClient {
                 inbox,
                 next_seq,
                 acked,
+                read,
                 nicknames,
                 disappear,
                 pending_invites,
@@ -1474,6 +1482,21 @@ impl NemoClient {
                                 let known = *next_seq.get(&peer_hex).unwrap_or(&0);
                                 let mark = upto.min(known);
                                 acked
+                                    .entry(peer_hex)
+                                    .and_modify(|u| *u = (*u).max(mark))
+                                    .or_insert(mark);
+                            }
+                            Ok(AppMessage {
+                                body: AppBody::Read { upto },
+                                ..
+                            }) => {
+                                // Human-read receipt: peer viewed everything up
+                                // to `upto`. Same clamp as protocol_ack. 1:1
+                                // only; group receipts are not implemented.
+                                let peer_hex = ids::to_hex(&peer);
+                                let known = *next_seq.get(&peer_hex).unwrap_or(&0);
+                                let mark = upto.min(known);
+                                read
                                     .entry(peer_hex)
                                     .and_modify(|u| *u = (*u).max(mark))
                                     .or_insert(mark);
@@ -2676,6 +2699,56 @@ impl NemoClient {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         Ok(inner.acked.get(&conv_id).copied().unwrap_or(0))
     }
+
+    /// Highest `conv_seq` the peer confirmed *viewing* in this conversation
+    /// (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
+    pub fn read_upto(&self, conv_id: String) -> Result<u64, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        Ok(inner.read.get(&conv_id).copied().unwrap_or(0))
+    }
+
+    /// Tell the peer we viewed everything up to `upto` in a 1:1
+    /// conversation. The shell calls this (gated by the read-receipts
+    /// setting) when the chat is open and messages are visible — never from
+    /// background fetch. 1:1 only; groups have no read receipts yet.
+    pub fn mark_read(&self, conv_id: String, upto: u64) -> Result<(), FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let peer = parse_identity_id(&conv_id)?;
+        let now = now_unix();
+        {
+            let Inner { state, groups, .. } = &mut *inner;
+            let session = match state {
+                Some(ClientState::Registered(session)) => session,
+                Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                None => return Err(FfiError::Core("busy".into())),
+            };
+            if groups.iter().any(|g| g.host.group_id == peer) {
+                return Err(FfiError::Core("groups have no read receipts".into()));
+            }
+            let (dest_hpke, cap) = match session.contacts.get(&peer) {
+                Some(c) if !c.revoked => (c.dest_hpke, c.delivery_capability),
+                Some(_) => return Err(CoreError::Revoked.into()),
+                None => return Err(CoreError::UnknownContact.into()),
+            };
+            let ptext = encode(&AppMessage {
+                header: AppHeader {
+                    conv_seq: 0,
+                    sent_at: now,
+                    reply_to: None,
+                },
+                body: AppBody::Read { upto },
+            })?;
+            let outer = block_on(session.install.encrypt_to_mailbox(
+                &peer,
+                &dest_hpke,
+                cap,
+                TtlBucket::DEFAULT,
+                &ptext,
+            ))?;
+            block_on(session.post_envelope(&outer))?;
+        }
+        Ok(())
+    }
 }
 
 fn push_text(
@@ -3875,6 +3948,56 @@ mod tests {
             let mut t = to.home.lock().await;
             nemo_server::pump(&mut f, &mut t).unwrap();
         });
+    }
+
+    #[test]
+    fn read_receipts_require_explicit_mark_read() {
+        // Delivery (protocol_ack) is automatic on fetch; human-read (read)
+        // only advances via mark_read. Unknown conversations and groups fail.
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-read-a");
+        let bob_dir = temp_dir("nemo-ffi-read-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "A".into())
+            .unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "B".into())
+            .unwrap();
+
+        let sent = alice.send_text(bob_id.clone(), "seen?".into()).unwrap();
+        // Bob fetches (auto-acks delivery) but never opens the chat.
+        let rows = bob.fetch_now().unwrap();
+        assert!(rows.iter().any(|r| r.text == "seen?"));
+        alice.fetch_now().unwrap();
+        assert_eq!(alice.acked_upto(bob_id.clone()).unwrap(), sent.conv_seq);
+        assert_eq!(alice.read_upto(bob_id.clone()).unwrap(), 0);
+
+        // Bob views part of the history: only that prefix is read.
+        bob.mark_read(alice_id.clone(), sent.conv_seq).unwrap();
+        alice.fetch_now().unwrap();
+        assert_eq!(alice.read_upto(bob_id.clone()).unwrap(), sent.conv_seq);
+
+        // Marks survive vault reopen.
+        let alice_path = alice_dir.to_string_lossy().into_owned();
+        drop(alice);
+        let alice2 = NemoClient::open_at(alice_path, "correct horse".into(), Vec::new()).unwrap();
+        assert_eq!(alice2.read_upto(bob_id.clone()).unwrap(), sent.conv_seq);
+        assert_eq!(alice2.acked_upto(bob_id).unwrap(), sent.conv_seq);
+
+        // Unknown conversation and groups are rejected.
+        assert!(alice2.mark_read("ab".repeat(32), 1).is_err());
+        let gid = alice2.create_group("g".into()).unwrap();
+        assert!(alice2.mark_read(gid, 1).is_err());
+        assert_eq!(alice2.read_upto("ab".repeat(32)).unwrap(), 0);
+        drop(alice2);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
     }
 
     #[test]

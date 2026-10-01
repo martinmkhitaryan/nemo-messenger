@@ -91,6 +91,55 @@ class UiDisplayTest {
     }
 
     @Test
+    fun readPromotionNeedsViewedSeqAndHonorsSetting() {
+        val conv = "cd".repeat(32)
+        fun sent(seq: ULong) = DisplayRow(
+            convId = conv,
+            convSeq = seq,
+            text = "hi",
+            sentAt = 1UL,
+            fileName = "",
+            fileMime = "",
+            fileBytes = byteArrayOf(),
+            fetchToken = "",
+            kind = "",
+            emoji = "",
+            target = 0UL,
+            hidden = false,
+            displayedAt = 1UL,
+            outgoing = true,
+        )
+        val messages = mutableListOf(sent(1UL), sent(2UL))
+        val outgoing = mutableMapOf<String, Boolean>()
+        val status = mutableMapOf<String, OutgoingStatus>()
+        applyIncoming(messages, messages.toList(), outgoing, status, ackedUpTo = { _ -> 2UL })
+        assertEquals(OutgoingStatus.Delivered, status[outgoingMapKey(sent(1UL))])
+        assertEquals(OutgoingStatus.Delivered, status[outgoingMapKey(sent(2UL))])
+        // Only the viewed prefix flips to Read; the rest stays delivered.
+        applyIncoming(
+            messages,
+            emptyList(),
+            outgoing,
+            status,
+            ackedUpTo = { _ -> 2UL },
+            readUpTo = { _ -> 1UL },
+        )
+        assertEquals(OutgoingStatus.Read, status[outgoingMapKey(sent(1UL))])
+        assertEquals(OutgoingStatus.Delivered, status[outgoingMapKey(sent(2UL))])
+        // Receipts off: read lookup short-circuits, ticks cap at delivered.
+        val off = mutableMapOf<String, OutgoingStatus>()
+        applyIncoming(
+            mutableListOf(sent(1UL)),
+            listOf(sent(1UL)),
+            mutableMapOf(),
+            off,
+            ackedUpTo = { _ -> 1UL },
+            readUpTo = { _ -> 0UL },
+        )
+        assertEquals(OutgoingStatus.Delivered, off[outgoingMapKey(sent(1UL))])
+    }
+
+    @Test
     fun shareCardBytesReadsHexPayload() {
         val raw = byteArrayOf(0x01, 0xAB.toByte())
         val hex = raw.joinToString("") { "%02x".format(it.toInt() and 0xFF) }

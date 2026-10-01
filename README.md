@@ -18,7 +18,8 @@
 > device): identity/contacts, 1:1 text, 1:1 file attachments,
 > notifications. Left to test: MLS groups (invite/join/admit/send), audible
 > 1:1 calls via TURN, High/Maximum cover + Tor, server federation.
-> No FCM by design.
+> Read receipts are 1:1-only; group read receipts come after groups are
+> manually tested. No FCM by design.
 > See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
@@ -1579,7 +1580,12 @@ protocol_ack    inside the encrypted channel, recipient -> sender
                  means: I decrypted and processed it. Optional; needed for reliable
                  delivery indicators without trusting the server.
 
-user_receipt    application feature (read receipt); off by default, never visible to the server.
+user_receipt    the `read` message, inside the encrypted channel, recipient -> sender
+                 means: I viewed it (chat open, message on screen). Sent only
+                 when the chat is viewed, never from background fetch. 1:1 chats
+                 only for now; group read receipts are future work. Never
+                 visible to the server. Per-device setting, on by default;
+                 turning it off hides sending and display both ways.
 ```
 
 A transport ack must never be interpreted as "the recipient read it". Servers know only transport acks.
@@ -2462,6 +2468,7 @@ sequenceDiagram
     B->>B: Decrypt with ratchet state
     B->>SB: transport_ack(seq)
     B-->>A: protocol_ack (inside the encrypted channel, optional)
+    B-->>A: read(upto) only when Bob views the chat (never from background fetch)
 ```
 
 ---

@@ -60,6 +60,9 @@ pub enum AppBody {
     ProtocolAck {
         upto: u64,
     },
+    Read {
+        upto: u64,
+    },
     Capability {
         contact_capability: [u8; CONTACT_CAP_LEN],
         /// When set, the receiver may create a `StoredContact` and reply (README §20).
@@ -132,6 +135,7 @@ impl AppMessage {
             AppBody::Reaction { .. } => "reaction",
             AppBody::Delete { .. } => "delete",
             AppBody::ProtocolAck { .. } => "protocol_ack",
+            AppBody::Read { .. } => "read",
             AppBody::Capability { .. } => "capability",
             AppBody::BindingGossip { .. } => "binding_gossip",
             AppBody::Disappear { .. } => "disappear",
@@ -239,6 +243,7 @@ fn extra_fields(body: &AppBody, pairs: &mut Vec<(u64, Value)>) {
         }
         AppBody::Delete { target } => pairs.push((5, Value::Uint(*target))),
         AppBody::ProtocolAck { upto } => pairs.push((5, Value::Uint(*upto))),
+        AppBody::Read { upto } => pairs.push((5, Value::Uint(*upto))),
         AppBody::Capability {
             contact_capability,
             intro,
@@ -319,6 +324,9 @@ fn parse_body(msg_type: &str, m: &[(u64, Value)]) -> Result<AppBody> {
             target: cbor::expect_uint(cbor::map_get(m, 5)?)?,
         },
         "protocol_ack" => AppBody::ProtocolAck {
+            upto: cbor::expect_uint(cbor::map_get(m, 5)?)?,
+        },
+        "read" => AppBody::Read {
             upto: cbor::expect_uint(cbor::map_get(m, 5)?)?,
         },
         "capability" => {
@@ -578,6 +586,10 @@ mod tests {
         assert_eq!(
             roundtrip(AppBody::ProtocolAck { upto: 12 }).body,
             AppBody::ProtocolAck { upto: 12 }
+        );
+        assert_eq!(
+            roundtrip(AppBody::Read { upto: 7 }).body,
+            AppBody::Read { upto: 7 }
         );
         let cap = [3u8; CONTACT_CAP_LEN];
         assert_eq!(

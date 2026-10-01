@@ -223,6 +223,20 @@ internal object VaultStores {
 }
 
 /**
+ * Peer-viewed seq lookup honoring the read-receipts setting. When receipts
+ * are off the shell neither sends marks nor displays others' (WhatsApp
+ * rule), so the lookup short-circuits to zero and ticks cap at delivered.
+ */
+internal fun readUpToOf(store: NemoVaultStore, enabled: Boolean): (String) -> ULong =
+    { id ->
+        if (!enabled) {
+            0UL
+        } else {
+            runCatching { store.client.readUpto(id) }.getOrDefault(0UL)
+        }
+    }
+
+/**
  * Subscribes the Home UI to the single [NemoVaultStore] owner. Lives here
  * (not in Session.kt) to keep `SessionPane` under the method/function budget.
  */
@@ -236,6 +250,7 @@ internal fun BindVaultStore(
     outgoing: MutableMap<String, Boolean>,
     outgoingStatus: MutableMap<String, OutgoingStatus>,
     selectedId: String?,
+    readReceiptsEnabled: Boolean,
 ) {
     LaunchedEffect(store, atHome) {
         val s = store ?: return@LaunchedEffect
@@ -249,6 +264,7 @@ internal fun BindVaultStore(
             outgoing,
             outgoingStatus,
             ackedUpTo = { id -> runCatching { s.client.ackedUpto(id) }.getOrDefault(0UL) },
+            readUpTo = readUpToOf(s, readReceiptsEnabled),
         )
         contacts.clear()
         contacts.putAll(s.contactsFlow.value)
@@ -270,6 +286,7 @@ internal fun BindVaultStore(
                 outgoing,
                 outgoingStatus,
                 ackedUpTo = { id -> runCatching { s.client.ackedUpto(id) }.getOrDefault(0UL) },
+                readUpTo = readUpToOf(s, readReceiptsEnabled),
             )
         }
     }
