@@ -101,8 +101,12 @@ internal class NemoVaultStore(val vaultDir: File, @Volatile var client: NemoClie
             val newRows = rows + expired
             if (newRows.isNotEmpty()) {
                 messagesFlow.update { mergeDisplayRows(it, newRows) }
-                runCatching { freshRows.emit(newRows) }
             }
+            // Always emit, even when empty: ack-only fetches carry no rows
+            // (protocol_ack updates FFI state invisibly), but collectors must
+            // still re-run the delivered-marks pass in applyIncoming. Empty
+            // emissions write no state, so they never recompose.
+            runCatching { freshRows.emit(newRows) }
             val contactRows = withContext(Dispatchers.IO) {
                 runCatching { c.listContacts() }.getOrDefault(emptyList())
             }

@@ -60,6 +60,37 @@ class UiDisplayTest {
     }
 
     @Test
+    fun emptyBatchStillPromotesDeliveredFromAcks() {
+        // Regression: ack-only fetches yield zero rows, but the
+        // delivered-marks pass must still run (previously it only ran when
+        // rows arrived, so ✓✓ appeared only after the peer replied).
+        val conv = "cd".repeat(32)
+        val sent = DisplayRow(
+            convId = conv,
+            convSeq = 1UL,
+            text = "hi",
+            sentAt = 1UL,
+            fileName = "",
+            fileMime = "",
+            fileBytes = byteArrayOf(),
+            fetchToken = "",
+            kind = "",
+            emoji = "",
+            target = 0UL,
+            hidden = false,
+            displayedAt = 1UL,
+            outgoing = true,
+        )
+        val messages = mutableListOf(sent)
+        val outgoing = mutableMapOf<String, Boolean>()
+        val status = mutableMapOf<String, OutgoingStatus>()
+        applyIncoming(messages, listOf(sent), outgoing, status)
+        assertEquals(OutgoingStatus.Sent, status[outgoingMapKey(sent)])
+        applyIncoming(messages, emptyList(), outgoing, status, ackedUpTo = { _ -> 1UL })
+        assertEquals(OutgoingStatus.Delivered, status[outgoingMapKey(sent)])
+    }
+
+    @Test
     fun shareCardBytesReadsHexPayload() {
         val raw = byteArrayOf(0x01, 0xAB.toByte())
         val hex = raw.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
