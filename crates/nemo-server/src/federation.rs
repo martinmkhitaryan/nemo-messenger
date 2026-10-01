@@ -44,12 +44,7 @@ impl PeerState {
     }
 
     /// Counters from Postgres. Hello is treated as done if a frame already moved.
-    pub(crate) fn restore(
-        bundle: ServerBundle,
-        refused: bool,
-        last_rx: u64,
-        next_tx: u64,
-    ) -> Self {
+    pub(crate) fn restore(bundle: ServerBundle, refused: bool, last_rx: u64, next_tx: u64) -> Self {
         Self {
             bundle,
             refused,
@@ -241,7 +236,11 @@ fn matches_fail(bytes: &[u8]) -> bool {
     matches!(parse_payload(bytes), Ok(S2sPayload::Fail))
 }
 
-pub(crate) fn take_frame(home: &mut HomeServer, peer: ServerId, payload: Vec<u8>) -> Result<S2sFrame> {
+pub(crate) fn take_frame(
+    home: &mut HomeServer,
+    peer: ServerId,
+    payload: Vec<u8>,
+) -> Result<S2sFrame> {
     let p = home.peers.get_mut(&peer).ok_or(ServerError::NotPinned)?;
     if p.refused {
         return Err(ServerError::PeerRefused);
@@ -252,7 +251,11 @@ pub(crate) fn take_frame(home: &mut HomeServer, peer: ServerId, payload: Vec<u8>
     Ok(S2sFrame { counter, payload })
 }
 
-pub(crate) fn accept_frame(home: &mut HomeServer, from: ServerId, frame: &S2sFrame) -> Result<Vec<u8>> {
+pub(crate) fn accept_frame(
+    home: &mut HomeServer,
+    from: ServerId,
+    frame: &S2sFrame,
+) -> Result<Vec<u8>> {
     let incoming = frame.counter;
     {
         let p = home.peers.get_mut(&from).ok_or(ServerError::NotPinned)?;
@@ -315,5 +318,81 @@ fn handle_ciphertext(home: &mut HomeServer, from: ServerId, ct: &[u8]) -> Result
             Ok(ok_payload(seq))
         }
         Err(_) => Ok(fail_payload()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::home::HomeServer;
+
+    fn two_pinned() -> (HomeServer, HomeServer) {
+        let mut a = HomeServer::new();
+        let mut b = HomeServer::new();
+        pin_each_other(&mut a, &mut b).unwrap();
+        (a, b)
+    }
+
+    #[test]
+    fn duplicate_frame_is_idempotent_ok() {
+        let (mut a, mut b) = two_pinned();
+        let dest = b.server_id();
+        let from = a.server_id();
+        let frame = take_frame(&mut a, dest, hello_payload(&from, &dest)).unwrap();
+        accept_frame(&mut b, from, &frame).unwrap();
+        // Duplicate delivery must not error nor advance state; it acks.
+        let second = accept_frame(&mut b, from, &frame).unwrap();
+        assert_eq!(second, ok_payload(0));
+    }
+
+    #[test]
+    fn counter_gap_is_detected_and_reset_clears_it() {
+        let (mut a, mut b) = two_pinned();
+        let dest = b.server_id();
+        let from = a.server_id();
+        // Consume counters 1 and 2 on the sender, deliver only 2.
+        let _lost = take_frame(&mut a, dest, vec![1]).unwrap();
+        let second = take_frame(&mut a, dest, vec![2]).unwrap();
+        assert!(matches!(
+            accept_frame(&mut b, from, &second),
+            Err(ServerError::CounterGap)
+        ));
+        reset_link(&mut a, dest);
+        reset_link(&mut b, from);
+        let retry = take_frame(&mut a, dest, hello_payload(&from, &dest)).unwrap();
+        assert_eq!(retry.counter, 1);
+        accept_frame(&mut b, from, &retry).unwrap();
+    }
+
+    #[test]
+    fn hello_with_swapped_ids_is_rejected() {
+        let (mut a, mut b) = two_pinned();
+        let dest = b.server_id();
+        let from = a.server_id();
+        // Receiver expects sender == `from`, receiver == self.
+        let bad = take_frame(&mut a, dest, hello_payload(&dest, &from)).unwrap();
+        assert!(matches!(
+            accept_frame(&mut b, from, &bad),
+            Err(ServerError::HelloMismatch)
+        ));
+    }
+
+    #[test]
+    fn short_ciphertext_returns_fail_not_error() {
+        let (mut a, mut b) = two_pinned();
+        let dest = b.server_id();
+        let from = a.server_id();
+        let frame = take_frame(&mut a, dest, vec![0x00]).unwrap();
+        let reply = accept_frame(&mut b, from, &frame).unwrap();
+        assert_eq!(reply, fail_payload());
+    }
+
+    #[test]
+    fn backoff_doubling_saturates_at_cap() {
+        let mut backoff_secs = 1u64;
+        for _ in 0..20 {
+            backoff_secs = (backoff_secs.saturating_mul(2)).min(BACKOFF_CAP_SECS);
+        }
+        assert_eq!(backoff_secs, BACKOFF_CAP_SECS);
     }
 }

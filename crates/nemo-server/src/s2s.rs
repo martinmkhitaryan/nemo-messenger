@@ -144,6 +144,15 @@ pub async fn dial_and_pump(state: &AppState, dest: ServerId) -> Result<PumpStats
     }
 
     let mut stats = PumpStats::default();
+    // Match in-process `pump`: drop rows older than 14 days instead of
+    // leaving them queued forever (`next_due` only skips them).
+    {
+        let mut home = state.home.lock().await;
+        stats.expired = purge_expired(&mut home, dest);
+    }
+    if stats.expired > 0 {
+        state.persist().await;
+    }
     loop {
         let row = {
             let mut home = state.home.lock().await;
@@ -243,6 +252,18 @@ fn remove_matching_outbound(home: &mut HomeServer, row: &crate::federation::Outb
         home.outbound.remove(i);
         home.mark_outbound_dirty();
     }
+}
+
+fn purge_expired(home: &mut HomeServer, dest: ServerId) -> usize {
+    let now = home.now;
+    let before = home.outbound.len();
+    home.outbound
+        .retain(|r| r.dest != dest || now.saturating_sub(r.enqueued_at) <= OUTBOUND_MAX_AGE_SECS);
+    let expired = before - home.outbound.len();
+    if expired > 0 {
+        home.mark_outbound_dirty();
+    }
+    expired
 }
 
 fn backoff_row(home: &mut HomeServer, row: &crate::federation::OutboundRow) {

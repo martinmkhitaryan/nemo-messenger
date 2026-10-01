@@ -1,5 +1,5 @@
 use nemo_server::federation::{
-    apply_sign_rotate, pin_each_other, pump, refuse, Enqueue, OUTBOUND_MAX_AGE_SECS,
+    apply_sign_rotate, pin, pin_each_other, pump, refuse, Enqueue, OUTBOUND_MAX_AGE_SECS,
 };
 use nemo_server::{HomeServer, ServerError};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, PaddedMessage, TtlBucket};
@@ -146,4 +146,132 @@ fn backoff_defers_until_next_attempt() {
     assert_eq!(stats.deferred, 1);
     assert_eq!(stats.delivered, 0);
     assert_eq!(a.outbound_len(), 1);
+}
+
+#[test]
+fn bogus_capability_is_failed_not_delivered() {
+    let mut a = HomeServer::new();
+    let mut b = HomeServer::new();
+    pin_each_other(&mut a, &mut b).unwrap();
+    let (_sk, bob) = register(&mut b);
+    let bogus_cap = [0x77u8; KEY_LEN];
+    a.enqueue(wrap(&b.hpke_public(), bogus_cap, vec![1]))
+        .unwrap();
+    let stats = pump(&mut a, &mut b).unwrap();
+    assert_eq!(stats.failed, 1);
+    assert_eq!(stats.delivered, 0);
+    assert_eq!(a.outbound_len(), 0);
+    let rows = b
+        .fetch(bob, &auth(&_sk, bob, b.now), b.now)
+        .unwrap_or_default();
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn peer_rate_limit_caps_throughput_per_second() {
+    let mut a = HomeServer::new();
+    let mut b = HomeServer::new();
+    pin_each_other(&mut a, &mut b).unwrap();
+    let (_sk, bob) = register(&mut b);
+    // Fresh capability per message avoids the 30/min per-capability limit,
+    // isolating the 100/sec per-peer limit in `handle_ciphertext`.
+    for _ in 0..105 {
+        let cap = b.mint_contact_capability(bob).unwrap();
+        a.enqueue(wrap(&b.hpke_public(), cap, vec![1])).unwrap();
+    }
+    let stats = pump(&mut a, &mut b).unwrap();
+    assert_eq!(stats.delivered, 100);
+    assert_eq!(stats.failed, 5);
+    assert_eq!(a.outbound_len(), 0);
+}
+
+#[test]
+fn pump_only_delivers_to_named_peer() {
+    let mut a = HomeServer::new();
+    let mut b = HomeServer::new();
+    let mut c = HomeServer::new();
+    pin_each_other(&mut a, &mut b).unwrap();
+    pin_each_other(&mut a, &mut c).unwrap();
+    let (bob_sk, bob) = register(&mut b);
+    let (cara_sk, cara) = register(&mut c);
+    let cap_b = b.mint_contact_capability(bob).unwrap();
+    let cap_c = c.mint_contact_capability(cara).unwrap();
+    a.enqueue(wrap(&b.hpke_public(), cap_b, vec![1])).unwrap();
+    a.enqueue(wrap(&c.hpke_public(), cap_c, vec![2])).unwrap();
+    let stats = pump(&mut a, &mut b).unwrap();
+    assert_eq!(stats.delivered, 1);
+    assert_eq!(a.outbound_len(), 1);
+    assert_eq!(
+        b.fetch(bob, &auth(&bob_sk, bob, b.now), b.now)
+            .unwrap()
+            .len(),
+        1
+    );
+    let stats = pump(&mut a, &mut c).unwrap();
+    assert_eq!(stats.delivered, 1);
+    assert_eq!(a.outbound_len(), 0);
+    assert_eq!(
+        c.fetch(cara, &auth(&cara_sk, cara, c.now), c.now)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn refuse_on_sender_side_blocks_pump() {
+    let mut a = HomeServer::new();
+    let mut b = HomeServer::new();
+    pin_each_other(&mut a, &mut b).unwrap();
+    let (_sk, bob) = register(&mut b);
+    let cap = b.mint_contact_capability(bob).unwrap();
+    a.enqueue(wrap(&b.hpke_public(), cap, vec![1])).unwrap();
+    refuse(&mut a, b.server_id());
+    assert!(matches!(
+        pump(&mut a, &mut b),
+        Err(ServerError::PeerRefused)
+    ));
+    assert_eq!(a.outbound_len(), 1);
+}
+
+#[test]
+fn pin_rejects_tampered_bundle() {
+    let mut a = HomeServer::new();
+    let b = HomeServer::new();
+    let mut bad = b.bundle().clone();
+    bad.signature[0] ^= 0xff;
+    assert!(pin(&mut a, bad).is_err());
+    assert!(a.bundle_pin(b.server_id()).is_none());
+}
+
+#[test]
+fn pin_self_is_noop() {
+    let mut a = HomeServer::new();
+    let bundle = a.bundle().clone();
+    pin(&mut a, bundle).unwrap();
+    assert!(a.bundle_pin(a.server_id()).is_none());
+}
+
+#[test]
+fn sign_rotate_rejects_unknown_peer_and_bad_sig() {
+    let mut a = HomeServer::new();
+    let b = HomeServer::new();
+    let new = SigningKey::generate(&mut rand::rng());
+    let rotate = b.sign_rotate(new.verifying_key().to_bytes(), 1).unwrap();
+    assert!(matches!(
+        apply_sign_rotate(&mut a, b.server_id(), &rotate),
+        Err(ServerError::NotPinned)
+    ));
+
+    let mut c = HomeServer::new();
+    let mut d = HomeServer::new();
+    pin_each_other(&mut c, &mut d).unwrap();
+    let attacker = SigningKey::generate(&mut rand::rng());
+    let forged = d
+        .sign_rotate(attacker.verifying_key().to_bytes(), 1)
+        .unwrap();
+    // Corrupt the signature so verification against the pinned key fails.
+    let mut tampered = forged.clone();
+    tampered.signature[0] ^= 0x01;
+    assert!(apply_sign_rotate(&mut c, d.server_id(), &tampered).is_err());
 }
