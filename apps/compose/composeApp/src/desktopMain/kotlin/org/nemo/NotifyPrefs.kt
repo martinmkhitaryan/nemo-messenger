@@ -29,6 +29,11 @@ internal actual fun publishClient(client: NemoClient?) {
     // No-op.
 }
 
+/** Desktop has no tray rows to clear. */
+internal actual fun dismissTrayForChat(store: NemoVaultStore, convId: String) {
+    // No-op.
+}
+
 internal actual fun areNotificationsAllowed(): Boolean = true
 
 internal actual fun openSystemNotificationSettings() {

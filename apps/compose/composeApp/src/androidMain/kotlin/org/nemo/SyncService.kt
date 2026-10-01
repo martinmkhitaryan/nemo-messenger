@@ -5,16 +5,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
@@ -28,23 +30,29 @@ import kotlin.coroutines.cancellation.CancellationException
  * waitWakeup/poll loops and publishes [NemoVaultStore.messagesFlow] state.
  * This service only ensures the store runs and diffs that replayed state
  * against the persisted notify mark, so late subscribers never miss a
- * notification (fresh-row events alone would be lossy). Suppression honors
- * [NemoVaultStore.visibleChatId] + [NemoVaultStore.appForeground]. It never
- * calls `fetchNow()` itself, so it cannot steal rows from the open chat
- * list. Before unlock it idles with an "unlock to resume" note until
- * [publishClient] hands it a client.
+ * notification (fresh-row events alone would be lossy). Suppression at post
+ * time honors [NemoVaultStore.visibleChatId] + [NemoVaultStore.appForeground]
+ * (see `postPending`). It never calls `fetchNow()` itself, so it cannot
+ * steal rows from the open chat list.
+ *
+ * Decoupled by design: the service never observes UI state. Clearing a
+ * conversation's tray row when its chat opens is owned by the UI
+ * ([dismissTrayForChat] from `BindVaultStore`). Collecting UI flows here
+ * used to force-quit the app via an uncaught child exception on every
+ * identity switch — that coupling is gone.
+ *
+ * The loop below is exception-safe: any unexpected failure is logged and
+ * retried, never propagated. A service loop must not be able to take down
+ * the process; only teardown cancellation escapes.
  */
 internal class SyncService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "SyncService uncaught", e) },
+    )
     private var loop: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    // Control-flow signal, not a crash: must extend CancellationException so
-    // a throw from clearJob (child of the loop Job) cancels only that child
-    // instead of failing the loop and hitting the uncaught handler
-    // (force-quit when opening a chat emits visibleChatId on a stale stamp).
-    private class StaleIdentity : CancellationException()
 
     override fun onCreate() {
         super.onCreate()
@@ -52,49 +60,35 @@ internal class SyncService : Service() {
         startForegroundLocked(false)
         loop = scope.launch {
             while (isActive) {
-                val client = LocalClient.client
-                if (client == null) {
-                    startForegroundLocked(false)
-                    delay(5_000)
-                    continue
-                }
-                startForegroundLocked(true)
-                val store = VaultStores.findByClient(client)
-                if (store == null) {
-                    // No owner yet (unlock race) or legacy caller: fall back to
-                    // direct fetch so delivery never stalls. Production always
-                    // has a store; tests exercise this path via syncNow.
-                    val stamp = LocalClient.generation
-                    val woke = runCatching { client.waitWakeup() }
-                    try {
-                        // Vault wiped/recreated mid-wait: this wake belongs to a
-                        // dead identity. Drop it; the next iteration serves the
-                        // new client immediately.
-                        if (stamp != LocalClient.generation) continue
-                        woke.getOrThrow()
-                        LocalClient.client?.let { syncNow(it) }
-                    } catch (_: Throwable) {
-                        delay(2_000)
-                    }
-                    continue
-                }
-                store.start()
-                val stamp = LocalClient.generation
-                // Clearing the tray row when its chat is opened: the user sees
-                // the thread, so the alert must not linger and silence the
-                // next message (per-conversation row, see messageNotifyId).
-                val svcCtx = this@SyncService
-                val clearJob = launch {
-                    store.visibleChatId.collect { id ->
-                        if (stamp != LocalClient.generation) throw StaleIdentity()
-                        if (id != null) {
-                            runCatching {
-                                NotificationManagerCompat.from(svcCtx).cancel(messageNotifyId(store, id))
-                            }
-                        }
-                    }
-                }
                 try {
+                    val client = LocalClient.client
+                    if (client == null) {
+                        startForegroundLocked(false)
+                        delay(5_000)
+                        continue
+                    }
+                    startForegroundLocked(true)
+                    val store = VaultStores.findByClient(client)
+                    if (store == null) {
+                        // No owner yet (unlock race) or legacy caller: fall back to
+                        // direct fetch so delivery never stalls. Production always
+                        // has a store; tests exercise this path via syncNow.
+                        val stamp = LocalClient.generation
+                        val woke = runCatching { client.waitWakeup() }
+                        try {
+                            // Vault wiped/recreated mid-wait: this wake belongs to a
+                            // dead identity. Drop it; the next iteration serves the
+                            // new client immediately.
+                            if (stamp != LocalClient.generation) continue
+                            woke.getOrThrow()
+                            LocalClient.client?.let { syncNow(it) }
+                        } catch (_: Throwable) {
+                            delay(2_000)
+                        }
+                        continue
+                    }
+                    store.start()
+                    val stamp = LocalClient.generation
                     // State, not events: messagesFlow replays the latest snapshot,
                     // so a collector that subscribes late still diffs correctly.
                     // Use the service itself as Context: it is valid even if no
@@ -102,32 +96,39 @@ internal class SyncService : Service() {
                     // The timeout re-resolves the registry: if the store was ever
                     // replaced/closed under us, this collect would otherwise park
                     // forever on a dead flow (checks only run on emission).
-                    kotlinx.coroutines.withTimeout(30_000) {
-                        store.messagesFlow.collect { messages ->
-                            if (stamp != LocalClient.generation) throw StaleIdentity()
-                            val live = LocalClient.client
-                            if (live == null || VaultStores.findByClient(live) !== store) {
-                                throw StaleIdentity()
-                            }
-                            if (messages.isEmpty()) return@collect
-                            notifyMessagesState(svcCtx, store, messages)
+                    // Identity switches end the flow normally via takeWhile (no
+                    // exceptions for control flow); the loop re-resolves below.
+                    val svcCtx = this@SyncService
+                    try {
+                        kotlinx.coroutines.withTimeout(30_000) {
+                            store.messagesFlow
+                                .takeWhile {
+                                    val live = LocalClient.client
+                                    stamp == LocalClient.generation &&
+                                        live != null &&
+                                        VaultStores.findByClient(live) === store
+                                }
+                                .collect { messages ->
+                                    if (messages.isEmpty()) return@collect
+                                    notifyMessagesState(svcCtx, store, messages)
+                                }
                         }
+                    } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                        // Idle (or wedged) with no emission for 30 s: loop around
+                        // and re-resolve client/store. Re-collect replays state.
                     }
-                } catch (e: StaleIdentity) {
-                    continue
                 } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-                    // Idle (or wedged) with no emission for 30 s: loop around
-                    // and re-resolve client/store. Re-collect replays state.
+                    // Backstop for timeout paths without their own handler.
                     continue
                 } catch (e: CancellationException) {
                     // Service torn down (scope cancelled): must propagate so
-                    // onDestroy actually stops the loop. Swallowing it here
-                    // would spin on delay() instead of exiting.
+                    // onDestroy actually stops the loop.
                     throw e
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    // Seatbelt: a service loop must never take down the
+                    // process. Log and retry; teardown still escapes above.
+                    Log.e(TAG, "SyncService loop failed, restarting", t)
                     delay(2_000)
-                } finally {
-                    clearJob.cancel()
                 }
             }
         }
@@ -174,6 +175,7 @@ internal class SyncService : Service() {
     }
 
     companion object {
+        private const val TAG = "SyncService"
         private const val SYNC_NOTIFICATION_ID = 1
         private const val ACTION_REFRESH = "org.nemo.REFRESH_SYNC"
 

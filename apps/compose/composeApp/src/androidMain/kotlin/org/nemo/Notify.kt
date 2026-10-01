@@ -166,6 +166,19 @@ internal fun messageNotifyId(store: NemoVaultStore, convId: String): Int {
     return messageNotifyId(titles[convId] ?: shortId(convId))
 }
 
+/**
+ * UI-side tray clear: the user opened this chat, so its alert must not
+ * linger (and must not silence the next message via repost dedup).
+ * Same per-conversation row id as posting; failures are swallowed — a
+ * stale tray row is cosmetic, never fatal.
+ */
+internal actual fun dismissTrayForChat(store: NemoVaultStore, convId: String) {
+    val ctx = appContext ?: return
+    runCatching {
+        NotificationManagerCompat.from(ctx).cancel(messageNotifyId(store, convId))
+    }
+}
+
 internal fun ensureChannels(ctx: Context) {
     val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if (manager.getNotificationChannel(SYNC_CHANNEL) == null) {

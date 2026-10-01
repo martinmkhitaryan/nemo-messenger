@@ -310,5 +310,11 @@ internal fun BindVaultStore(
 
     LaunchedEffect(store, selectedId) {
         store?.visibleChatId?.value = selectedId
+        // UI owns its tray row: opening the chat clears the alert locally.
+        // The background service never observes this state (decoupled — see
+        // SyncService), it only suppresses at post time.
+        if (store != null && selectedId != null) {
+            runCatching { dismissTrayForChat(store, selectedId) }
+        }
     }
 }
