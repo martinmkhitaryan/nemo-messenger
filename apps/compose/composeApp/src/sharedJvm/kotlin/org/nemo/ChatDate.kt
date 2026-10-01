@@ -189,6 +189,14 @@ internal fun floatingPushForPos(floatingTop: Float, floatingHeight: Float, activ
 }
 
 /**
+ * Whether the floating date pill may show: only for finger-driven scrolling.
+ * Programmatic animations (pin-to-bottom on send/receive, jump-to-latest)
+ * also raise `isScrollInProgress` but must never summon the pill.
+ */
+internal fun pillArmedForScroll(isScrollInProgress: Boolean, autoScrolling: Boolean): Boolean =
+    isScrollInProgress && !autoScrolling
+
+/**
  * Dedicated state for the floating date.
  *
  * Keeps ChatThread small: header flags are computed once per list change,
@@ -284,6 +292,7 @@ internal fun rememberFloatingDateUiState(
     chatId: String,
     listState: LazyListState,
     dividerAt: Int?,
+    autoScrolling: Boolean = false,
 ): FloatingDateUiState {
     val dateNeedsHeader = remember(messages) { dateHeadersFor(messages) }
     val dateDayKeys = remember(messages) { messages.map { chatDayKey(it.sentAt) } }
@@ -300,8 +309,8 @@ internal fun rememberFloatingDateUiState(
     val floatingTop = remember(chatId) { mutableFloatStateOf(Float.NaN) }
     val floatingHeight = remember(chatId) { mutableFloatStateOf(Float.NaN) }
 
-    LaunchedEffect(chatId, listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
+    LaunchedEffect(chatId, listState.isScrollInProgress, autoScrolling) {
+        if (pillArmedForScroll(listState.isScrollInProgress, autoScrolling)) {
             scrollingVisible.value = true
         } else {
             delay(FLOATING_DATE_HIDE_DELAY_MS)

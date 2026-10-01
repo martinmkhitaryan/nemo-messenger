@@ -11,6 +11,17 @@ import kotlin.test.assertTrue
 
 class ChatDateTest {
     @Test
+    fun pillShowsOnlyForFingerScrolling() {
+        // Programmatic animations (pin-to-bottom on send/receive,
+        // jump-to-latest) raise isScrollInProgress too but must never summon
+        // the pill; flings after a drag keep it (still user-driven).
+        assertTrue(pillArmedForScroll(isScrollInProgress = true, autoScrolling = false))
+        assertFalse(pillArmedForScroll(isScrollInProgress = true, autoScrolling = true))
+        assertFalse(pillArmedForScroll(isScrollInProgress = false, autoScrolling = false))
+        assertFalse(pillArmedForScroll(isScrollInProgress = false, autoScrolling = true))
+    }
+
+    @Test
     fun unknownTimestampHasNoDay() {
         assertNull(chatDayKey(0UL))
         assertEquals("", formatChatDate(0UL))

@@ -1921,7 +1921,19 @@ private fun ChatThread(
 
     // Floating date lives in its own state holder so the thread keeps its
     // unread-marker indices and visible-index math untouched.
-    val floatingDate = rememberFloatingDateUiState(messages, chat.id, listState, dividerAt)
+    // autoScrolling marks programmatic animations (pin-to-bottom on send /
+    // receive, jump-to-latest) so the date pill — finger scrolling only —
+    // ignores them.
+    var autoScrolling by remember(chat.id) { mutableStateOf(false) }
+    suspend fun pinToBottomAnimated() {
+        autoScrolling = true
+        try {
+            listState.animateChatToBottom(animated = true)
+        } finally {
+            autoScrolling = false
+        }
+    }
+    val floatingDate = rememberFloatingDateUiState(messages, chat.id, listState, dividerAt, autoScrolling)
 
     var overlayRoot by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var composerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -2002,7 +2014,7 @@ private fun ChatThread(
         val alreadyPinned =
             listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
         if (alreadyPinned && chatReady) return@LaunchedEffect
-        listState.animateChatToBottom(animated = chatReady)
+        pinToBottomAnimated()
     }
     // Promote pending composer capture → active flight once the optimistic row exists.
     // Mobile only: desktop/web never flies, bubbles just appear.
@@ -2030,7 +2042,7 @@ private fun ChatThread(
             // Scroll to latest first so the new bubble lands above the composer, then send.
             if (!stickToBottom) {
                 stickToBottom = true
-                listState.animateChatToBottom(animated = true)
+                pinToBottomAnimated()
                 withFrameMillis { }
             }
             val parent = overlayRoot
@@ -2348,7 +2360,12 @@ private fun ChatThread(
                         onClick = {
                             scope.launch {
                                 stickToBottom = true
-                                listState.animateScrollToItem(0)
+                                autoScrolling = true
+                                try {
+                                    listState.animateScrollToItem(0)
+                                } finally {
+                                    autoScrolling = false
+                                }
                             }
                         },
                     )
