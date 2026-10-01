@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Foreground service keeping the process alive while backgrounded.
@@ -39,7 +40,11 @@ internal class SyncService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private class StaleIdentity : Exception()
+    // Control-flow signal, not a crash: must extend CancellationException so
+    // a throw from clearJob (child of the loop Job) cancels only that child
+    // instead of failing the loop and hitting the uncaught handler
+    // (force-quit when opening a chat emits visibleChatId on a stale stamp).
+    private class StaleIdentity : CancellationException()
 
     override fun onCreate() {
         super.onCreate()
@@ -114,6 +119,11 @@ internal class SyncService : Service() {
                     // Idle (or wedged) with no emission for 30 s: loop around
                     // and re-resolve client/store. Re-collect replays state.
                     continue
+                } catch (e: CancellationException) {
+                    // Service torn down (scope cancelled): must propagate so
+                    // onDestroy actually stops the loop. Swallowing it here
+                    // would spin on delay() instead of exiting.
+                    throw e
                 } catch (_: Throwable) {
                     delay(2_000)
                 } finally {
