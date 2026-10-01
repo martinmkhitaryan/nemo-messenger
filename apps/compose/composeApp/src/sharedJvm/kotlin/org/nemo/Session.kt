@@ -1944,7 +1944,11 @@ private fun ChatThread(
             seedDone = true
         }
     }
-    LaunchedEffect(listState, dividerAt, messages.size) {
+    LaunchedEffect(listState, dividerAt, messages.size, markEnabled) {
+        // markEnabled is a key (not just a guard): the opening jump enables
+        // marking after the first layout, and distinctUntilChanged would
+        // otherwise swallow the initial viewport forever — a chat that fits
+        // on screen with no scroll would never report anything viewed.
         snapshotFlow {
             val info = listState.layoutInfo
             val visible = info.visibleItemsInfo
