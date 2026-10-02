@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "org.nemo"
-version = "0.3.3"
+version = "0.3.4"
 
 val repoRoot = rootProject.projectDir.parentFile.parentFile
 val ffiDebugDir = repoRoot.resolve("target/debug")
@@ -118,7 +118,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Deb)
             packageName = "nemo-messenger"
-            packageVersion = "0.3.3"
+            packageVersion = "0.3.4"
             description = "Nemo Messenger"
             vendor = "Nemo"
             copyright = "Copyright (c) 2026 Martin Mkhitaryan. AGPL-3.0-only."

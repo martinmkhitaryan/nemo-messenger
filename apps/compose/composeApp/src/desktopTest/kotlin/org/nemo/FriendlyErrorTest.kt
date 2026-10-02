@@ -50,4 +50,21 @@ class FriendlyErrorTest {
     fun unknownErrorsStayVisible() {
         assertEquals("weird engine detail", friendlyErrorMessage(RuntimeException("weird engine detail")))
     }
+
+    @Test
+    fun overlongMessagesAreExplained() {
+        assertEquals(
+            "Message is too long — keep it under 8192 bytes.",
+            friendlyErrorMessage(RuntimeException("application text exceeds 8192 UTF-8 bytes")),
+        )
+    }
+
+    @Test
+    fun draftLimitCountsBytesNotChars() {
+        assertEquals(8192, draftByteSize("x".repeat(8192)))
+        assertEquals(false, isOverTextLimit("x".repeat(8192)))
+        assertEquals(true, isOverTextLimit("x".repeat(8193)))
+        assertEquals(true, isOverTextLimit("👍".repeat(2049)))
+        assertEquals(false, isOverTextLimit("  "))
+    }
 }

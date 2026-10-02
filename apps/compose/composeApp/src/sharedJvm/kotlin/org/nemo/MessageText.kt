@@ -59,3 +59,11 @@ internal fun formatTime(sentAt: ULong): String {
 internal fun isJoinRequestUri(text: String): Boolean = text.trimStart().startsWith("nemo-j:1:")
 
 internal fun isGroupInviteUri(text: String): Boolean = text.trimStart().startsWith("nemo-g:1:")
+
+/** Single-message cap shared with the engine (`TEXT_MAX_BYTES`). Bytes, not
+ * chars — emoji and non-Latin scripts weigh more. */
+internal const val TEXT_MAX_BYTES: Int = 8192
+
+internal fun draftByteSize(text: String): Int = text.toByteArray().size
+
+internal fun isOverTextLimit(text: String): Boolean = draftByteSize(text.trim()) > TEXT_MAX_BYTES

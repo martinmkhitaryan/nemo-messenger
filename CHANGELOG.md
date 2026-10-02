@@ -8,6 +8,15 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.3.4] - 2026-10-02
+
+### Added
+
+- Composer shows a progress ring around the send button filling toward
+  the 8192-byte single-message cap (red at the limit, send disabled).
+  Overlong drafts are rejected up front with a clear warning instead of
+  a backend error.
+
 ## [0.3.3] - 2026-10-02
 
 ### Added

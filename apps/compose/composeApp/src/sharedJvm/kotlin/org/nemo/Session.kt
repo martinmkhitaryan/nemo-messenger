@@ -125,6 +125,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -183,15 +185,6 @@ internal fun friendlyErrorMessage(e: Throwable): String {
         return "Still working — please try again in a moment."
     }
     val lower = raw.lowercase(Locale.US)
-    if ("not registered" in lower) {
-        return "Connect to a home server first."
-    }
-    if ("already registered" in lower) {
-        return "Already connected to this home server."
-    }
-    if ("home http status" in lower) {
-        return "The home server returned an error. Try again later."
-    }
     val networkHints = listOf(
         "connection refused", "connection reset", "connection timed out",
         "timed out", "timeout", "failed to connect", "unable to connect",
@@ -202,10 +195,14 @@ internal fun friendlyErrorMessage(e: Throwable): String {
         "etimedout", "econnrefused", "econnreset", "ehostunreach",
         "connectexception", "sockettimeout", "unknownhostexception",
     )
-    if (networkHints.any { it in lower }) {
-        return "Couldn't reach the home server. Check the address and try again."
+    return when {
+        "not registered" in lower -> "Connect to a home server first."
+        "already registered" in lower -> "Already connected to this home server."
+        "exceeds 8192" in lower || "too long" in lower -> "Message is too long — keep it under 8192 bytes."
+        "home http status" in lower -> "The home server returned an error. Try again later."
+        networkHints.any { it in lower } -> "Couldn't reach the home server. Check the address and try again."
+        else -> raw.ifBlank { "Something went wrong. Try again." }
     }
-    return raw.ifBlank { "Something went wrong. Try again." }
 }
 
 internal fun isAlreadyRegisteredError(e: Throwable): Boolean {
@@ -1318,6 +1315,12 @@ private fun sendChat(
 ) {
     val text = draft.trim()
     if (text.isEmpty()) return
+    if (isOverTextLimit(text)) {
+        scope.launch {
+            snackbar.showSnackbar("Message is too long — keep it under 8192 bytes.")
+        }
+        return
+    }
     clear()
     val localId = newLocalId()
     val pending = optimisticTextRow(chat.id, text, localId)
@@ -1892,7 +1895,9 @@ private fun ChatThread(
     val palette = LocalNemoPalette.current
     val dark = palette.dark
     val wallpaper = palette.chat
-    val canSend = draft.isNotBlank()
+    val draftBytes = draftByteSize(draft)
+    val overLimit = draftBytes > TEXT_MAX_BYTES
+    val canSend = draft.isNotBlank() && !overLimit
     val sendScale by animateFloatAsState(
         targetValue = if (canSend) 1f else 0.88f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
@@ -2213,79 +2218,106 @@ private fun ChatThread(
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
                     shadowElevation = 6.dp,
                 ) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .imePadding()
-                            .padding(horizontal = 6.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.Bottom,
-                    ) {
-                        IconButton(onClick = onAttach) {
-                            Icon(
-                                Icons.Filled.AttachFile,
-                                contentDescription = "Attach",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .onGloballyPositioned { composerCoords = it },
-                            shape = RoundedCornerShape(22.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (dark) 0.55f else 0.85f),
-                            tonalElevation = 0.dp,
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .navigationBarsPadding()
+                                .imePadding()
+                                .padding(horizontal = 6.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.Bottom,
                         ) {
-                            BasicTextField(
-                                value = draft,
-                                onValueChange = onDraft,
+                            IconButton(onClick = onAttach) {
+                                Icon(
+                                    Icons.Filled.AttachFile,
+                                    contentDescription = "Attach",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Surface(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = if (useFlyMorph) 40.dp else 44.dp)
-                                    .padding(
-                                        horizontal = 16.dp,
-                                        vertical = if (useFlyMorph) 10.dp else 12.dp,
-                                    )
-                                    .onPreviewKeyEvent { event ->
-                                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                                        if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
-                                            return@onPreviewKeyEvent false
+                                    .weight(1f)
+                                    .onGloballyPositioned { composerCoords = it },
+                                shape = RoundedCornerShape(22.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (dark) 0.55f else 0.85f),
+                                tonalElevation = 0.dp,
+                            ) {
+                                BasicTextField(
+                                    value = draft,
+                                    onValueChange = onDraft,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = if (useFlyMorph) 40.dp else 44.dp)
+                                        .padding(
+                                            horizontal = 16.dp,
+                                            vertical = if (useFlyMorph) 10.dp else 12.dp,
+                                        )
+                                        .onPreviewKeyEvent { event ->
+                                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                            if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
+                                                return@onPreviewKeyEvent false
+                                            }
+                                            if (event.isShiftPressed) return@onPreviewKeyEvent false
+                                            requestSend()
+                                            true
+                                        },
+                                    textStyle = TextStyle(
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        fontSize = 16.sp,
+                                        lineHeight = 22.sp,
+                                    ),
+                                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                    maxLines = 5,
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                    keyboardActions = KeyboardActions(onSend = { requestSend() }),
+                                    decorationBox = { inner ->
+                                        Box {
+                                            if (draft.isEmpty()) {
+                                                Text(
+                                                    "Message",
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontSize = 16.sp,
+                                                )
+                                            }
+                                            inner()
                                         }
-                                        if (event.isShiftPressed) return@onPreviewKeyEvent false
-                                        requestSend()
-                                        true
                                     },
-                                textStyle = TextStyle(
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontSize = 16.sp,
-                                    lineHeight = 22.sp,
-                                ),
-                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                maxLines = 5,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                                keyboardActions = KeyboardActions(onSend = { requestSend() }),
-                                decorationBox = { inner ->
-                                    Box {
-                                        if (draft.isEmpty()) {
-                                            Text(
-                                                "Message",
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                fontSize = 16.sp,
-                                            )
-                                        }
-                                        inner()
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            val limitFraction = (draftBytes / TEXT_MAX_BYTES.toFloat()).coerceIn(0f, 1f)
+                            val ringColor = if (overLimit) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            }
+                            Box(
+                                modifier = Modifier.scale(sendScale).size(52.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Canvas(Modifier.fillMaxSize()) {
+                                    if (draft.isNotEmpty()) {
+                                        val pad = 2.dp.toPx()
+                                        drawArc(
+                                            color = ringColor,
+                                            startAngle = -90f,
+                                            sweepAngle = 360f * limitFraction,
+                                            useCenter = false,
+                                            topLeft = Offset(pad, pad),
+                                            size = Size(size.width - pad * 2, size.height - pad * 2),
+                                            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
+                                        )
                                     }
-                                },
-                            )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        FilledIconButton(
-                            onClick = requestSend,
-                            enabled = canSend,
-                            modifier = Modifier.scale(sendScale).size(46.dp),
-                            shape = CircleShape,
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                                }
+                                FilledIconButton(
+                                    onClick = requestSend,
+                                    enabled = canSend,
+                                    modifier = Modifier.size(46.dp),
+                                    shape = CircleShape,
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                                }
+                            }
                         }
                     }
                 }
