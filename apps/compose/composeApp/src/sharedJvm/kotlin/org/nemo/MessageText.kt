@@ -62,7 +62,7 @@ private fun isEmojiCodePoint(cp: Int): Boolean {
     if (cp == 0x200D || cp in 0xFE00..0xFE0F) return true
     if (cp > 0xFFFF) return true
     if (cp in 0x2190..0x2BFF || cp in 0x2300..0x23FF) return true
-    val type = Character.getType(cp).toInt()
+    val type = Character.getType(cp)
     return type == Character.OTHER_SYMBOL.toInt() || type == Character.MODIFIER_SYMBOL.toInt()
 }
 
