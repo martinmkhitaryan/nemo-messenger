@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -155,6 +156,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -631,13 +633,13 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                             outgoing,
                                             outgoingStatus,
                                             ackedUpTo = { id ->
-                                                runCatching { c.ackedUpto(id) }.getOrDefault(0UL)
+                                                runCatching { c.tryAckedUpto(id) }.getOrNull() ?: 0UL
                                             },
                                             readUpTo = { id ->
                                                 if (!readReceipts) {
                                                     0UL
                                                 } else {
-                                                    runCatching { c.readUpto(id) }.getOrDefault(0UL)
+                                                    runCatching { c.tryReadUpto(id) }.getOrNull() ?: 0UL
                                                 }
                                             },
                                         )
@@ -1938,22 +1940,26 @@ private fun ChatThread(
     val lastKey = messages.lastOrNull()?.let { messageListKey(it) }
     val knownKeys = remember(chat.id) { mutableSetOf<String>() }
     var seedDone by remember(chat.id) { mutableStateOf(false) }
+    // Bubbles only: reaction pills render under their target, transient
+    // markers never render. Every index below (unread marker, floating
+    // date, viewport math) runs in this space so positions stay aligned.
+    val bubbles = remember(messages) { messages.filter(::isBubbleRow) }
     // Jump target: oldest unread at open, frozen for the visit.
-    val entryUnreadSeq = remember(chat.id) { firstUnreadSeq(messages, chat.id, entryMark) }
+    val entryUnreadSeq = remember(chat.id) { firstUnreadSeq(bubbles, chat.id, entryMark) }
     // Newest seq present at open: rows arriving later never raise the marker,
     // so it can't flash in and out while watching the bottom of the thread.
-    val openMaxSeq = remember(chat.id) { messages.maxOfOrNull { it.convSeq } ?: 0UL }
+    val openMaxSeq = remember(chat.id) { bubbles.maxOfOrNull { it.convSeq } ?: 0UL }
     // Start unpinned when jumping, so the bottom-pin below can't yank the
     // list down mid-jump.
     var stickToBottom by remember(chat.id) { mutableStateOf(entryUnreadSeq == null) }
     // Marker anchor: oldest unread at open, frozen for the whole visit. It is
     // cleared only on leave (the persisted mark decides the next visit), so
     // scrolling past it never moves or dismisses it mid-read.
-    val dividerAt = remember(messages, entryUnreadSeq) {
+    val dividerAt = remember(bubbles, entryUnreadSeq) {
         val seq = entryUnreadSeq ?: return@remember null
-        val chrono = messages.indexOfFirst { it.convId == chat.id && it.convSeq == seq }
+        val chrono = bubbles.indexOfFirst { it.convId == chat.id && it.convSeq == seq }
         if (chrono < 0) return@remember null
-        (messages.lastIndex - chrono) + 1
+        (bubbles.lastIndex - chrono) + 1
     }
     var markEnabled by remember(chat.id) { mutableStateOf(false) }
     // True once the user scrolls themselves. Landing viewport rows must not
@@ -1975,7 +1981,7 @@ private fun ChatThread(
             autoScrolling = false
         }
     }
-    val floatingDate = rememberFloatingDateUiState(messages, chat.id, listState, dividerAt, autoScrolling)
+    val floatingDate = rememberFloatingDateUiState(bubbles, chat.id, listState, dividerAt, autoScrolling)
 
     var overlayRoot by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var composerCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -1992,14 +1998,14 @@ private fun ChatThread(
         activeFlies.map { it.listKey }.toSet()
     }
 
-    LaunchedEffect(chat.id, messages.size) {
+    LaunchedEffect(chat.id, bubbles.size) {
         if (!seedDone) {
             knownKeys.clear()
-            knownKeys.addAll(messages.map { messageListKey(it) })
+            knownKeys.addAll(bubbles.map { messageListKey(it) })
             seedDone = true
         }
     }
-    LaunchedEffect(listState, dividerAt, messages.size, markEnabled, foreground) {
+    LaunchedEffect(listState, dividerAt, bubbles.size, markEnabled, foreground) {
         // markEnabled is a key (not just a guard): the opening jump enables
         // marking after the first layout, and distinctUntilChanged would
         // otherwise swallow the initial viewport forever — a chat that fits
@@ -2015,8 +2021,8 @@ private fun ChatThread(
                 val d = v.index
                 if (dividerAt != null && d == dividerAt) continue
                 val newestIndex = if (dividerAt != null && d > dividerAt) d - 1 else d
-                val chronoIndex = messages.lastIndex - newestIndex
-                val row = messages.getOrNull(chronoIndex) ?: continue
+                val chronoIndex = bubbles.lastIndex - newestIndex
+                val row = bubbles.getOrNull(chronoIndex) ?: continue
                 if (row.convSeq > max) max = row.convSeq
             }
             Triple(nearBottom, max, listState.isScrollInProgress)
@@ -2045,7 +2051,7 @@ private fun ChatThread(
     // screen (heights vary, so placement verifies against the live layout).
     JumpToUnreadEffect(
         chatId = chat.id,
-        messages = messages,
+        messages = bubbles,
         entryMark = entryMark,
         entryUnreadSeq = entryUnreadSeq,
         openMaxSeq = openMaxSeq,
@@ -2054,7 +2060,7 @@ private fun ChatThread(
         onMarkEnabled = { markEnabled = it },
     )
     LaunchedEffect(lastKey, chat.id) {
-        if (messages.isEmpty() || !stickToBottom) return@LaunchedEffect
+        if (bubbles.isEmpty() || !stickToBottom) return@LaunchedEffect
         // Already pinned: reverseLayout inserts at index 0 without scrolling.
         // Calling scrollToItem again after insert is what makes the list "shake" once.
         val alreadyPinned =
@@ -2451,10 +2457,6 @@ private fun ChatThread(
                     .padding(bottom = padding.calculateBottomPadding()),
             ) {
                 ChatWallpaper(modifier = Modifier.fillMaxSize())
-                // Bubbles only: reaction pills render under their target, transient
-                // remove markers never render. Full `messages` (incl. reactions)
-                // is kept for pills/quotes via DatedMessageItem.
-                val bubbles = remember(messages) { messages.filter(::isBubbleRow) }
                 // reverseLayout stacks short threads on the composer (empty space above).
                 val newestFirst = remember(bubbles) { bubbles.asReversed() }
                 val totalCount = newestFirst.size + if (dividerAt != null) 1 else 0
@@ -2529,7 +2531,7 @@ private fun ChatThread(
                 )
                 val firstVisible = listState.firstVisibleItemIndex
                 val belowNew = remember(messages, readMark, dividerAt, firstVisible) {
-                    belowUnreadCount(messages, chat.id, readMark, dividerAt, firstVisible)
+                    belowUnreadCount(bubbles, chat.id, readMark, dividerAt, firstVisible)
                 }
                 if (belowNew > 0 && !stickToBottom) {
                     JumpLatestButton(
@@ -3089,7 +3091,24 @@ internal fun MessageBubble(
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
     ) {
         Box {
-            val bigEmoji = isBigEmojiMessage(row)
+            // Emoji check runs once per row: it walks the full text.
+            val bigEmoji = remember(row) { isBigEmojiMessage(row) }
+            // Corner-time reserve for the pills row, measured once per row
+            // so the overlay never overlaps the pills.
+            val measurer = rememberTextMeasurer()
+            val labelSmallStyle = MaterialTheme.typography.labelSmall
+            val timeReserve = remember(row, status, labelSmallStyle) {
+                val timeW = measurer.measure(
+                    text = formatTime(row.sentAt),
+                    style = labelSmallStyle,
+                ).size.width
+                val statusW = if (mine && status != null) {
+                    with(density) { (14.dp + 3.dp).roundToPx() }
+                } else {
+                    0
+                }
+                with(density) { (timeW + statusW + 8.dp.roundToPx()).toDp() }
+            }
             Column(
                 Modifier
                     .widthIn(max = 320.dp)
@@ -3108,6 +3127,16 @@ internal fun MessageBubble(
                         status = if (mine) status else null,
                         onOpenMenu = { menu = true },
                     )
+                    if (pills.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        ReactionPills(
+                            pills = pills,
+                            onPillClick = onPillClick,
+                            onPillLongClick = onPillLongClick,
+                            chipColor = bodyColor.copy(alpha = 0.12f),
+                            contentColor = bodyColor,
+                        )
+                    }
                 } else {
                     Column(
                         Modifier
@@ -3195,29 +3224,66 @@ internal fun MessageBubble(
                                 )
                                 Spacer(Modifier.height(4.dp))
                             }
-                            BubbleContent(
-                                text = bubbleText(row),
-                                timeLabel = formatTime(row.sentAt),
-                                bodyColor = bodyColor,
-                                metaColor = metaColor,
-                                hasStatus = mine && status != null,
-                                status = {
-                                    if (mine && status != null) {
-                                        DeliveryTicks(status = status, tint = metaColor)
+                            if (pills.isNotEmpty()) {
+                                // Pills live inside the bubble; the time pins
+                                // to the bottom-right corner as an overlay so
+                                // the bubble keeps hugging its content instead
+                                // of stretching full width.
+                                Text(
+                                    text = bubbleText(row),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = bodyColor,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Box {
+                                    ReactionPills(
+                                        pills = pills,
+                                        onPillClick = onPillClick,
+                                        onPillLongClick = onPillLongClick,
+                                        modifier = Modifier.padding(end = timeReserve),
+                                        chipColor = bodyColor.copy(alpha = 0.12f),
+                                        contentColor = bodyColor,
+                                    )
+                                    Row(
+                                        modifier = Modifier.align(Alignment.BottomEnd),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    ) {
+                                        Text(
+                                            text = formatTime(row.sentAt),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = metaColor,
+                                        )
+                                        if (mine && status != null) {
+                                            DeliveryTicks(status = status, tint = metaColor)
+                                        }
                                     }
-                                },
-                            )
+                                }
+                            } else {
+                                BubbleContent(
+                                    text = bubbleText(row),
+                                    timeLabel = formatTime(row.sentAt),
+                                    bodyColor = bodyColor,
+                                    metaColor = metaColor,
+                                    hasStatus = mine && status != null,
+                                    // Replies set the bubble width via the quote: pin the
+                                    // time to the corner instead of trailing short text.
+                                    forceCorner = quote != null,
+                                    quoteText = quote?.let {
+                                        shortQuoteText(
+                                            if (it.fileName.isNotEmpty()) "📎 ${it.fileName}" else it.text,
+                                        )
+                                    } ?: "",
+                                    senderText = senderLabel,
+                                    status = {
+                                        if (mine && status != null) {
+                                            DeliveryTicks(status = status, tint = metaColor)
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
-                }
-                // Reaction pills float below the bubble, aligned to its edge.
-                if (pills.isNotEmpty()) {
-                    Spacer(Modifier.height(2.dp))
-                    ReactionPills(
-                        pills = pills,
-                        onPillClick = onPillClick,
-                        onPillLongClick = onPillLongClick,
-                    )
                 }
             }
             if (menu) {
@@ -3346,19 +3412,23 @@ private fun BigEmojiMessage(row: DisplayRow, mine: Boolean, status: OutgoingStat
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ReactionPills(pills: List<ReactionPill>, onPillClick: (String) -> Unit, onPillLongClick: () -> Unit) {
+private fun ReactionPills(
+    pills: List<ReactionPill>,
+    onPillClick: (String) -> Unit,
+    onPillLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    chipColor: Color = MaterialTheme.colorScheme.surfaceVariant,
+    contentColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
     FlowRow(
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         for (pill in pills) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = if (pill.mine) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                },
+                color = chipColor,
                 tonalElevation = 0.dp,
                 shadowElevation = 0.dp,
                 modifier = Modifier.combinedClickable(
@@ -3369,6 +3439,7 @@ private fun ReactionPills(pills: List<ReactionPill>, onPillClick: (String) -> Un
                 Text(
                     text = if (pill.count > 1) "${pill.emoji} ${pill.count}" else pill.emoji,
                     style = MaterialTheme.typography.bodySmall,
+                    color = contentColor,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                 )
             }

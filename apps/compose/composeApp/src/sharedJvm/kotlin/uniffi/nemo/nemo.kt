@@ -771,6 +771,10 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic(
     ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_try_acked_upto(
+    ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_try_read_upto(
+    ): Int
     external fun uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup(
     ): Int
     external fun uniffi_nemo_ffi_checksum_constructor_nemoclient_create(
@@ -904,6 +908,10 @@ internal object UniffiLib {
     external fun uniffi_nemo_ffi_fn_method_nemoclient_start_call(`ptr`: Long,`peerIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_nemo_ffi_fn_method_nemoclient_take_revocation_mnemonic(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_try_acked_upto(`ptr`: Long,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_try_read_upto(`ptr`: Long,`convId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_nemo_ffi_fn_method_nemoclient_wait_wakeup(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -1168,6 +1176,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_take_revocation_mnemonic() and 0xFFFF) != 64557) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_try_acked_upto() and 0xFFFF) != 8176) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_try_read_upto() and 0xFFFF) != 15198) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_wait_wakeup() and 0xFFFF) != 37310) {
@@ -1734,6 +1748,18 @@ public interface NemoClientInterface {
      * Shown once at identity creation. Never stored in the vault.
      */
     fun `takeRevocationMnemonic`(): kotlin.String?
+    
+    /**
+     * Non-blocking `acked_upto` for UI-thread receipt passes: returns
+     * `None` instead of stalling when a background transmit/fetch holds
+     * the lock across network I/O. The next pass corrects the ticks.
+     */
+    fun `tryAckedUpto`(`convId`: kotlin.String): kotlin.ULong?
+    
+    /**
+     * Non-blocking `read_upto`, same contract as `try_acked_upto`.
+     */
+    fun `tryReadUpto`(`convId`: kotlin.String): kotlin.ULong?
     
     fun `waitWakeup`()
     
@@ -2608,6 +2634,44 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    /**
+     * Non-blocking `acked_upto` for UI-thread receipt passes: returns
+     * `None` instead of stalling when a background transmit/fetch holds
+     * the lock across network I/O. The next pass corrects the ticks.
+     */
+    @Throws(FfiException::class)override fun `tryAckedUpto`(`convId`: kotlin.String): kotlin.ULong? {
+            return FfiConverterOptionalULong.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_try_acked_upto(
+        it,
+        
+        FfiConverterString.lower(`convId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Non-blocking `read_upto`, same contract as `try_acked_upto`.
+     */
+    @Throws(FfiException::class)override fun `tryReadUpto`(`convId`: kotlin.String): kotlin.ULong? {
+            return FfiConverterOptionalULong.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_try_read_upto(
+        it,
+        
+        FfiConverterString.lower(`convId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `waitWakeup`()
         = 
     callWithHandle {
@@ -3001,6 +3065,38 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalULong: FfiConverterRustBuffer<kotlin.ULong?> {
+    override fun read(buf: ByteBuffer): kotlin.ULong? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterULong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ULong?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterULong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ULong?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterULong.write(value, buf)
+        }
+    }
 }
 
 

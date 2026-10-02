@@ -299,7 +299,7 @@ internal fun readUpToOf(store: NemoVaultStore, enabled: Boolean): (String) -> UL
     if (!enabled) {
         0UL
     } else {
-        runCatching { store.client.readUpto(id) }.getOrDefault(0UL)
+        runCatching { store.client.tryReadUpto(id) }.getOrNull() ?: 0UL
     }
 }
 
@@ -330,7 +330,7 @@ internal fun BindVaultStore(
             s.messagesFlow.value,
             outgoing,
             outgoingStatus,
-            ackedUpTo = { id -> runCatching { s.client.ackedUpto(id) }.getOrDefault(0UL) },
+            ackedUpTo = { id -> runCatching { s.client.tryAckedUpto(id) }.getOrNull() ?: 0UL },
             readUpTo = readUpToOf(s, readReceiptsEnabled),
         )
         contacts.clear()
@@ -352,7 +352,7 @@ internal fun BindVaultStore(
                 rows,
                 outgoing,
                 outgoingStatus,
-                ackedUpTo = { id -> runCatching { s.client.ackedUpto(id) }.getOrDefault(0UL) },
+                ackedUpTo = { id -> runCatching { s.client.tryAckedUpto(id) }.getOrNull() ?: 0UL },
                 readUpTo = readUpToOf(s, readReceiptsEnabled),
             )
         }

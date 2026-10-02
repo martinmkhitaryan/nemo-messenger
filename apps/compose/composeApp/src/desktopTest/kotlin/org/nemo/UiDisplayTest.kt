@@ -72,6 +72,14 @@ class UiDisplayTest {
     }
 
     @Test
+    fun reactionGroupKeyStripsSelectorsAndTones() {
+        assertEquals("👍", reactionGroupKey("👍"))
+        assertEquals("👍", reactionGroupKey("👍🏽"))
+        assertEquals("❤", reactionGroupKey("❤️"))
+        assertEquals("❤", reactionGroupKey("❤"))
+    }
+
+    @Test
     fun reactionToggleAndMultiEmoji() {
         val base = mutableListOf(row(kind = "", convSeq = 3UL, text = "hello"))
         applyIncoming(

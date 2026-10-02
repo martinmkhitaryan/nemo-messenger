@@ -567,6 +567,12 @@ internal fun DatedMessageItem(
         8.dp
     }
     val listKey = messageListKey(row)
+    // Scans over the thread, memoized per row: without this every bubble
+    // re-runs O(thread) filters on each recomposition of the list.
+    val pills = remember(allMessages, row.convId, row.convSeq, contacts) {
+        reactionsFor(allMessages, row.convId, row.convSeq, contacts)
+    }
+    val quote = remember(allMessages, row) { replyOriginal(allMessages, row) }
     val isFlying = useFlyMorph && listKey in flyingKeys
     val animateEnter = remember(listKey) {
         val neu = seedDone && listKey !in knownKeys
@@ -602,8 +608,8 @@ internal fun DatedMessageItem(
             onReact = { onReact(row) },
             onDelete = { onDelete(row) },
             onReply = { onReply(row) },
-            pills = reactionsFor(allMessages, row.convId, row.convSeq, contacts),
-            quote = replyOriginal(allMessages, row),
+            pills = pills,
+            quote = quote,
             onPillClick = { emoji -> onPillClick(row, emoji) },
             onPillLongClick = { onPillLongClick(row) },
             onCopy = { onCopy(row) },

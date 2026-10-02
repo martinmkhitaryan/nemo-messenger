@@ -3007,11 +3007,29 @@ impl NemoClient {
         Ok(inner.acked.get(&conv_id).copied().unwrap_or(0))
     }
 
+    /// Non-blocking `acked_upto` for UI-thread receipt passes: returns
+    /// `None` instead of stalling when a background transmit/fetch holds
+    /// the lock across network I/O. The next pass corrects the ticks.
+    pub fn try_acked_upto(&self, conv_id: String) -> Result<Option<u64>, FfiError> {
+        let Ok(inner) = self.inner.try_lock() else {
+            return Ok(None);
+        };
+        Ok(inner.acked.get(&conv_id).copied())
+    }
+
     /// Highest `conv_seq` the peer confirmed *viewing* in this conversation
     /// (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
     pub fn read_upto(&self, conv_id: String) -> Result<u64, FfiError> {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         Ok(inner.read.get(&conv_id).copied().unwrap_or(0))
+    }
+
+    /// Non-blocking `read_upto`, same contract as `try_acked_upto`.
+    pub fn try_read_upto(&self, conv_id: String) -> Result<Option<u64>, FfiError> {
+        let Ok(inner) = self.inner.try_lock() else {
+            return Ok(None);
+        };
+        Ok(inner.read.get(&conv_id).copied())
     }
 
     /// Tell the peer we viewed everything up to `upto` in a 1:1

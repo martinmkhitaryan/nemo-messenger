@@ -1506,8 +1506,15 @@ impl HttpHome {
         let tls = tls_config_bundle_is_identity()?;
         // Caddy `tls internal` (and any other Web PKI) is transport, not identity
         // (ADR-0033). Clients authenticate the home via ServerBundle HPKE.
+        //
+        // Bounded waits: with no timeouts an unreachable home (off-LAN,
+        // dead host) hangs every send/fetch — which holds the engine lock
+        // and stalls the shell — until TCP gives up minutes later. Fail fast
+        // so the UI can report "server unreachable" instead of freezing.
         let client = reqwest::Client::builder()
             .http1_only()
+            .connect_timeout(std::time::Duration::from_secs(8))
+            .timeout(std::time::Duration::from_secs(30))
             .use_preconfigured_tls(tls.as_ref().clone())
             .build()
             .map_err(|e| CoreError::Transport(e.to_string()))?;
@@ -1544,17 +1551,24 @@ impl HttpHome {
                 .parse()
                 .map_err(|e| CoreError::Transport(format!("{e}")))?,
         );
-        let (mut ws, _) = if use_tls {
-            connect_async_tls_with_config(
-                req,
-                None,
-                false,
-                Some(Connector::Rustls(self.tls.clone())),
-            )
-            .await
-        } else {
-            connect_async(req).await
-        }
+        let (mut ws, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            async {
+                if use_tls {
+                    connect_async_tls_with_config(
+                        req,
+                        None,
+                        false,
+                        Some(Connector::Rustls(self.tls.clone())),
+                    )
+                    .await
+                } else {
+                    connect_async(req).await
+                }
+            },
+        )
+        .await
+        .map_err(|_| CoreError::Transport("home connect timed out".into()))?
         .map_err(|e| CoreError::Transport(e.to_string()))?;
         loop {
             let next = tokio::time::timeout(

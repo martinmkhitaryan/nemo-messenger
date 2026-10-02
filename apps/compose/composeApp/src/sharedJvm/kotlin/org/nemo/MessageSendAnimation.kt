@@ -37,6 +37,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -88,7 +90,14 @@ internal fun outgoingScreenBrush(stops: List<Color>, windowTopY: Float, rootHeig
 private val BubbleContentMaxWidth: Dp = 296.dp
 
 /** Inline trailing time vs. corner-floated time, decided per message. */
-private data class BubbleLayout(val inline: Boolean, val timeReserve: Dp, val tailFits: Boolean)
+private data class BubbleLayout(
+    val inline: Boolean,
+    val timeReserve: Dp,
+    /** Exact text-box width the corner branch renders at. */
+    val renderWidth: Dp,
+    /** True when the time fits the last line's existing tail. */
+    val tailFits: Boolean,
+)
 
 /**
  * Shared bubble body: message text plus trailing time.
@@ -101,7 +110,9 @@ private data class BubbleLayout(val inline: Boolean, val timeReserve: Dp, val ta
  * against — the bubble passes its max content width, the send overlay passes
  * the target bubble width so its final frame matches. [status] draws the
  * trailing tick (or pending clock); [metaAlpha] fades the time row in during
- * the send flight.
+ * the send flight. [forceCorner] pins the time to the corner even for
+ * short single-line texts (replies: the quote already sets the bubble
+ * width, so trailing the text would strand the time mid-bubble).
  */
 @Composable
 internal fun BubbleContent(
@@ -112,6 +123,11 @@ internal fun BubbleContent(
     measureWidth: Dp = BubbleContentMaxWidth,
     hasStatus: Boolean = false,
     metaAlpha: Float = 1f,
+    forceCorner: Boolean = false,
+    /** Quoted preview text: widens the bubble, so the probe must know it. */
+    quoteText: String = "",
+    /** Group sender label: same, may be the widest child. */
+    senderText: String = "",
     modifier: Modifier = Modifier,
     status: @Composable () -> Unit = {},
 ) {
@@ -119,26 +135,42 @@ internal fun BubbleContent(
     val density = LocalDensity.current
     val bodyStyle = MaterialTheme.typography.bodyLarge
     val timeStyle = MaterialTheme.typography.labelSmall
-    val layout = remember(text, timeLabel, hasStatus, measureWidth) {
+    val smallStyle = MaterialTheme.typography.bodySmall
+    val labelStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+    val layout = remember(text, timeLabel, hasStatus, measureWidth, forceCorner, quoteText, senderText) {
         val contentPx = with(density) { measureWidth.roundToPx() }.coerceAtLeast(1)
-        val message = measurer.measure(
-            text = text,
-            style = bodyStyle,
-            constraints = Constraints(maxWidth = contentPx),
-        )
+        fun natural(t: String, style: TextStyle): Int {
+            if (t.isEmpty()) return 0
+            return measurer.measure(text = t, style = style, constraints = Constraints(maxWidth = contentPx)).size.width
+        }
         val timeWidthPx = measurer.measure(text = timeLabel, style = timeStyle).size.width +
             with(density) { 8.dp.roundToPx() } +
             if (hasStatus) with(density) { 17.dp.roundToPx() } else 0
-        val inline = message.lineCount == 1 && message.size.width + timeWidthPx <= contentPx
-        // Tail check: when the last line already leaves room for the time,
-        // the text keeps its full width and the time floats in that tail —
-        // no gutter is stolen from the lines above.
-        val last = message.lineCount - 1
-        val lastLineWidth = message.getLineRight(last) - message.getLineLeft(last)
-        val tailFits = !inline && lastLineWidth + timeWidthPx <= contentPx
+        // True no-padding bubble width: every child renders at a width at or
+        // above its natural size, so nothing reflows past this probe.
+        var renderPx = maxOf(
+            natural(text, bodyStyle),
+            natural(quoteText, smallStyle),
+            natural(senderText, labelStyle),
+            1,
+        ).coerceAtMost(contentPx)
+        var probe = measurer.measure(text = text, style = bodyStyle, constraints = Constraints(maxWidth = renderPx))
+        val inline = !forceCorner && probe.lineCount == 1 && probe.size.width + timeWidthPx <= renderPx
+        // Tiny corner bubble: widen to host text + time instead of crushing
+        // the text under the overlay. Single line stays single when widened.
+        if (!inline && probe.lineCount == 1) {
+            renderPx = minOf(contentPx, maxOf(renderPx, probe.size.width + timeWidthPx))
+            probe = measurer.measure(text = text, style = bodyStyle, constraints = Constraints(maxWidth = renderPx))
+        }
+        // Tail check against the width the text is actually rendered at:
+        // the overlay never overlaps by construction.
+        val last = probe.lineCount - 1
+        val lastLineWidth = probe.getLineRight(last) - probe.getLineLeft(last)
+        val tailFits = !inline && lastLineWidth + timeWidthPx <= renderPx
         BubbleLayout(
             inline = inline,
             timeReserve = with(density) { timeWidthPx.toDp() },
+            renderWidth = with(density) { renderPx.toDp() },
             tailFits = tailFits,
         )
     }
@@ -166,10 +198,10 @@ internal fun BubbleContent(
             }
         }
     } else {
-        // Corner float: the time sits at the bottom-right as a signature
-        // overlay. Width is stolen from the text only when the last line's
-        // tail cannot host the time; otherwise the text keeps full width
-        // and the time floats in the existing tail — never a torn gutter.
+        // Corner float: the text box is fixed at the probed width, so its
+        // lines match the probe exactly and the overlay math always holds —
+        // no overlap, no torn gutter. Padding is taken only when the last
+        // line's tail cannot host the time.
         Box(modifier = modifier) {
             // No maxLines/ellipsis: the overlay final frame must match the bubble exactly,
             // otherwise long messages pop on handoff. Overflow is clipped by the morphing
@@ -180,7 +212,9 @@ internal fun BubbleContent(
                 color = bodyColor,
                 maxLines = Int.MAX_VALUE,
                 overflow = TextOverflow.Clip,
-                modifier = Modifier.padding(end = if (layout.tailFits) 0.dp else layout.timeReserve),
+                modifier = Modifier
+                    .width(layout.renderWidth)
+                    .padding(end = if (layout.tailFits) 0.dp else layout.timeReserve),
             )
             Row(
                 modifier = Modifier.align(Alignment.BottomEnd).graphicsLayer {

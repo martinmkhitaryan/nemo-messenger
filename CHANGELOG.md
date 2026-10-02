@@ -8,6 +8,23 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.4.2] - 2026-10-03
+
+### Fixed
+
+- Reaction pills live inside the bubble on the timestamp line (emoji +
+  count only, no avatar dots); same-meaning emoji variants aggregate.
+- Bubble timestamp can no longer overlap text: measured and rendered
+  widths match by construction.
+- Unreachable home servers fail fast with bounded connect/request
+  timeouts instead of freezing sends and fetches.
+
+### Fixed
+
+- Unreachable home servers fail fast instead of freezing sends/fetches:
+  bounded connect/request timeouts, so the UI reports "couldn't reach
+  the home server" within seconds.
+
 ## [0.4.1] - 2026-10-03
 
 ### Fixed

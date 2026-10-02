@@ -5,9 +5,12 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,9 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,7 +88,9 @@ internal fun ReplyQuoteHeader(
     val author = quoteAuthorName(quote, mine = false, contacts = contacts)
     Row(
         modifier = Modifier
-            .fillMaxWidth()
+            // Wrap the content instead of stretching the bubble full width:
+            // the bubble hugs the wider of quote and message text.
+            .width(IntrinsicSize.Max)
             .clip(RoundedCornerShape(8.dp))
             .then(if (onJump != null) Modifier.clickable(onClick = onJump) else Modifier)
             .padding(vertical = 6.dp),
@@ -127,7 +130,8 @@ internal fun ReplyQuoteHeader(
 /** One fluid reaction cell: pops on press, ring when it's mine. */
 @Composable
 private fun FluidReactionCell(emoji: String, selected: Boolean, onToggle: () -> Unit) {
-    var pressed by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) 1.35f else 1f,
         animationSpec = spring(
@@ -146,18 +150,13 @@ private fun FluidReactionCell(emoji: String, selected: Boolean, onToggle: () -> 
             modifier = Modifier
                 .scale(scale)
                 .clickable(
-                    onClick = {
-                        pressed = true
-                        onToggle()
-                    },
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onToggle,
                 ),
         ) {
             Text(text = emoji, fontSize = 26.sp)
         }
-    }
-    if (pressed) {
-        // Reset so the next tap pops again.
-        pressed = false
     }
 }
 
