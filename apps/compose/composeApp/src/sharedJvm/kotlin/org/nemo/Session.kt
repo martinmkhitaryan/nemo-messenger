@@ -2249,12 +2249,24 @@ private fun ChatThread(
                 }
             },
             bottomBar = {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                    shadowElevation = 6.dp,
+                // Floating dock detached from the viewport edges: the reply
+                // card and the input pill hover over the chat with margins,
+                // glass tints, and shadows instead of a full-bleed bar.
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Column(Modifier.fillMaxWidth()) {
-                        if (replyTo != null) {
+                    if (replyTo != null) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                            shadowElevation = 8.dp,
+                            tonalElevation = 0.dp,
+                        ) {
                             Row(
                                 Modifier
                                     .fillMaxWidth()
@@ -2311,41 +2323,39 @@ private fun ChatThread(
                                 }
                             }
                         }
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .navigationBarsPadding()
-                                .imePadding()
-                                .padding(horizontal = 6.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.Bottom,
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        // Centers coincide single-line; the send cluster
+                        // stays pinned to the bottom when the field grows.
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .onGloballyPositioned { composerCoords = it },
+                            shape = RoundedCornerShape(24.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                            tonalElevation = 0.dp,
+                            shadowElevation = 8.dp,
                         ) {
-                            IconButton(onClick = onAttach) {
-                                Icon(
-                                    Icons.Filled.AttachFile,
-                                    contentDescription = "Attach",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Surface(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .onGloballyPositioned { composerCoords = it },
-                                shape = RoundedCornerShape(22.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (dark) 0.55f else 0.85f),
-                                tonalElevation = 0.dp,
-                            ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 BasicTextField(
                                     value = draft,
                                     onValueChange = onDraft,
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = if (useFlyMorph) 40.dp else 44.dp)
+                                        .weight(1f)
+                                        .heightIn(min = if (useFlyMorph) 36.dp else 40.dp)
                                         .padding(
-                                            horizontal = 16.dp,
-                                            vertical = if (useFlyMorph) 10.dp else 12.dp,
+                                            start = 16.dp,
+                                            end = 4.dp,
+                                            top = if (useFlyMorph) 8.dp else 10.dp,
+                                            bottom = if (useFlyMorph) 8.dp else 10.dp,
                                         )
                                         .onPreviewKeyEvent { event ->
-                                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                            if (event.type != KeyEventType.KeyDown) {
+                                                return@onPreviewKeyEvent false
+                                            }
                                             if (event.key != Key.Enter && event.key != Key.NumPadEnter) {
                                                 return@onPreviewKeyEvent false
                                             }
@@ -2356,12 +2366,16 @@ private fun ChatThread(
                                     textStyle = TextStyle(
                                         color = MaterialTheme.colorScheme.onSurface,
                                         fontSize = 16.sp,
-                                        lineHeight = 22.sp,
+                                        lineHeight = 20.sp,
                                     ),
                                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                     maxLines = 5,
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                                    keyboardActions = KeyboardActions(onSend = { requestSend() }),
+                                    // Soft keyboard keeps its Enter (newline) key — sending
+                                    // is the round button's job. Hardware Enter
+                                    // still sends via onPreviewKeyEvent above
+                                    // (Shift+Enter falls through to newline).
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                                    keyboardActions = KeyboardActions.Default,
                                     decorationBox = { inner ->
                                         // No wrapping Box: it sizes to content and caps the
                                         // paragraph at ~119px, tripping wrap/scroll (and a
@@ -2381,40 +2395,50 @@ private fun ChatThread(
                                         }
                                     },
                                 )
+                                IconButton(onClick = onAttach) {
+                                    Icon(
+                                        Icons.Filled.AttachFile,
+                                        contentDescription = "Attach",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
-                            Spacer(Modifier.width(6.dp))
-                            val limitFraction = (draftBytes / TEXT_MAX_BYTES.toFloat()).coerceIn(0f, 1f)
-                            val ringColor = if (overLimit) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.primary
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        val limitFraction = (draftBytes / TEXT_MAX_BYTES.toFloat()).coerceIn(0f, 1f)
+                        val ringColor = if (overLimit) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        }
+                        Box(
+                            modifier = Modifier
+                                .scale(sendScale)
+                                .size(52.dp)
+                                .align(Alignment.Bottom),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Canvas(Modifier.fillMaxSize()) {
+                                if (draft.isNotEmpty()) {
+                                    val pad = 2.dp.toPx()
+                                    drawArc(
+                                        color = ringColor,
+                                        startAngle = -90f,
+                                        sweepAngle = 360f * limitFraction,
+                                        useCenter = false,
+                                        topLeft = Offset(pad, pad),
+                                        size = Size(size.width - pad * 2, size.height - pad * 2),
+                                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
+                                    )
+                                }
                             }
-                            Box(
-                                modifier = Modifier.scale(sendScale).size(52.dp),
-                                contentAlignment = Alignment.Center,
+                            FilledIconButton(
+                                onClick = requestSend,
+                                enabled = canSend,
+                                modifier = Modifier.size(46.dp),
+                                shape = CircleShape,
                             ) {
-                                Canvas(Modifier.fillMaxSize()) {
-                                    if (draft.isNotEmpty()) {
-                                        val pad = 2.dp.toPx()
-                                        drawArc(
-                                            color = ringColor,
-                                            startAngle = -90f,
-                                            sweepAngle = 360f * limitFraction,
-                                            useCenter = false,
-                                            topLeft = Offset(pad, pad),
-                                            size = Size(size.width - pad * 2, size.height - pad * 2),
-                                            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
-                                        )
-                                    }
-                                }
-                                FilledIconButton(
-                                    onClick = requestSend,
-                                    enabled = canSend,
-                                    modifier = Modifier.size(46.dp),
-                                    shape = CircleShape,
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
-                                }
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                             }
                         }
                     }
@@ -3008,8 +3032,8 @@ internal fun MessageBubble(
         null
     }
     val incomingBg = palette.incoming
-    val corner = 18.dp
-    val tight = 6.dp
+    val corner = 14.dp
+    val tight = 5.dp
     val tail = 4.dp
     val shape = if (mine) {
         RoundedCornerShape(
@@ -3065,6 +3089,7 @@ internal fun MessageBubble(
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
     ) {
         Box {
+            val bigEmoji = isBigEmojiMessage(row)
             Column(
                 Modifier
                     .widthIn(max = 320.dp)
@@ -3073,107 +3098,121 @@ internal fun MessageBubble(
                         windowY = coords.positionInWindow().y
                         bubbleHeightPx = coords.size.height.toFloat()
                         rootHeight = coords.findRootCoordinates().size.height.toFloat()
-                    }
-                    .shadow(2.dp, shape, ambientColor = shadow, spotColor = shadow)
-                    .clip(shape)
-                    .then(
-                        if (outgoingBrush != null) {
-                            Modifier.background(outgoingBrush)
-                        } else {
-                            Modifier.background(incomingBg)
-                        },
-                    )
-                    .combinedClickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = LocalIndication.current,
-                        enabled = !conceal,
-                        onClick = { menu = true },
-                        onLongClick = { menu = true },
-                    )
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    },
+                horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
             ) {
-                val senderLabel = if (showSenderNames && !mine) {
-                    row.senderName.ifBlank {
-                        shortId(row.senderId).ifBlank { "" }
-                    }
-                } else {
-                    ""
-                }
-                if (senderLabel.isNotEmpty()) {
-                    Text(
-                        text = senderLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = bodyColor,
-                        maxLines = 1,
-                    )
-                }
-                if (isGroupInviteUri(row.text) && onAcceptInvite != null) {
-                    GroupInviteCard(
+                if (bigEmoji) {
+                    BigEmojiMessage(
+                        row = row,
                         mine = mine,
-                        timeLabel = formatTime(row.sentAt),
-                        bodyColor = bodyColor,
-                        metaColor = metaColor,
-                        hasStatus = mine && status != null,
-                        status = {
-                            if (mine && status != null) {
-                                DeliveryTicks(status = status, tint = metaColor)
-                            }
-                        },
-                        onAccept = if (!mine && !inviteAccepted) {
-                            { onAcceptInvite(row) }
-                        } else {
-                            null
-                        },
-                        accepted = inviteAccepted,
-                    )
-                } else if (isJoinRequestUri(row.text) && onAdmitJoin != null) {
-                    JoinRequestCard(
-                        mine = mine,
-                        timeLabel = formatTime(row.sentAt),
-                        bodyColor = bodyColor,
-                        metaColor = metaColor,
-                        hasStatus = mine && status != null,
-                        status = {
-                            if (mine && status != null) {
-                                DeliveryTicks(status = status, tint = metaColor)
-                            }
-                        },
-                        onAdmit = if (!mine && !joinAdmitted) {
-                            { onAdmitJoin(row) }
-                        } else {
-                            null
-                        },
-                        admitted = joinAdmitted,
+                        status = if (mine) status else null,
+                        onOpenMenu = { menu = true },
                     )
                 } else {
-                    // Reply header: accent bar + colored name + preview.
-                    // Hidden entirely when the original was hard-deleted.
-                    if (quote != null) {
-                        ReplyQuoteHeader(
-                            quote = quote,
-                            mine = mine,
-                            bodyColor = bodyColor,
-                            contacts = contacts,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                    }
-                    BubbleContent(
-                        text = bubbleText(row),
-                        timeLabel = formatTime(row.sentAt),
-                        bodyColor = bodyColor,
-                        metaColor = metaColor,
-                        hasStatus = mine && status != null,
-                        status = {
-                            if (mine && status != null) {
-                                DeliveryTicks(status = status, tint = metaColor)
+                    Column(
+                        Modifier
+                            .shadow(2.dp, shape, ambientColor = shadow, spotColor = shadow)
+                            .clip(shape)
+                            .then(
+                                if (outgoingBrush != null) {
+                                    Modifier.background(outgoingBrush)
+                                } else {
+                                    Modifier.background(incomingBg)
+                                },
+                            )
+                            .combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = LocalIndication.current,
+                                enabled = !conceal,
+                                onClick = { menu = true },
+                                onLongClick = { menu = true },
+                            )
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        val senderLabel = if (showSenderNames && !mine) {
+                            row.senderName.ifBlank {
+                                shortId(row.senderId).ifBlank { "" }
                             }
-                        },
-                    )
+                        } else {
+                            ""
+                        }
+                        if (senderLabel.isNotEmpty()) {
+                            Text(
+                                text = senderLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = peerAccentColor(row.senderId.ifBlank { row.convId }),
+                                maxLines = 1,
+                            )
+                        }
+                        if (isGroupInviteUri(row.text) && onAcceptInvite != null) {
+                            GroupInviteCard(
+                                mine = mine,
+                                timeLabel = formatTime(row.sentAt),
+                                bodyColor = bodyColor,
+                                metaColor = metaColor,
+                                hasStatus = mine && status != null,
+                                status = {
+                                    if (mine && status != null) {
+                                        DeliveryTicks(status = status, tint = metaColor)
+                                    }
+                                },
+                                onAccept = if (!mine && !inviteAccepted) {
+                                    { onAcceptInvite(row) }
+                                } else {
+                                    null
+                                },
+                                accepted = inviteAccepted,
+                            )
+                        } else if (isJoinRequestUri(row.text) && onAdmitJoin != null) {
+                            JoinRequestCard(
+                                mine = mine,
+                                timeLabel = formatTime(row.sentAt),
+                                bodyColor = bodyColor,
+                                metaColor = metaColor,
+                                hasStatus = mine && status != null,
+                                status = {
+                                    if (mine && status != null) {
+                                        DeliveryTicks(status = status, tint = metaColor)
+                                    }
+                                },
+                                onAdmit = if (!mine && !joinAdmitted) {
+                                    { onAdmitJoin(row) }
+                                } else {
+                                    null
+                                },
+                                admitted = joinAdmitted,
+                            )
+                        } else {
+                            // Reply header: accent bar + colored name + preview.
+                            // Hidden entirely when the original was hard-deleted.
+                            if (quote != null) {
+                                ReplyQuoteHeader(
+                                    quote = quote,
+                                    mine = mine,
+                                    bodyColor = bodyColor,
+                                    contacts = contacts,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            BubbleContent(
+                                text = bubbleText(row),
+                                timeLabel = formatTime(row.sentAt),
+                                bodyColor = bodyColor,
+                                metaColor = metaColor,
+                                hasStatus = mine && status != null,
+                                status = {
+                                    if (mine && status != null) {
+                                        DeliveryTicks(status = status, tint = metaColor)
+                                    }
+                                },
+                            )
+                        }
+                    }
                 }
-                // Reaction pills under the bubble.
+                // Reaction pills float below the bubble, aligned to its edge.
                 if (pills.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(2.dp))
                     ReactionPills(
                         pills = pills,
                         onPillClick = onPillClick,
@@ -3260,6 +3299,45 @@ internal fun MessageBubble(
                             },
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BigEmojiMessage(row: DisplayRow, mine: Boolean, status: OutgoingStatus?, onOpenMenu: () -> Unit) {
+    Column(
+        horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+        modifier = Modifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = LocalIndication.current,
+            onClick = onOpenMenu,
+            onLongClick = onOpenMenu,
+        ),
+    ) {
+        Text(
+            text = row.text,
+            fontSize = 76.sp,
+            lineHeight = 84.sp,
+        )
+        Spacer(Modifier.height(4.dp))
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = Color.Black.copy(alpha = 0.38f),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    text = formatTime(row.sentAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.9f),
+                )
+                if (mine && status != null) {
+                    DeliveryTicks(status = status, tint = Color.White.copy(alpha = 0.85f))
                 }
             }
         }

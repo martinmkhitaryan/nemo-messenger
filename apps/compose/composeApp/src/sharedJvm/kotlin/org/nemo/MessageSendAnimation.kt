@@ -88,7 +88,7 @@ internal fun outgoingScreenBrush(stops: List<Color>, windowTopY: Float, rootHeig
 private val BubbleContentMaxWidth: Dp = 296.dp
 
 /** Inline trailing time vs. corner-floated time, decided per message. */
-private data class BubbleLayout(val inline: Boolean, val timeReserve: Dp)
+private data class BubbleLayout(val inline: Boolean, val timeReserve: Dp, val tailFits: Boolean)
 
 /**
  * Shared bubble body: message text plus trailing time.
@@ -129,9 +129,17 @@ internal fun BubbleContent(
         val timeWidthPx = measurer.measure(text = timeLabel, style = timeStyle).size.width +
             with(density) { 8.dp.roundToPx() } +
             if (hasStatus) with(density) { 17.dp.roundToPx() } else 0
+        val inline = message.lineCount == 1 && message.size.width + timeWidthPx <= contentPx
+        // Tail check: when the last line already leaves room for the time,
+        // the text keeps its full width and the time floats in that tail —
+        // no gutter is stolen from the lines above.
+        val last = message.lineCount - 1
+        val lastLineWidth = message.getLineRight(last) - message.getLineLeft(last)
+        val tailFits = !inline && lastLineWidth + timeWidthPx <= contentPx
         BubbleLayout(
-            inline = message.lineCount == 1 && message.size.width + timeWidthPx <= contentPx,
+            inline = inline,
             timeReserve = with(density) { timeWidthPx.toDp() },
+            tailFits = tailFits,
         )
     }
     if (layout.inline) {
@@ -158,10 +166,10 @@ internal fun BubbleContent(
             }
         }
     } else {
-        // corner float: the text reserves the time's width at
-        // its end, and the time sits over that space at the bottom-right, on
-        // the last line instead of a new row. No overlap is possible because
-        // no text line extends into the reserved zone.
+        // Corner float: the time sits at the bottom-right as a signature
+        // overlay. Width is stolen from the text only when the last line's
+        // tail cannot host the time; otherwise the text keeps full width
+        // and the time floats in the existing tail — never a torn gutter.
         Box(modifier = modifier) {
             // No maxLines/ellipsis: the overlay final frame must match the bubble exactly,
             // otherwise long messages pop on handoff. Overflow is clipped by the morphing
@@ -172,7 +180,7 @@ internal fun BubbleContent(
                 color = bodyColor,
                 maxLines = Int.MAX_VALUE,
                 overflow = TextOverflow.Clip,
-                modifier = Modifier.padding(end = layout.timeReserve),
+                modifier = Modifier.padding(end = if (layout.tailFits) 0.dp else layout.timeReserve),
             )
             Row(
                 modifier = Modifier.align(Alignment.BottomEnd).graphicsLayer {

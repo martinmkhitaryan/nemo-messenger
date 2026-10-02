@@ -47,6 +47,25 @@ internal fun bubbleText(row: DisplayRow): String = when {
     else -> row.text
 }
 
+/** True for short emoji-only texts, rendered large with no bubble. */
+internal fun isBigEmojiMessage(row: DisplayRow): Boolean {
+    if (row.kind != "" || row.fileName.isNotEmpty() || row.replyTo != 0UL) return false
+    if (isJoinRequestUri(row.text) || isGroupInviteUri(row.text)) return false
+    val text = row.text.trim()
+    if (text.isEmpty()) return false
+    val cps = text.codePoints().toArray()
+    if (cps.isEmpty() || cps.size > 3) return false
+    return cps.all(::isEmojiCodePoint)
+}
+
+private fun isEmojiCodePoint(cp: Int): Boolean {
+    if (cp == 0x200D || cp in 0xFE00..0xFE0F) return true
+    if (cp > 0xFFFF) return true
+    if (cp in 0x2190..0x2BFF || cp in 0x2300..0x23FF) return true
+    val type = Character.getType(cp).toInt()
+    return type == Character.OTHER_SYMBOL.toInt() || type == Character.MODIFIER_SYMBOL.toInt()
+}
+
 internal fun formatTime(sentAt: ULong): String {
     if (sentAt == 0UL) return ""
     return try {

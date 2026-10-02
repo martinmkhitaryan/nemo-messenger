@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -88,7 +89,6 @@ internal fun ReplyQuoteHeader(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(bodyColor.copy(alpha = 0.08f))
             .then(if (onJump != null) Modifier.clickable(onClick = onJump) else Modifier)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -198,8 +198,9 @@ internal fun FluidMessageMenuContent(
         // --- Fluid reaction bar ---
         Surface(
             shape = RoundedCornerShape(28.dp),
-            // Crystal: translucent surface over the chat, no full opaque fill.
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            // Near-opaque surface over the chat: floating feel without
+            // washing out against busy wallpaper.
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
             shadowElevation = 12.dp,
             tonalElevation = 0.dp,
         ) {
@@ -208,7 +209,7 @@ internal fun FluidMessageMenuContent(
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                for (emoji in QUICK_REACTIONS.take(6)) {
+                for (emoji in QUICK_REACTIONS.take(5)) {
                     FluidReactionCell(
                         emoji = emoji,
                         selected = emoji in mineEmojis,
@@ -219,22 +220,27 @@ internal fun FluidMessageMenuContent(
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(44.dp),
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier.clickable(onClick = onExpandReactions),
                     ) {
-                        Text(text = "+", fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = "More reactions",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(26.dp),
+                        )
                     }
                 }
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         // --- Crystal action card ---
         Surface(
             shape = RoundedCornerShape(18.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
             shadowElevation = 16.dp,
             tonalElevation = 0.dp,
         ) {

@@ -196,6 +196,20 @@ class UiDisplayTest {
     }
 
     @Test
+    fun bigEmojiNeedsShortEmojiOnlyText() {
+        assertTrue(isBigEmojiMessage(row(text = "😂")))
+        assertTrue(isBigEmojiMessage(row(text = "👍🏽")))
+        assertTrue(isBigEmojiMessage(row(text = "❤️")))
+        assertTrue(!isBigEmojiMessage(row(text = "hello")))
+        assertTrue(!isBigEmojiMessage(row(text = "😂😂😂😂")))
+        assertTrue(!isBigEmojiMessage(row(text = "hi 😂")))
+        assertTrue(!isBigEmojiMessage(row(text = "7")))
+        assertTrue(!isBigEmojiMessage(row(text = "?")))
+        assertTrue(!isBigEmojiMessage(row(kind = "file", text = "a.png")))
+        assertTrue(!isBigEmojiMessage(row(text = "😂", replyTo = 3UL)))
+    }
+
+    @Test
     fun shareCardBytesReadsHexPayload() {
         val raw = byteArrayOf(0x01, 0xAB.toByte())
         val hex = raw.joinToString("") { "%02x".format(it.toInt() and 0xFF) }

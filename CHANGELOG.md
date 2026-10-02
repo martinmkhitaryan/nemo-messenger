@@ -8,6 +8,22 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.4.1] - 2026-10-03
+
+### Fixed
+
+- Invite/join cards no longer resurrect Accept/Admit after restart:
+  taken actions persist per vault.
+- Copy buttons removed from invite/join cards.
+- Soft keyboard keeps Enter for newlines; hardware Enter still sends.
+- Bubble timestamp floats in the last line's tail instead of guttering
+  the whole text block.
+- Bubbles flatter (14dp), emoji-only messages render large with no
+  bubble, group sender names colored, pills float below bubbles.
+- Reply quotes have no filled box; attach moved inside the composer pill.
+- Composer rebuilt as a floating dock with glass tint and docked reply
+  card; menu cards more opaque with a proper expand chevron.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added
