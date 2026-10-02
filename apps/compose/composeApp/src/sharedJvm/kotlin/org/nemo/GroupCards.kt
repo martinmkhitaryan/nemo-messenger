@@ -14,7 +14,6 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -100,7 +99,6 @@ internal fun GroupInviteCard(
     hasStatus: Boolean,
     status: @Composable () -> Unit,
     onAccept: (() -> Unit)?,
-    onCopy: (() -> Unit)?,
     accepted: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -121,17 +119,12 @@ internal fun GroupInviteCard(
             style = MaterialTheme.typography.bodyMedium,
             color = bodyColor,
         )
-        if (onAccept != null || onCopy != null) {
+        if (onAccept != null) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (onAccept != null) {
-                    Button(onClick = onAccept) { Text("Accept") }
-                }
-                if (onCopy != null) {
-                    TextButton(onClick = onCopy) { Text("Copy") }
-                }
+                Button(onClick = onAccept) { Text("Accept") }
             }
         }
         Row(
@@ -155,7 +148,6 @@ internal fun JoinRequestCard(
     hasStatus: Boolean,
     status: @Composable () -> Unit,
     onAdmit: (() -> Unit)?,
-    onCopy: (() -> Unit)?,
     admitted: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -176,17 +168,12 @@ internal fun JoinRequestCard(
             style = MaterialTheme.typography.bodyMedium,
             color = bodyColor,
         )
-        if (onAdmit != null || onCopy != null) {
+        if (onAdmit != null) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (onAdmit != null) {
-                    Button(onClick = onAdmit) { Text("Admit") }
-                }
-                if (onCopy != null) {
-                    TextButton(onClick = onCopy) { Text("Copy") }
-                }
+                Button(onClick = onAdmit) { Text("Admit") }
             }
         }
         Row(

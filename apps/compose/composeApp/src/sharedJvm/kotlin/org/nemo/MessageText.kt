@@ -5,11 +5,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** One-line chat-list preview. Never surfaces raw engine strings. */
+/** One-line chat-list preview. Never surfaces raw engine strings.
+ * Reaction pills and transient remove markers never become previews. */
 internal fun previewLine(row: DisplayRow): String = when {
+    row.kind == "reaction" || row.kind == "reaction_removed" || row.kind == "removed" -> ""
     row.hidden && row.kind == "expired" -> "Message expired"
+    // Legacy vaults / old peers may still carry soft-delete tombstones.
     row.hidden || row.kind == "deleted" -> "Message deleted"
-    row.kind == "reaction" -> "Reacted ${row.emoji}"
     row.kind == "call_invite" -> "Incoming call"
     row.kind == "call_ringing" -> "Ringing"
     row.kind == "call_answer" -> "Call answered"
@@ -25,11 +27,12 @@ internal fun previewLine(row: DisplayRow): String = when {
     else -> row.text
 }
 
-/** Bubble body for system rows; user content passes through untouched. */
+/** Bubble body for system rows; user content passes through untouched.
+ * Reaction pills render under the target bubble, not as bubbles. */
 internal fun bubbleText(row: DisplayRow): String = when {
     row.hidden && row.kind == "expired" -> "Expired"
+    // Legacy tombstones from old vaults/peers.
     row.hidden || row.kind == "deleted" -> "Deleted"
-    row.kind == "reaction" -> "Reacted ${row.emoji}"
     row.kind == "disappear" -> "Disappearing messages: ${row.text}s"
     row.kind == "call_invite" -> "Incoming call"
     row.kind == "call_ringing" -> "Ringing"

@@ -27,20 +27,88 @@ import kotlin.coroutines.cancellation.CancellationException
  * Pure merge of fetched rows into a snapshot, mirroring [applyIncoming]
  * without Compose side effects (no audio, no outgoing tracking).
  *
- * Deleted/expired rows hide their target; everything else is deduped by
- * `convId + convSeq + kind`.
+ * Hard delete: `removed` markers drop the target + its reaction pills and
+ * clear quotes (`replyTo`), the marker itself is never stored. `expired`
+ * rows still tombstone. `reaction_removed` drops the matching pill.
+ * Everything else is deduped by `convId + convSeq + kind (+ emoji/target
+ * for reactions so multi-emoji per user coexists)`.
  */
 internal fun mergeDisplayRows(current: List<DisplayRow>, incoming: List<DisplayRow>): List<DisplayRow> {
     if (incoming.isEmpty()) return current
     val merged = current.toMutableList()
     for (row in incoming) {
-        if (row.kind == "deleted" || row.kind == "expired") {
-            val idx = merged.indexOfFirst {
-                it.convId == row.convId && it.convSeq == row.target && it.kind != "reaction"
+        when (row.kind) {
+            "removed" -> {
+                merged.removeAll {
+                    it.convId == row.convId &&
+                        (
+                            (it.convSeq == row.target && it.kind != "reaction") ||
+                                (it.kind == "reaction" && it.target == row.target)
+                            )
+                }
+                // Legacy tombstone for the same target, if present.
+                merged.removeAll {
+                    it.convId == row.convId && it.kind == "deleted" && it.target == row.target
+                }
+                // Hide quotes: clear replyTo pointing at the deleted message.
+                for (i in merged.indices) {
+                    val m = merged[i]
+                    if (m.convId == row.convId && m.replyTo == row.target && row.target != 0UL) {
+                        merged[i] = m.copy(replyTo = 0UL)
+                    }
+                }
+                continue
             }
-            if (idx >= 0) {
-                val old = merged[idx]
-                merged[idx] = old.copy(hidden = true, kind = row.kind, text = "", fileBytes = byteArrayOf())
+            "reaction_removed" -> {
+                val idx = merged.indexOfFirst {
+                    it.convId == row.convId &&
+                        it.kind == "reaction" &&
+                        it.target == row.target &&
+                        it.emoji == row.emoji &&
+                        (if (row.outgoing) it.outgoing else !it.outgoing)
+                }
+                if (idx >= 0) merged.removeAt(idx)
+                continue
+            }
+            "deleted" -> {
+                // Legacy soft-delete from old peers/vaults: migrate to hard delete.
+                merged.removeAll {
+                    it.convId == row.convId &&
+                        (
+                            (it.convSeq == row.target && it.kind != "reaction") ||
+                                (it.kind == "reaction" && it.target == row.target)
+                            )
+                }
+                for (i in merged.indices) {
+                    val m = merged[i]
+                    if (m.convId == row.convId && m.replyTo == row.target && row.target != 0UL) {
+                        merged[i] = m.copy(replyTo = 0UL)
+                    }
+                }
+                continue
+            }
+            "expired" -> {
+                val idx = merged.indexOfFirst {
+                    it.convId == row.convId && it.convSeq == row.target && it.kind != "reaction"
+                }
+                if (idx >= 0) {
+                    val old = merged[idx]
+                    merged[idx] = old.copy(hidden = true, kind = row.kind, text = "", fileBytes = byteArrayOf())
+                }
+            }
+            "reaction" -> {
+                // Toggle-off echo may arrive as a duplicate: same author+emoji
+                // already present means the peer toggled. Keep multi-emoji.
+                val already = merged.any {
+                    it.convId == row.convId &&
+                        it.kind == "reaction" &&
+                        it.target == row.target &&
+                        it.emoji == row.emoji &&
+                        it.outgoing == row.outgoing &&
+                        (it.outgoing || it.senderId == row.senderId)
+                }
+                if (!already) merged.add(row)
+                continue
             }
         }
         if (merged.none { it.convId == row.convId && it.convSeq == row.convSeq && it.kind == row.kind }) {

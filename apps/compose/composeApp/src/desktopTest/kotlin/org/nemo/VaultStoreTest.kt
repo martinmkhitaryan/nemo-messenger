@@ -18,13 +18,18 @@ class VaultStoreTest {
     }
 
     @Test
-    fun mergeHidesDeleteTarget() {
-        val base = listOf(row(convSeq = 3UL, text = "hello"))
-        val merged = mergeDisplayRows(base, listOf(row(kind = "deleted", convSeq = 9UL, target = 3UL, text = "")))
-        assertEquals(2, merged.size)
-        val hidden = merged.first { it.convSeq == 3UL }
-        assertTrue(hidden.hidden)
-        assertEquals("deleted", hidden.kind)
+    fun mergeRemovesDeleteTarget() {
+        val base = listOf(
+            row(convSeq = 3UL, text = "hello"),
+            row(convSeq = 9UL, kind = "reaction", target = 3UL, emoji = "👍"),
+            row(convSeq = 4UL, text = "reply", replyTo = 3UL),
+        )
+        val merged = mergeDisplayRows(base, listOf(row(kind = "removed", convSeq = 3UL, target = 3UL, text = "")))
+        // Hard delete: target + pill gone, marker not stored, quote hidden.
+        assertTrue(merged.none { it.convSeq == 3UL && it.kind != "reaction" })
+        assertTrue(merged.none { it.kind == "reaction" })
+        assertTrue(merged.none { it.kind == "removed" })
+        assertEquals(0UL, merged.first { it.convSeq == 4UL }.replyTo)
     }
 
     @Test
@@ -77,6 +82,8 @@ class VaultStoreTest {
         kind: String = "",
         text: String = "hello",
         target: ULong = 0UL,
+        emoji: String = "",
+        replyTo: ULong = 0UL,
     ) = DisplayRow(
         convId = convId,
         convSeq = convSeq,
@@ -87,7 +94,7 @@ class VaultStoreTest {
         fileBytes = byteArrayOf(),
         fetchToken = "",
         kind = kind,
-        emoji = "",
+        emoji = emoji,
         target = target,
         hidden = false,
         displayedAt = 1UL,
@@ -95,5 +102,6 @@ class VaultStoreTest {
 
         senderId = "",
         senderName = "",
+        replyTo = replyTo,
     )
 }

@@ -29,22 +29,24 @@ class UnreadCountTest {
     fun systemRowsNeverCount() {
         val rows = listOf(
             row(convSeq = 1UL, kind = "reaction"),
-            row(convSeq = 2UL, kind = "deleted"),
-            row(convSeq = 3UL, kind = "expired"),
-            row(convSeq = 4UL, kind = "disappear"),
-            row(convSeq = 5UL, kind = "call_answer"),
-            row(convSeq = 6UL, kind = "call_reject"),
-            row(convSeq = 7UL, kind = "call_cancel"),
-            row(convSeq = 8UL, kind = "call_end"),
-            row(convSeq = 9UL, kind = "lost"),
-            row(convSeq = 10UL, kind = "revoked"),
-            row(convSeq = 11UL, kind = "binding_conflict"),
+            row(convSeq = 2UL, kind = "reaction_removed"),
+            row(convSeq = 3UL, kind = "removed"),
+            row(convSeq = 4UL, kind = "deleted"),
+            row(convSeq = 5UL, kind = "expired"),
+            row(convSeq = 6UL, kind = "disappear"),
+            row(convSeq = 7UL, kind = "call_answer"),
+            row(convSeq = 8UL, kind = "call_reject"),
+            row(convSeq = 9UL, kind = "call_cancel"),
+            row(convSeq = 10UL, kind = "call_end"),
+            row(convSeq = 11UL, kind = "lost"),
+            row(convSeq = 12UL, kind = "revoked"),
+            row(convSeq = 13UL, kind = "binding_conflict"),
         )
         assertEquals(0, unreadCount(CONV, rows, emptyMap()))
         // ... but they still advance the mark when opening the chat.
         val lastRead = mutableMapOf<String, ULong>()
         assertTrue(markConversationRead(lastRead, rows, CONV))
-        assertEquals(11UL, lastRead[CONV])
+        assertEquals(13UL, lastRead[CONV])
         assertEquals(0, unreadCount(CONV, rows, lastRead))
     }
 
@@ -173,6 +175,7 @@ class UnreadCountTest {
 
         senderId = "",
         senderName = "",
+        replyTo = 0UL,
     )
 
     private companion object {

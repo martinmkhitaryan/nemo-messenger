@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nemo_core::{
-    classify_binding_gossip, decode, encode, encode_text, invite_ttl_bucket, mailbox,
+    classify_binding_gossip, decode, encode, invite_ttl_bucket, mailbox,
     messages_lost, open_group_file, seal_group_file, AppBody, AppHeader, AppMessage,
     BindingGossipCheck, Call, CapabilityIntro, CoreError, FileMeta, Group, HomeSession,
     HostAccept, HostGroup, HttpHome, InboxRow, Installation, LocalSignal, PendingJoin,
@@ -63,6 +63,9 @@ pub struct DisplayRow {
     pub sender_id: String,
     /// Contact nickname of the author at receive time, if known. Else empty.
     pub sender_name: String,
+    /// Quoted message seq for replies. 0 = none. Hidden when the quoted
+    /// message no longer exists (hard-delete), never tombstoned.
+    pub reply_to: u64,
 }
 
 /// Hosted MLS group the shell can list. No signing keys.
@@ -361,6 +364,7 @@ fn emit_call(
             outgoing: true,
             sender_id: String::new(),
             sender_name: String::new(),
+            reply_to: 0,
         })
     }
 }
@@ -628,6 +632,7 @@ fn to_inbox_row(row: &DisplayRow) -> InboxRow {
         outgoing: row.outgoing,
         sender_id: row.sender_id.clone(),
         sender_name: row.sender_name.clone(),
+        reply_to: row.reply_to,
     }
 }
 
@@ -649,6 +654,7 @@ fn from_inbox_row(row: InboxRow) -> DisplayRow {
         outgoing: row.outgoing,
         sender_id: row.sender_id,
         sender_name: row.sender_name,
+        reply_to: row.reply_to,
     }
 }
 
@@ -1068,6 +1074,8 @@ impl NemoClient {
         }
         if let Ok((rows, seqs, acked, read)) = inner.vault.as_ref().unwrap().load_inbox() {
             inner.inbox = rows.into_iter().map(from_inbox_row).collect();
+            // Migrate legacy soft-delete tombstones to hard-delete.
+            drop_legacy_tombstones(&mut inner.inbox);
             inner.next_seq = seqs;
             inner.acked = acked;
             inner.read = read;
@@ -1286,11 +1294,30 @@ impl NemoClient {
     }
 
     pub fn send_text(&self, peer_id_hex: String, text: String) -> Result<DisplayRow, FfiError> {
+        self.send_text_with_reply(peer_id_hex, text, 0)
+    }
+
+    pub fn send_text_with_reply(
+        &self,
+        peer_id_hex: String,
+        text: String,
+        reply_to: u64,
+    ) -> Result<DisplayRow, FfiError> {
         let peer = parse_identity_id(&peer_id_hex)?;
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let now = now_unix();
         let seq = bump_seq(&mut inner.next_seq, &peer_id_hex);
-        let ptext = encode_text(seq, now, &text)?;
+        let reply_opt = if reply_to == 0 { None } else { Some(reply_to) };
+        let ptext = encode(
+            &AppMessage {
+                header: AppHeader {
+                    conv_seq: seq,
+                    sent_at: now,
+                    reply_to: reply_opt,
+                },
+                body: AppBody::Text { text: text.clone() },
+            },
+        )?;
         let ttl = ttl_for(&inner.disappear, &peer_id_hex);
         {
             let Inner {
@@ -1322,6 +1349,7 @@ impl NemoClient {
             outgoing: true,
             sender_id: String::new(),
             sender_name: String::new(),
+            reply_to,
         };
         inner.inbox.push(row.clone());
         persist(&inner)?;
@@ -1401,7 +1429,9 @@ impl NemoClient {
                                     ids::to_hex(&peer),
                                     header.conv_seq,
                                     text,
-                                    header.sent_at, false
+                                    header.sent_at,
+                                    header.reply_to.unwrap_or(0),
+                                    false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1421,7 +1451,9 @@ impl NemoClient {
                                     header.sent_at,
                                     meta,
                                     enc_file,
-                                    String::new(), false
+                                    String::new(),
+                                    header.reply_to.unwrap_or(0),
+                                    false
                                 ));
                             }
                             Ok(AppMessage {
@@ -1461,31 +1493,76 @@ impl NemoClient {
                                 header,
                                 body: AppBody::Reaction { target, emoji },
                             }) => {
-                                new_rows.push(push_control(
+                                let peer_hex = ids::to_hex(&peer);
+                                let sender_name =
+                                    nicknames.get(&peer_hex).cloned().unwrap_or_default();
+                                // Toggle-off: same author + emoji already present removes it.
+                                if take_matching_reaction(
                                     inbox,
-                                    next_seq,
-                                    ids::to_hex(&peer),
-                                    header.conv_seq,
-                                    header.sent_at,
-                                    "reaction",
-                                    emoji,
-                                    target, false
-                                ));
+                                    &peer_hex,
+                                    target,
+                                    &emoji,
+                                    false,
+                                    &peer_hex,
+                                ) {
+                                    // Advance the seq cursor so receipts stay correct,
+                                    // but return only a transient marker (never stored,
+                                    // never a bubble).
+                                    let seq = *next_seq.get(&peer_hex).unwrap_or(&0);
+                                    if header.conv_seq > seq {
+                                        next_seq.insert(peer_hex.clone(), header.conv_seq);
+                                    }
+                                    new_rows.push(reaction_removed_marker(
+                                        peer_hex,
+                                        target,
+                                        emoji,
+                                        header.sent_at,
+                                        false,
+                                    ));
+                                } else {
+                                    let mut out = push_control(
+                                        inbox,
+                                        next_seq,
+                                        peer_hex.clone(),
+                                        header.conv_seq,
+                                        header.sent_at,
+                                        "reaction",
+                                        emoji.clone(),
+                                        target,
+                                        false,
+                                    );
+                                    out.sender_id = peer_hex;
+                                    out.sender_name = sender_name;
+                                    // Patch the stored row too (push_control leaves it empty).
+                                    if let Some(stored) = inbox.iter_mut().find(|r| {
+                                        r.conv_id == out.conv_id
+                                            && r.conv_seq == out.conv_seq
+                                            && r.kind == "reaction"
+                                    }) {
+                                        stored.sender_id = out.sender_id.clone();
+                                        stored.sender_name = out.sender_name.clone();
+                                    }
+                                    new_rows.push(out);
+                                }
                             }
                             Ok(AppMessage {
                                 header,
                                 body: AppBody::Delete { target },
                             }) => {
-                                hide_target(inbox, &ids::to_hex(&peer), target);
-                                new_rows.push(push_control(
-                                    inbox,
-                                    next_seq,
-                                    ids::to_hex(&peer),
-                                    header.conv_seq,
+                                let peer_hex = ids::to_hex(&peer);
+                                remove_target(inbox, &peer_hex, target);
+                                // Advance cursor without storing a bubble: the
+                                // deleted message is gone and must not be
+                                // fetched back.
+                                let seq = *next_seq.get(&peer_hex).unwrap_or(&0);
+                                if header.conv_seq > seq {
+                                    next_seq.insert(peer_hex.clone(), header.conv_seq);
+                                }
+                                new_rows.push(removed_marker(
+                                    peer_hex,
+                                    target,
                                     header.sent_at,
-                                    "deleted",
-                                    String::new(),
-                                    target, false
+                                    false,
                                 ));
                             }
                             Ok(AppMessage {
@@ -1816,7 +1893,9 @@ impl NemoClient {
                                             ids::to_hex(&host.group_id),
                                             header.conv_seq,
                                             text,
-                                            header.sent_at, false
+                                            header.sent_at,
+                                            header.reply_to.unwrap_or(0),
+                                            false
                                         );
                                         out.sender_id = sender_hex;
                                         out.sender_name = sender_name;
@@ -1845,7 +1924,9 @@ impl NemoClient {
                                                     header.sent_at,
                                                     meta,
                                                     bytes,
-                                                    ids::to_hex(&token), false
+                                                    ids::to_hex(&token),
+                                                    header.reply_to.unwrap_or(0),
+                                                    false
                                                 );
                                                 out.sender_id = sender_hex.clone();
                                                 out.sender_name = sender_name.clone();
@@ -1857,32 +1938,66 @@ impl NemoClient {
                                         header,
                                         body: AppBody::Reaction { target, emoji },
                                     }) => {
-                                        new_rows.push(push_control(
+                                        let conv = ids::to_hex(&host.group_id);
+                                        if take_matching_reaction(
                                             inbox,
-                                            next_seq,
-                                            ids::to_hex(&host.group_id),
-                                            header.conv_seq,
-                                            header.sent_at,
-                                            "reaction",
-                                            emoji,
-                                            target, false
-                                        ));
+                                            &conv,
+                                            target,
+                                            &emoji,
+                                            false,
+                                            &sender_hex,
+                                        ) {
+                                            let seq = *next_seq.get(&conv).unwrap_or(&0);
+                                            if header.conv_seq > seq {
+                                                next_seq.insert(conv.clone(), header.conv_seq);
+                                            }
+                                            new_rows.push(reaction_removed_marker(
+                                                conv,
+                                                target,
+                                                emoji,
+                                                header.sent_at,
+                                                false,
+                                            ));
+                                        } else {
+                                            let mut out = push_control(
+                                                inbox,
+                                                next_seq,
+                                                conv,
+                                                header.conv_seq,
+                                                header.sent_at,
+                                                "reaction",
+                                                emoji.clone(),
+                                                target,
+                                                false,
+                                            );
+                                            out.sender_id = sender_hex.clone();
+                                            out.sender_name = sender_name.clone();
+                                            if let Some(stored) = inbox.iter_mut().find(|r| {
+                                                r.conv_id == out.conv_id
+                                                    && r.conv_seq == out.conv_seq
+                                                    && r.kind == "reaction"
+                                            }) {
+                                                stored.sender_id = out.sender_id.clone();
+                                                stored.sender_name = out.sender_name.clone();
+                                            }
+                                            new_rows.push(out);
+                                        }
                                     }
                                     Ok(AppMessage {
                                         header,
                                         body: AppBody::Delete { target },
                                     }) => {
                                         let conv = ids::to_hex(&host.group_id);
-                                        hide_target(inbox, &conv, target);
-                                        new_rows.push(push_control(
-                                            inbox,
-                                            next_seq,
+                                        remove_target(inbox, &conv, target);
+                                        let seq = *next_seq.get(&conv).unwrap_or(&0);
+                                        if header.conv_seq > seq {
+                                            next_seq.insert(conv.clone(), header.conv_seq);
+                                        }
+                                        new_rows.push(removed_marker(
                                             conv,
-                                            header.conv_seq,
+                                            target,
                                             header.sent_at,
-                                            "deleted",
-                                            String::new(),
-                                            target, false
+                                            false,
                                         ));
                                     }
                                     Ok(AppMessage {
@@ -2170,11 +2285,28 @@ impl NemoClient {
         group_id_hex: String,
         text: String,
     ) -> Result<DisplayRow, FfiError> {
+        self.send_group_text_with_reply(group_id_hex, text, 0)
+    }
+
+    pub fn send_group_text_with_reply(
+        &self,
+        group_id_hex: String,
+        text: String,
+        reply_to: u64,
+    ) -> Result<DisplayRow, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let now = now_unix();
         let row = {
             let seq = bump_seq(&mut inner.next_seq, &group_id_hex);
-            let ptext = encode_text(seq, now, &text)?;
+            let reply_opt = if reply_to == 0 { None } else { Some(reply_to) };
+            let ptext = encode(&AppMessage {
+                header: AppHeader {
+                    conv_seq: seq,
+                    sent_at: now,
+                    reply_to: reply_opt,
+                },
+                body: AppBody::Text { text: text.clone() },
+            })?;
             let Inner { state, groups, .. } = &mut *inner;
             let session = match state {
                 Some(ClientState::Registered(session)) => session,
@@ -2208,6 +2340,7 @@ impl NemoClient {
                 outgoing: true,
                 sender_id: String::new(),
                 sender_name: String::new(),
+            reply_to,
             }
         };
         inner.inbox.push(row.clone());
@@ -2249,6 +2382,17 @@ impl NemoClient {
         mime: String,
         bytes: Vec<u8>,
     ) -> Result<DisplayRow, FfiError> {
+        self.send_file_with_reply(peer_id_hex, name, mime, bytes, 0)
+    }
+
+    pub fn send_file_with_reply(
+        &self,
+        peer_id_hex: String,
+        name: String,
+        mime: String,
+        bytes: Vec<u8>,
+        reply_to: u64,
+    ) -> Result<DisplayRow, FfiError> {
         let peer = parse_identity_id(&peer_id_hex)?;
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let now = now_unix();
@@ -2258,11 +2402,12 @@ impl NemoClient {
             mime: mime.clone(),
             size: bytes.len() as u64,
         };
+        let reply_opt = if reply_to == 0 { None } else { Some(reply_to) };
         let ptext = encode(&AppMessage {
             header: AppHeader {
                 conv_seq: seq,
                 sent_at: now,
-                reply_to: None,
+                reply_to: reply_opt,
             },
             body: AppBody::Attachment {
                 enc_file: bytes.clone(),
@@ -2295,6 +2440,7 @@ impl NemoClient {
             meta,
             bytes,
             String::new(),
+            reply_to,
             true,
         );
         persist(&inner)?;
@@ -2307,6 +2453,17 @@ impl NemoClient {
         name: String,
         mime: String,
         bytes: Vec<u8>,
+    ) -> Result<DisplayRow, FfiError> {
+        self.send_group_file_with_reply(group_id_hex, name, mime, bytes, 0)
+    }
+
+    pub fn send_group_file_with_reply(
+        &self,
+        group_id_hex: String,
+        name: String,
+        mime: String,
+        bytes: Vec<u8>,
+        reply_to: u64,
     ) -> Result<DisplayRow, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let now = now_unix();
@@ -2340,11 +2497,12 @@ impl NemoClient {
                 reserve.encode(),
             ))?;
             block_on(session.upload_file(g.host.group_id, &g.host.cred, token, blob))?;
+            let reply_opt = if reply_to == 0 { None } else { Some(reply_to) };
             let ptext = encode(&AppMessage {
                 header: AppHeader {
                     conv_seq: seq,
                     sent_at: now,
-                    reply_to: None,
+                    reply_to: reply_opt,
                 },
                 body: AppBody::Attachment {
                     enc_file: key,
@@ -2376,6 +2534,7 @@ impl NemoClient {
                 outgoing: true,
                 sender_id: String::new(),
                 sender_name: String::new(),
+            reply_to,
             }
         };
         inner.inbox.push(row.clone());
@@ -2467,7 +2626,13 @@ impl NemoClient {
     ) -> Result<DisplayRow, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let now = now_unix();
-        let row = send_app(
+        // Toggle-off: same emoji from me already present -> remove locally and
+        // still transmit (peer toggles off too). Multiple different emojis
+        // per user coexist (multi-emoji style).
+        let toggled_off =
+            take_matching_reaction(&mut inner.inbox, &conv_id, target, &emoji, true, "");
+        let seq = bump_seq(&mut inner.next_seq, &conv_id);
+        transmit_app(
             &mut inner,
             &conv_id,
             AppBody::Reaction {
@@ -2475,18 +2640,62 @@ impl NemoClient {
                 emoji: emoji.clone(),
             },
             now,
+            seq,
         )?;
+        if toggled_off {
+            persist(&inner)?;
+            return Ok(reaction_removed_marker(conv_id, target, emoji, now, true));
+        }
+        // Store the reaction row locally (own reactions keep outgoing=true).
+        let row = DisplayRow {
+            conv_id: conv_id.clone(),
+            conv_seq: seq,
+            text: String::new(),
+            sent_at: now,
+            file_name: String::new(),
+            file_mime: String::new(),
+            file_bytes: Vec::new(),
+            fetch_token: String::new(),
+            kind: "reaction".into(),
+            emoji,
+            target,
+            hidden: false,
+            displayed_at: now,
+            outgoing: true,
+            sender_id: String::new(),
+            sender_name: String::new(),
+            reply_to: 0,
+        };
+        inner.inbox.push(row.clone());
         persist(&inner)?;
         Ok(row)
     }
 
+    /// Delete for everyone: hard-remove locally, broadcast `Delete`, return a
+    /// transient `removed` marker (never stored, never fetched back).
     pub fn delete_message(&self, conv_id: String, target: u64) -> Result<DisplayRow, FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
-        hide_target(&mut inner.inbox, &conv_id, target);
         let now = now_unix();
-        let row = send_app(&mut inner, &conv_id, AppBody::Delete { target }, now)?;
+        remove_target(&mut inner.inbox, &conv_id, target);
+        let seq = bump_seq(&mut inner.next_seq, &conv_id);
+        // Best-effort broadcast; local removal stands even if offline send fails.
+        let res = transmit_app(&mut inner, &conv_id, AppBody::Delete { target }, now, seq);
         persist(&inner)?;
-        Ok(row)
+        res?;
+        Ok(removed_marker(conv_id, target, now, true))
+    }
+
+    /// Delete for me: hard-remove locally only, no network broadcast.
+    pub fn delete_message_for_me(
+        &self,
+        conv_id: String,
+        target: u64,
+    ) -> Result<DisplayRow, FfiError> {
+        let mut inner = self.inner.lock().map_err(|_| lock_err())?;
+        let now = now_unix();
+        remove_target(&mut inner.inbox, &conv_id, target);
+        persist(&inner)?;
+        Ok(removed_marker(conv_id, target, now, true))
     }
 
     pub fn set_disappear(&self, conv_id: String, seconds: u64) -> Result<DisplayRow, FfiError> {
@@ -2856,6 +3065,7 @@ fn push_text(
     conv_seq: u64,
     text: String,
     sent_at: u64,
+    reply_to: u64,
     outgoing: bool,
 ) -> DisplayRow {
     let seq = *next_seq.get(&conv_id).unwrap_or(&0);
@@ -2879,6 +3089,7 @@ fn push_text(
         outgoing,
         sender_id: String::new(),
         sender_name: String::new(),
+        reply_to,
     };
     inbox.push(row.clone());
     row
@@ -2893,6 +3104,7 @@ fn push_file(
     meta: FileMeta,
     file_bytes: Vec<u8>,
     fetch_token: String,
+    reply_to: u64,
     outgoing: bool,
 ) -> DisplayRow {
     let seq = *next_seq.get(&conv_id).unwrap_or(&0);
@@ -2916,6 +3128,7 @@ fn push_file(
         outgoing,
         sender_id: String::new(),
         sender_name: String::new(),
+        reply_to,
     };
     inbox.push(row.clone());
     row
@@ -2929,14 +3142,134 @@ fn ttl_for(disappear: &HashMap<String, u64>, conv: &str) -> TtlBucket {
     }
 }
 
-fn hide_target(inbox: &mut [DisplayRow], conv_id: &str, target: u64) {
-    for row in inbox.iter_mut() {
-        if row.conv_id == conv_id && row.conv_seq == target && row.kind != "reaction" {
-            row.hidden = true;
-            row.kind = "deleted".into();
-            row.text.clear();
-            row.file_bytes.clear();
+/// Hard delete: completely remove the target message plus any reactions
+/// pointing at it. Quotes referencing it are hidden (`reply_to` cleared),
+/// never tombstoned. Returns true when anything changed.
+fn remove_target(inbox: &mut Vec<DisplayRow>, conv_id: &str, target: u64) -> bool {
+    let before = inbox.len();
+    inbox.retain(|r| {
+        if r.conv_id != conv_id {
+            return true;
         }
+        // Drop the message itself (any non-reaction row with this seq).
+        if r.conv_seq == target && r.kind != "reaction" {
+            return false;
+        }
+        // Drop reactions anchored to the deleted message.
+        if r.kind == "reaction" && r.target == target {
+            return false;
+        }
+        // Drop legacy soft-delete tombstones for this target.
+        if (r.kind == "deleted" || r.kind == "expired" && false) && r.target == target {
+            return false;
+        }
+        true
+    });
+    let mut cleared_quote = false;
+    for row in inbox.iter_mut() {
+        if row.conv_id == conv_id && row.reply_to == target && target != 0 {
+            row.reply_to = 0;
+            cleared_quote = true;
+        }
+    }
+    inbox.len() != before || cleared_quote
+}
+
+/// Drop all legacy soft-delete tombstones (`kind == "deleted"`). Used on
+/// vault load so old vaults migrate to hard-delete semantics.
+fn drop_legacy_tombstones(inbox: &mut Vec<DisplayRow>) {
+    inbox.retain(|r| r.kind != "deleted");
+    // Any quote pointing at a now-missing seq is hidden.
+    let present: std::collections::HashSet<(String, u64)> = inbox
+        .iter()
+        .map(|r| (r.conv_id.clone(), r.conv_seq))
+        .collect();
+    for row in inbox.iter_mut() {
+        if row.reply_to != 0 && !present.contains(&(row.conv_id.clone(), row.reply_to)) {
+            row.reply_to = 0;
+        }
+    }
+}
+
+/// Toggle-off helper for multi-emoji reactions: remove the matching
+/// reaction row (same conv, target, emoji, same author). Multiple different
+/// emojis per user coexist; sending the same emoji again removes it.
+fn take_matching_reaction(
+    inbox: &mut Vec<DisplayRow>,
+    conv_id: &str,
+    target: u64,
+    emoji: &str,
+    outgoing: bool,
+    sender_id: &str,
+) -> bool {
+    if let Some(idx) = inbox.iter().position(|r| {
+        r.conv_id == conv_id
+            && r.kind == "reaction"
+            && r.target == target
+            && r.emoji == emoji
+            && if outgoing {
+                r.outgoing
+            } else {
+                !r.outgoing && r.sender_id == sender_id
+            }
+    }) {
+        inbox.remove(idx);
+        true
+    } else {
+        false
+    }
+}
+
+/// Transient marker for the shell: tells Kotlin to drop `target` (and its
+/// reaction pills / quotes) without adding a bubble. Never stored in
+/// `inbox`, so `fetch_now()` never fetches a deleted message back.
+fn removed_marker(conv_id: String, target: u64, sent_at: u64, outgoing: bool) -> DisplayRow {
+    DisplayRow {
+        conv_id,
+        conv_seq: target,
+        text: String::new(),
+        sent_at,
+        file_name: String::new(),
+        file_mime: String::new(),
+        file_bytes: Vec::new(),
+        fetch_token: String::new(),
+        kind: "removed".into(),
+        emoji: String::new(),
+        target,
+        hidden: false,
+        displayed_at: sent_at,
+        outgoing,
+        sender_id: String::new(),
+        sender_name: String::new(),
+        reply_to: 0,
+    }
+}
+
+fn reaction_removed_marker(
+    conv_id: String,
+    target: u64,
+    emoji: String,
+    sent_at: u64,
+    outgoing: bool,
+) -> DisplayRow {
+    DisplayRow {
+        conv_id,
+        conv_seq: 0,
+        text: String::new(),
+        sent_at,
+        file_name: String::new(),
+        file_mime: String::new(),
+        file_bytes: Vec::new(),
+        fetch_token: String::new(),
+        kind: "reaction_removed".into(),
+        emoji,
+        target,
+        hidden: false,
+        displayed_at: sent_at,
+        outgoing,
+        sender_id: String::new(),
+        sender_name: String::new(),
+        reply_to: 0,
     }
 }
 
@@ -2971,14 +3304,53 @@ fn push_control(
         kind: kind.into(),
         emoji,
         target,
-        hidden: kind == "deleted",
+        hidden: false,
         displayed_at: sent_at,
         outgoing,
         sender_id: String::new(),
         sender_name: String::new(),
+        reply_to: 0,
     };
     inbox.push(row.clone());
     row
+}
+
+fn transmit_app(
+    inner: &mut Inner,
+    conv_id: &str,
+    body: AppBody,
+    now: u64,
+    seq: u64,
+) -> Result<(), FfiError> {
+    let ptext = encode(&AppMessage {
+        header: AppHeader {
+            conv_seq: seq,
+            sent_at: now,
+            reply_to: None,
+        },
+        body,
+    })?;
+    let ttl = ttl_for(&inner.disappear, conv_id);
+    let Inner { state, groups, .. } = &mut *inner;
+    let session = match state {
+        Some(ClientState::Registered(session)) => session,
+        Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+        None => return Err(FfiError::Core("busy".into())),
+    };
+    let id = parse_identity_id(conv_id)?;
+    if groups.iter().any(|g| g.host.group_id == id) {
+        let g = find_group_mut(groups, conv_id)?;
+        let cipher = g.mls.encrypt(session.install.mls_provider(), &ptext)?;
+        block_on(session.group_append(
+            g.host.group_id,
+            &g.host.cred,
+            MessageType::MlsApp,
+            cipher,
+        ))?;
+    } else {
+        block_on(session.send_to(&id, ttl, &ptext, now))?;
+    }
+    Ok(())
 }
 
 fn send_app(
@@ -2990,40 +3362,15 @@ fn send_app(
     let seq = bump_seq(&mut inner.next_seq, conv_id);
     let (kind, emoji, target) = match &body {
         AppBody::Reaction { target, emoji } => ("reaction", emoji.clone(), *target),
-        AppBody::Delete { target } => ("deleted", String::new(), *target),
+        AppBody::Delete { .. } => {
+            // Hard delete never creates a bubble; callers use transmit_app +
+            // removed_marker instead. Kept as an error so old paths fail loud.
+            return Err(FfiError::Core("use hard delete path".into()));
+        }
         AppBody::Disappear { seconds } => ("disappear", seconds.to_string(), 0),
         _ => return Err(FfiError::Core("unsupported app body".into())),
     };
-    let ptext = encode(&AppMessage {
-        header: AppHeader {
-            conv_seq: seq,
-            sent_at: now,
-            reply_to: None,
-        },
-        body,
-    })?;
-    let ttl = ttl_for(&inner.disappear, conv_id);
-    {
-        let Inner { state, groups, .. } = &mut *inner;
-        let session = match state {
-            Some(ClientState::Registered(session)) => session,
-            Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
-            None => return Err(FfiError::Core("busy".into())),
-        };
-        let id = parse_identity_id(conv_id)?;
-        if groups.iter().any(|g| g.host.group_id == id) {
-            let g = find_group_mut(groups, conv_id)?;
-            let cipher = g.mls.encrypt(session.install.mls_provider(), &ptext)?;
-            block_on(session.group_append(
-                g.host.group_id,
-                &g.host.cred,
-                MessageType::MlsApp,
-                cipher,
-            ))?;
-        } else {
-            block_on(session.send_to(&id, ttl, &ptext, now))?;
-        }
-    }
+    transmit_app(inner, conv_id, body, now, seq)?;
     Ok(push_control(
         &mut inner.inbox,
         &mut inner.next_seq,
@@ -3268,6 +3615,7 @@ mod tests {
             outgoing: false,
             sender_id: String::new(),
             sender_name: String::new(),
+            reply_to: 0,
         };
         assert_eq!(row.conv_id.len(), 64);
         let _ = row.text;
@@ -3671,14 +4019,48 @@ mod tests {
             .iter()
             .any(|r| r.kind == "reaction" && r.emoji == "👍"));
 
+        // Toggle: same emoji again removes the reaction (multi-emoji per user allowed).
+        alice
+            .react(bob_id.clone(), sent.conv_seq, "❤️".into())
+            .unwrap();
+        let reacted2 = bob.fetch_now().unwrap();
+        assert!(reacted2
+            .iter()
+            .any(|r| r.kind == "reaction" && r.emoji == "❤️"));
+        alice
+            .react(bob_id.clone(), sent.conv_seq, "👍".into())
+            .unwrap();
+        let untoggled = bob.fetch_now().unwrap();
+        assert!(untoggled
+            .iter()
+            .any(|r| r.kind == "reaction_removed" && r.emoji == "👍"));
+
+        // Reply plumbing: reply_to survives the wire.
+        let reply = bob
+            .send_text_with_reply(alice_id.clone(), "re: hello".into(), sent.conv_seq)
+            .unwrap();
+        assert_eq!(reply.reply_to, sent.conv_seq);
+        let got_reply = alice.fetch_now().unwrap();
+        assert!(got_reply.iter().any(|r| r.reply_to == sent.conv_seq));
+
         alice.delete_message(bob_id.clone(), sent.conv_seq).unwrap();
         let deleted = bob.fetch_now().unwrap();
-        assert!(deleted.iter().any(|r| r.kind == "deleted"));
+        // Hard delete: transient `removed` marker, never a `deleted` bubble.
+        assert!(deleted.iter().any(|r| r.kind == "removed"));
+        assert!(!deleted.iter().any(|r| r.kind == "deleted"));
+        // Target + its reactions are completely removed, not tombstoned.
+        assert!(!bob
+            .inbox()
+            .unwrap()
+            .iter()
+            .any(|r| r.conv_seq == sent.conv_seq));
+        // Quote on the reply is hidden (cleared), not tombstoned.
         assert!(bob
             .inbox()
             .unwrap()
             .iter()
-            .any(|r| r.conv_seq == sent.conv_seq && r.hidden));
+            .filter(|r| r.reply_to != 0)
+            .all(|r| r.reply_to != sent.conv_seq));
 
         alice.set_disappear(bob_id.clone(), 1).unwrap();
         let _ = bob.fetch_now().unwrap();
@@ -3725,11 +4107,12 @@ mod tests {
         )
         .unwrap();
         assert!(
-            bob2.inbox()
+            !bob2
+                .inbox()
                 .unwrap()
                 .iter()
-                .any(|r| r.conv_seq == sent.conv_seq && r.hidden),
-            "deleted target missing after reopen"
+                .any(|r| r.conv_seq == sent.conv_seq),
+            "deleted target must stay removed after reopen"
         );
 
         alice2

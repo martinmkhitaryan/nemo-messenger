@@ -18,9 +18,13 @@ class UiDisplayTest {
     fun previewAndBubbleCoverProtocolKinds() {
         assertEquals("Message expired", previewLine(row(kind = "expired", hidden = true)))
         assertEquals("Expired", bubbleText(row(kind = "expired", hidden = true)))
+        // Legacy soft-delete tombstones still render; hard delete removes entirely.
         assertEquals("Message deleted", previewLine(row(kind = "deleted", hidden = true)))
         assertEquals("Deleted", bubbleText(row(kind = "deleted")))
-        assertEquals("Reacted 👍", previewLine(row(kind = "reaction", emoji = "👍")))
+        // Reaction pills and transient remove markers never become previews/bubbles.
+        assertEquals("", previewLine(row(kind = "reaction", emoji = "👍")))
+        assertEquals("", previewLine(row(kind = "removed", target = 1UL)))
+        assertEquals("", previewLine(row(kind = "reaction_removed", emoji = "👍", target = 1UL)))
         assertEquals("Incoming call", previewLine(row(kind = "call_invite")))
         assertEquals("Ringing", previewLine(row(kind = "call_ringing")))
         assertEquals("Call answered", previewLine(row(kind = "call_answer")))
@@ -46,17 +50,61 @@ class UiDisplayTest {
 
     @Test
     fun hideMarksMatchingMessageAndDoesNotDuplicate() {
-        val messages = mutableListOf(row(kind = "", convSeq = 3UL, text = "hello"))
+        // Hard delete: target + pills removed, marker never stored.
+        val messages = mutableListOf(
+            row(kind = "", convSeq = 3UL, text = "hello"),
+            row(kind = "reaction", convSeq = 9UL, target = 3UL, emoji = "👍"),
+            row(kind = "", convSeq = 4UL, text = "reply", replyTo = 3UL),
+        )
         applyIncoming(
             messages,
-            listOf(row(kind = "deleted", convSeq = 9UL, target = 3UL, text = "")),
+            listOf(row(kind = "removed", convSeq = 3UL, target = 3UL, text = "")),
         )
-        assertEquals(1, messages.count { it.convSeq == 3UL && it.kind != "reaction" })
-        assertTrue(messages[0].hidden)
-        assertEquals("deleted", messages[0].kind)
-        assertEquals(2, messages.size)
+        // Target and its pill are gone; quote hidden (replyTo cleared).
+        assertTrue(messages.none { it.convSeq == 3UL && it.kind != "reaction" })
+        assertTrue(messages.none { it.kind == "reaction" && it.target == 3UL })
+        assertTrue(messages.none { it.kind == "removed" })
+        val reply = messages.first { it.convSeq == 4UL }
+        assertEquals(0UL, reply.replyTo)
+        val sizeAfter = messages.size
         applyIncoming(messages, listOf(messages[0]))
-        assertEquals(2, messages.size)
+        assertEquals(sizeAfter, messages.size)
+    }
+
+    @Test
+    fun reactionToggleAndMultiEmoji() {
+        val base = mutableListOf(row(kind = "", convSeq = 3UL, text = "hello"))
+        applyIncoming(
+            base,
+            listOf(row(kind = "reaction", convSeq = 9UL, target = 3UL, emoji = "👍")),
+        )
+        applyIncoming(
+            base,
+            listOf(row(kind = "reaction", convSeq = 10UL, target = 3UL, emoji = "❤️")),
+        )
+        assertEquals(2, reactionsFor(base, base[0].convId, 3UL).size)
+        // Same emoji toggles off via reaction_removed marker.
+        applyIncoming(
+            base,
+            listOf(row(kind = "reaction_removed", convSeq = 0UL, target = 3UL, emoji = "👍")),
+        )
+        val pills = reactionsFor(base, base[0].convId, 3UL)
+        assertEquals(1, pills.size)
+        assertEquals("❤️", pills[0].emoji)
+    }
+
+    @Test
+    fun replyQuoteHiddenWhenOriginalMissing() {
+        val messages = listOf(
+            row(kind = "", convSeq = 4UL, text = "reply", replyTo = 99UL),
+        )
+        // No original with seq 99 -> quote hidden (null).
+        assertEquals(null, replyOriginal(messages, messages[0]))
+        val withOriginal = listOf(
+            row(kind = "", convSeq = 3UL, text = "hello"),
+            row(kind = "", convSeq = 4UL, text = "reply", replyTo = 3UL),
+        )
+        assertEquals("hello", replyOriginal(withOriginal, withOriginal[1])?.text)
     }
 
     @Test
@@ -83,6 +131,7 @@ class UiDisplayTest {
 
             senderId = "",
             senderName = "",
+            replyTo = 0UL,
         )
         val messages = mutableListOf(sent)
         val outgoing = mutableMapOf<String, Boolean>()
@@ -114,6 +163,7 @@ class UiDisplayTest {
 
             senderId = "",
             senderName = "",
+            replyTo = 0UL,
         )
         val messages = mutableListOf(sent(1UL), sent(2UL))
         val outgoing = mutableMapOf<String, Boolean>()
@@ -163,6 +213,7 @@ class UiDisplayTest {
         emoji: String = "",
         convSeq: ULong = 1UL,
         target: ULong = 0UL,
+        replyTo: ULong = 0UL,
     ) = DisplayRow(
         convId = "ab".repeat(32),
         convSeq = convSeq,
@@ -181,5 +232,6 @@ class UiDisplayTest {
 
         senderId = "",
         senderName = "",
+        replyTo = replyTo,
     )
 }

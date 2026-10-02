@@ -17,14 +17,18 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -62,6 +66,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Done
@@ -152,8 +157,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -281,7 +289,7 @@ private fun newLocalId(): String = "local:${System.nanoTime()}-${localMsgSeq.inc
 
 private fun nowUnixSecs(): ULong = (System.currentTimeMillis() / 1000L).toULong()
 
-private fun optimisticTextRow(chatId: String, text: String, localId: String): DisplayRow = DisplayRow(
+private fun optimisticTextRow(chatId: String, text: String, localId: String, replyTo: ULong = 0UL): DisplayRow = DisplayRow(
     convId = chatId,
     convSeq = 0UL,
     text = text,
@@ -299,27 +307,30 @@ private fun optimisticTextRow(chatId: String, text: String, localId: String): Di
 
     senderId = "",
     senderName = "",
+    replyTo = replyTo,
 )
 
-private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray, localId: String): DisplayRow = DisplayRow(
-    convId = chatId,
-    convSeq = 0UL,
-    text = "",
-    sentAt = nowUnixSecs(),
-    fileName = fileName,
-    fileMime = "application/octet-stream",
-    fileBytes = bytes,
-    fetchToken = localId,
-    kind = "",
-    emoji = "",
-    target = 0UL,
-    hidden = false,
-    displayedAt = nowUnixSecs(),
-    outgoing = true,
+private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray, localId: String, replyTo: ULong = 0UL): DisplayRow =
+    DisplayRow(
+        convId = chatId,
+        convSeq = 0UL,
+        text = "",
+        sentAt = nowUnixSecs(),
+        fileName = fileName,
+        fileMime = "application/octet-stream",
+        fileBytes = bytes,
+        fetchToken = localId,
+        kind = "",
+        emoji = "",
+        target = 0UL,
+        hidden = false,
+        displayedAt = nowUnixSecs(),
+        outgoing = true,
 
-    senderId = "",
-    senderName = "",
-)
+        senderId = "",
+        senderName = "",
+        replyTo = replyTo,
+    )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -377,6 +388,18 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     // the same invite/join can't be submitted twice.
     val acceptedInvites = remember { mutableStateSetOf<String>() }
     val admittedJoins = remember { mutableStateSetOf<String>() }
+    // Card marks persist across restarts (in-memory sets alone resurrect
+    // Accept/Admit buttons for already-handled cards).
+    LaunchedEffect(vaultDir) {
+        val (accepted, admitted) = withContext(Dispatchers.IO) { loadCardMarks(vaultDir) }
+        if (accepted.isNotEmpty()) acceptedInvites.addAll(accepted)
+        if (admitted.isNotEmpty()) admittedJoins.addAll(admitted)
+    }
+    LaunchedEffect(acceptedInvites.size, admittedJoins.size) {
+        val accepted = acceptedInvites.toSet()
+        val admitted = admittedJoins.toSet()
+        withContext(Dispatchers.IO) { saveCardMarks(vaultDir, accepted, admitted) }
+    }
     val contacts = remember { mutableStateMapOf<String, String>() }
     val groups = remember { mutableStateMapOf<String, String>() }
     val lastRead = remember { mutableStateMapOf<String, ULong>() }
@@ -410,13 +433,6 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
             joinSendTo = ""
             sheet = Sheet.JoinGroup
             snackbar.showSnackbar("Invite accepted — pick a member")
-        }
-    }
-
-    fun copyInviteText(text: String) {
-        copyToClipboard(text)
-        scope.launch {
-            snackbar.showSnackbar("Invite copied — paste it in Join group")
         }
     }
 
@@ -1085,7 +1101,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                             acceptedInvites = acceptedInvites,
                                                             admittedJoins = admittedJoins,
                                                             onAcceptFallback = ::acceptFallback,
-                                                            onCopyInvite = { copyInviteText(it.text) },
+                                                            contacts = contacts,
                                                         )
                                                     }
                                                 }
@@ -1176,7 +1192,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     acceptedInvites = acceptedInvites,
                                                     admittedJoins = admittedJoins,
                                                     onAcceptFallback = ::acceptFallback,
-                                                    onCopyInvite = { copyInviteText(it.text) },
+                                                    contacts = contacts,
                                                 )
                                             }
                                         }
@@ -1312,6 +1328,7 @@ private fun sendChat(
     scope: CoroutineScope,
     snackbar: SnackbarHostState,
     clear: () -> Unit,
+    replyTo: ULong = 0UL,
 ) {
     val text = draft.trim()
     if (text.isEmpty()) return
@@ -1323,7 +1340,7 @@ private fun sendChat(
     }
     clear()
     val localId = newLocalId()
-    val pending = optimisticTextRow(chat.id, text, localId)
+    val pending = optimisticTextRow(chat.id, text, localId, replyTo)
     messages.add(pending)
     outgoing[localId] = true
     outgoingStatus[localId] = OutgoingStatus.Pending
@@ -1331,9 +1348,17 @@ private fun sendChat(
         try {
             val row = withContext(Dispatchers.IO) {
                 if (chat.isGroup) {
-                    client?.sendGroupText(chat.id, text)
+                    if (replyTo != 0UL) {
+                        client?.sendGroupTextWithReply(chat.id, text, replyTo)
+                    } else {
+                        client?.sendGroupText(chat.id, text)
+                    }
                 } else {
-                    client?.sendText(chat.id, text)
+                    if (replyTo != 0UL) {
+                        client?.sendTextWithReply(chat.id, text, replyTo)
+                    } else {
+                        client?.sendText(chat.id, text)
+                    }
                 }
             } ?: throw IllegalStateException("Send failed")
             val idx = messages.indexOfFirst { it.fetchToken == localId }
@@ -1642,7 +1667,7 @@ private fun ChatListPane(
             } else {
                 LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                     items(chats, key = { it.id }) { chat ->
-                        val last = messages.lastOrNull { it.convId == chat.id }
+                        val last = lastBubble(messages, chat.id)
                         ChatRow(
                             chat = chat,
                             preview = last?.let { previewLine(it) } ?: "No messages yet",
@@ -1883,13 +1908,19 @@ private fun ChatThread(
     readMark: ULong = 0UL,
     onVisibleRead: (ULong) -> Unit = {},
     onAdmitJoin: ((DisplayRow) -> Unit)? = null,
-    onCopyJoin: ((DisplayRow) -> Unit)? = null,
     onAcceptInvite: ((DisplayRow) -> Unit)? = null,
-    onCopyInvite: ((DisplayRow) -> Unit)? = null,
     acceptedInvites: Set<String> = emptySet(),
     admittedJoins: Set<String> = emptySet(),
     showSenderNames: Boolean = false,
     foreground: Boolean = true,
+    replyTo: DisplayRow? = null,
+    onClearReply: () -> Unit = {},
+    onReply: (DisplayRow) -> Unit = {},
+    onPillClick: (DisplayRow, String) -> Unit = { _, _ -> },
+    onPillLongClick: (DisplayRow) -> Unit = { _ -> },
+    contacts: Map<String, String> = emptyMap(),
+    onCopy: (DisplayRow) -> Unit = {},
+    onQuickReact: (DisplayRow, String) -> Unit = { _, _ -> },
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -2223,6 +2254,63 @@ private fun ChatThread(
                     shadowElevation = 6.dp,
                 ) {
                     Column(Modifier.fillMaxWidth()) {
+                        if (replyTo != null) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    Modifier
+                                        .width(3.dp)
+                                        .height(36.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(
+                                            peerAccentColor(
+                                                replyTo.senderId.ifBlank {
+                                                    replyTo.convId + replyTo.convSeq.toString()
+                                                },
+                                            ),
+                                        ),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    val replyAuthor = quoteAuthorName(replyTo, mine = false, contacts = contacts)
+                                    if (replyAuthor.isNotBlank()) {
+                                        Text(
+                                            replyAuthor,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = peerAccentColor(
+                                                replyTo.senderId.ifBlank {
+                                                    replyTo.convId + replyTo.convSeq.toString()
+                                                },
+                                            ),
+                                            maxLines = 1,
+                                        )
+                                    }
+                                    Text(
+                                        shortQuoteText(
+                                            if (replyTo.fileName.isNotEmpty()) {
+                                                "📎 ${replyTo.fileName}"
+                                            } else {
+                                                replyTo.text
+                                            },
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                    )
+                                }
+                                IconButton(onClick = onClearReply) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "Cancel reply",
+                                    )
+                                }
+                            }
+                        }
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -2339,8 +2427,12 @@ private fun ChatThread(
                     .padding(bottom = padding.calculateBottomPadding()),
             ) {
                 ChatWallpaper(modifier = Modifier.fillMaxSize())
+                // Bubbles only: reaction pills render under their target, transient
+                // remove markers never render. Full `messages` (incl. reactions)
+                // is kept for pills/quotes via DatedMessageItem.
+                val bubbles = remember(messages) { messages.filter(::isBubbleRow) }
                 // reverseLayout stacks short threads on the composer (empty space above).
-                val newestFirst = remember(messages) { messages.asReversed() }
+                val newestFirst = remember(bubbles) { bubbles.asReversed() }
                 val totalCount = newestFirst.size + if (dividerAt != null) 1 else 0
                 LazyColumn(
                     state = listState,
@@ -2370,11 +2462,12 @@ private fun ChatThread(
                             val newestIndex = if (dividerAt != null && display > dividerAt) display - 1 else display
                             val row = newestFirst[newestIndex]
                             // Chronological neighbors for clustering (list is newest-first).
-                            val chronoIndex = messages.lastIndex - newestIndex
+                            val chronoIndex = bubbles.lastIndex - newestIndex
                             DatedMessageItem(
                                 row = row,
                                 chronoIndex = chronoIndex,
-                                messages = messages,
+                                messages = bubbles,
+                                allMessages = messages,
                                 outgoing = outgoing,
                                 outgoingStatus = outgoingStatus,
                                 floatingDate = floatingDate,
@@ -2386,11 +2479,15 @@ private fun ChatThread(
                                 flyTargets = flyTargets,
                                 onReact = onReact,
                                 onDelete = onDelete,
+                                onReply = onReply,
+                                onPillClick = onPillClick,
+                                onPillLongClick = onPillLongClick,
+                                contacts = contacts,
+                                onCopy = onCopy,
+                                onQuickReact = onQuickReact,
                                 onSave = onSave,
                                 onAdmitJoin = onAdmitJoin,
-                                onCopyJoin = onCopyJoin,
                                 onAcceptInvite = onAcceptInvite,
-                                onCopyInvite = onCopyInvite,
                                 acceptedInvites = acceptedInvites,
                                 admittedJoins = admittedJoins,
                                 showSenderNames = showSenderNames,
@@ -2486,9 +2583,9 @@ private fun ActiveChatThread(
     readReceiptsEnabled: Boolean,
     isForeground: Boolean,
     onAcceptFallback: ((String) -> Unit)? = null,
-    onCopyInvite: ((DisplayRow) -> Unit)? = null,
     acceptedInvites: MutableSet<String> = mutableSetOf(),
     admittedJoins: MutableSet<String> = mutableSetOf(),
+    contacts: Map<String, String> = emptyMap(),
 ) {
     val pickFile = rememberPickFile { path ->
         attachFilePath(
@@ -2504,6 +2601,10 @@ private fun ActiveChatThread(
     }
     var micAction by remember(target.id) { mutableStateOf<(() -> Unit)?>(null) }
     val requestMic = rememberEnsureMic { micAction?.invoke() }
+    var replyTo by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
+    var deleteTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
+    var reactTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
+    var authorsTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
     // Peer read receipts: highest viewed seq this visit. Flushed (not streamed)
     // on leave, on background, and as soon as the newest message is visible —
     // never from background fetch. 1:1 only, gated by the setting.
@@ -2551,6 +2652,7 @@ private fun ActiveChatThread(
         chatMenu = chatMenu,
         onChatMenu = onChatMenu,
         onSend = {
+            val rt = replyTo?.convSeq ?: 0UL
             sendChat(
                 c,
                 target,
@@ -2560,7 +2662,12 @@ private fun ActiveChatThread(
                 outgoingStatus,
                 scope,
                 snackbar,
-            ) { onDraft("") }
+                clear = {
+                    onDraft("")
+                    replyTo = null
+                },
+                replyTo = rt,
+            )
         },
         onAttach = { pickFile() },
         onCall = {
@@ -2610,21 +2717,40 @@ private fun ActiveChatThread(
             }
         },
         onReact = { row ->
+            reactTarget = row
+        },
+        onReply = { row ->
+            replyTo = row
+        },
+        onPillClick = { row, emoji ->
             runIo {
                 val r = withContext(Dispatchers.IO) {
-                    c?.react(target.id, row.convSeq, "👍")
+                    c?.react(target.id, row.convSeq, emoji)
                 } ?: return@runIo
-                messages.add(r)
-                onMarkOutgoing(r)
+                applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                if (r.outgoing) onMarkOutgoing(r)
+            }
+        },
+        onPillLongClick = { row ->
+            authorsTarget = row
+        },
+        onCopy = { row ->
+            copyToClipboard(row.text.ifBlank { row.fileName })
+            scope.launch {
+                snackbar.showSnackbar("Copied")
+            }
+        },
+        onQuickReact = { row, emoji ->
+            runIo {
+                val r = withContext(Dispatchers.IO) {
+                    c?.react(target.id, row.convSeq, emoji)
+                } ?: return@runIo
+                applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                if (r.outgoing) onMarkOutgoing(r)
             }
         },
         onDelete = { row ->
-            runIo {
-                val r = withContext(Dispatchers.IO) {
-                    c?.deleteMessage(target.id, row.convSeq)
-                } ?: return@runIo
-                applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
-            }
+            deleteTarget = row
         },
         onSave = { row ->
             if (canSaveAttachment(row)) {
@@ -2635,6 +2761,9 @@ private fun ActiveChatThread(
                 }
             }
         },
+        replyTo = replyTo,
+        onClearReply = { replyTo = null },
+        contacts = contacts,
         onAdmitJoin = { row ->
             runIo {
                 withContext(Dispatchers.IO) {
@@ -2642,12 +2771,6 @@ private fun ActiveChatThread(
                 }
                 admittedJoins.add(messageListKey(row))
                 snackbar.showSnackbar("Admitted member")
-            }
-        },
-        onCopyJoin = { row ->
-            copyToClipboard(row.text)
-            scope.launch {
-                snackbar.showSnackbar("Join request copied — paste in Settings to admit manually")
             }
         },
         onAcceptInvite = { row ->
@@ -2675,11 +2798,111 @@ private fun ActiveChatThread(
                 }
             }
         },
-        onCopyInvite = onCopyInvite,
         acceptedInvites = acceptedInvites,
         admittedJoins = admittedJoins,
         showSenderNames = target.isGroup,
     )
+    if (deleteTarget != null) {
+        val row = deleteTarget!!
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete message?") },
+            text = { Text("Delete for everyone or only for you? Everyone removes it on all devices; only-you keeps it for others.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val t = row
+                    deleteTarget = null
+                    replyTo?.let { if (it.convSeq == t.convSeq && it.convId == t.convId) replyTo = null }
+                    runIo {
+                        val r = withContext(Dispatchers.IO) {
+                            c?.deleteMessage(target.id, t.convSeq)
+                        } ?: return@runIo
+                        applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                    }
+                }) { Text("Everyone") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
+                    TextButton(onClick = {
+                        val t = row
+                        deleteTarget = null
+                        replyTo?.let { if (it.convSeq == t.convSeq && it.convId == t.convId) replyTo = null }
+                        runIo {
+                            val r = withContext(Dispatchers.IO) {
+                                c?.deleteMessageForMe(target.id, t.convSeq)
+                            } ?: return@runIo
+                            applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                        }
+                    }) { Text("Only me") }
+                }
+            },
+        )
+    }
+    if (reactTarget != null) {
+        val row = reactTarget!!
+        AlertDialog(
+            onDismissRequest = { reactTarget = null },
+            title = { Text("React") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Tap to toggle. You can add multiple different emojis.")
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        for (emoji in QUICK_REACTIONS) {
+                            val mine = reactionsFor(messages, row.convId, row.convSeq, contacts)
+                                .any { it.emoji == emoji && it.mine }
+                            FilterChip(
+                                selected = mine,
+                                onClick = {
+                                    reactTarget = null
+                                    runIo {
+                                        val r = withContext(Dispatchers.IO) {
+                                            c?.react(target.id, row.convSeq, emoji)
+                                        } ?: return@runIo
+                                        applyIncoming(messages, listOf(r), outgoing, outgoingStatus)
+                                        if (r.outgoing) onMarkOutgoing(r)
+                                    }
+                                },
+                                label = { Text(emoji) },
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { reactTarget = null }) { Text("Close") }
+            },
+        )
+    }
+    if (authorsTarget != null) {
+        val row = authorsTarget!!
+        val pills = reactionsFor(messages, row.convId, row.convSeq, contacts)
+        AlertDialog(
+            onDismissRequest = { authorsTarget = null },
+            title = { Text("Reactions") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (pills.isEmpty()) {
+                        Text("No reactions yet.")
+                    } else {
+                        for (pill in pills) {
+                            Text("${pill.emoji} × ${pill.count}", fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                            for (a in pill.authors) {
+                                Text("· ${a.displayName}")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { authorsTarget = null }) { Text("Close") }
+            },
+        )
+    }
 }
 
 private fun messageSendAnimationFor(
@@ -2743,12 +2966,18 @@ internal fun MessageBubble(
     conceal: Boolean = false,
     onBubbleCoords: ((LayoutCoordinates) -> Unit)? = null,
     onAdmitJoin: ((DisplayRow) -> Unit)? = null,
-    onCopyJoin: ((DisplayRow) -> Unit)? = null,
     onAcceptInvite: ((DisplayRow) -> Unit)? = null,
-    onCopyInvite: ((DisplayRow) -> Unit)? = null,
     inviteAccepted: Boolean = false,
     joinAdmitted: Boolean = false,
     showSenderNames: Boolean = false,
+    onReply: () -> Unit = {},
+    pills: List<ReactionPill> = emptyList(),
+    quote: DisplayRow? = null,
+    onPillClick: (String) -> Unit = {},
+    onPillLongClick: () -> Unit = {},
+    onCopy: () -> Unit = {},
+    onQuickReact: (String) -> Unit = {},
+    contacts: Map<String, String> = emptyMap(),
 ) {
     var menu by remember { mutableStateOf(false) }
     val dark = nemoDarkTheme()
@@ -2770,6 +2999,8 @@ internal fun MessageBubble(
     // Window-Y of this bubble + root height → sample one continuous screen gradient.
     var windowY by remember { mutableFloatStateOf(0f) }
     var rootHeight by remember { mutableFloatStateOf(1f) }
+    // Bubble geometry for the anchored context menu (flip above/below on edges).
+    var bubbleHeightPx by remember { mutableFloatStateOf(0f) }
     val palette = LocalNemoPalette.current
     val outgoingBrush = if (mine) {
         outgoingScreenBrush(palette.outgoingGradient, windowY, rootHeight)
@@ -2839,10 +3070,9 @@ internal fun MessageBubble(
                     .widthIn(max = 320.dp)
                     .onGloballyPositioned { coords ->
                         onBubbleCoords?.invoke(coords)
-                        if (mine) {
-                            windowY = coords.positionInWindow().y
-                            rootHeight = coords.findRootCoordinates().size.height.toFloat()
-                        }
+                        windowY = coords.positionInWindow().y
+                        bubbleHeightPx = coords.size.height.toFloat()
+                        rootHeight = coords.findRootCoordinates().size.height.toFloat()
                     }
                     .shadow(2.dp, shape, ambientColor = shadow, spotColor = shadow)
                     .clip(shape)
@@ -2853,7 +3083,13 @@ internal fun MessageBubble(
                             Modifier.background(incomingBg)
                         },
                     )
-                    .clickable(enabled = !conceal) { menu = true }
+                    .combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = LocalIndication.current,
+                        enabled = !conceal,
+                        onClick = { menu = true },
+                        onLongClick = { menu = true },
+                    )
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 val senderLabel = if (showSenderNames && !mine) {
@@ -2872,7 +3108,7 @@ internal fun MessageBubble(
                         maxLines = 1,
                     )
                 }
-                if (isGroupInviteUri(row.text) && (onAcceptInvite != null || onCopyInvite != null)) {
+                if (isGroupInviteUri(row.text) && onAcceptInvite != null) {
                     GroupInviteCard(
                         mine = mine,
                         timeLabel = formatTime(row.sentAt),
@@ -2884,19 +3120,14 @@ internal fun MessageBubble(
                                 DeliveryTicks(status = status, tint = metaColor)
                             }
                         },
-                        onAccept = if (!mine && !inviteAccepted && onAcceptInvite != null) {
+                        onAccept = if (!mine && !inviteAccepted) {
                             { onAcceptInvite(row) }
-                        } else {
-                            null
-                        },
-                        onCopy = if (!inviteAccepted && onCopyInvite != null) {
-                            { onCopyInvite(row) }
                         } else {
                             null
                         },
                         accepted = inviteAccepted,
                     )
-                } else if (isJoinRequestUri(row.text) && (onAdmitJoin != null || onCopyJoin != null)) {
+                } else if (isJoinRequestUri(row.text) && onAdmitJoin != null) {
                     JoinRequestCard(
                         mine = mine,
                         timeLabel = formatTime(row.sentAt),
@@ -2908,19 +3139,25 @@ internal fun MessageBubble(
                                 DeliveryTicks(status = status, tint = metaColor)
                             }
                         },
-                        onAdmit = if (!mine && !joinAdmitted && onAdmitJoin != null) {
+                        onAdmit = if (!mine && !joinAdmitted) {
                             { onAdmitJoin(row) }
-                        } else {
-                            null
-                        },
-                        onCopy = if (!mine && !joinAdmitted && onCopyJoin != null) {
-                            { onCopyJoin(row) }
                         } else {
                             null
                         },
                         admitted = joinAdmitted,
                     )
                 } else {
+                    // Reply header: accent bar + colored name + preview.
+                    // Hidden entirely when the original was hard-deleted.
+                    if (quote != null) {
+                        ReplyQuoteHeader(
+                            quote = quote,
+                            mine = mine,
+                            bodyColor = bodyColor,
+                            contacts = contacts,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
                     BubbleContent(
                         text = bubbleText(row),
                         timeLabel = formatTime(row.sentAt),
@@ -2934,28 +3171,128 @@ internal fun MessageBubble(
                         },
                     )
                 }
-            }
-            DropdownMenu(
-                expanded = menu,
-                onDismissRequest = { menu = false },
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp,
-                shadowElevation = 8.dp,
-            ) {
-                if (canSaveAttachment(row)) {
-                    DropdownMenuItem(text = { Text("Save") }, onClick = {
-                        menu = false
-                        onSave()
-                    })
+                // Reaction pills under the bubble.
+                if (pills.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    ReactionPills(
+                        pills = pills,
+                        onPillClick = onPillClick,
+                        onPillLongClick = onPillLongClick,
+                    )
                 }
-                DropdownMenuItem(text = { Text("React 👍") }, onClick = {
-                    menu = false
-                    onReact()
-                })
-                DropdownMenuItem(text = { Text("Delete") }, onClick = {
-                    menu = false
-                    onDelete()
-                })
+            }
+            if (menu) {
+                // Anchored near the bubble: flip above/below + align to the
+                // bubble edge so it never centers on screen.
+                val canCopy = row.text.isNotBlank() || row.fileName.isNotBlank()
+                val canSave = canSaveAttachment(row)
+                val actionCount = 2 + (if (canCopy) 1 else 0) + (if (canSave) 1 else 0)
+                val menuHeightPx = with(density) { (72.dp + 8.dp).toPx() } +
+                    actionCount * with(density) { 50.dp.toPx() } +
+                    with(density) { 12.dp.toPx() }
+                val gapPx = with(density) { 8.dp.toPx() }
+                val spaceAbove = windowY
+                val spaceBelow = (rootHeight - windowY - bubbleHeightPx).coerceAtLeast(0f)
+                val showAbove = spaceAbove >= menuHeightPx || spaceAbove > spaceBelow
+                val yOffset = if (showAbove) {
+                    -(menuHeightPx + gapPx).toInt()
+                } else {
+                    (bubbleHeightPx + gapPx).toInt()
+                }
+                Popup(
+                    alignment = if (mine) Alignment.TopEnd else Alignment.TopStart,
+                    offset = IntOffset(0, yOffset),
+                    onDismissRequest = { menu = false },
+                    properties = PopupProperties(
+                        focusable = true,
+                        dismissOnBackPress = true,
+                        dismissOnClickOutside = true,
+                    ),
+                ) {
+                    var shown by remember { mutableStateOf(false) }
+                    LaunchedEffect(Unit) { shown = true }
+                    val pop by animateFloatAsState(
+                        targetValue = if (shown) 1f else 0.85f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                        label = "menuPop",
+                    )
+                    Box(
+                        Modifier.graphicsLayer {
+                            scaleX = pop
+                            scaleY = pop
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
+                                if (mine) 1f else 0f,
+                                if (showAbove) 1f else 0f,
+                            )
+                        },
+                    ) {
+                        FluidMessageMenuContent(
+                            target = row,
+                            pills = pills,
+                            canSave = canSave,
+                            canCopy = canCopy,
+                            onQuickReact = { emoji ->
+                                menu = false
+                                onQuickReact(emoji)
+                            },
+                            onExpandReactions = {
+                                menu = false
+                                onReact()
+                            },
+                            onReply = {
+                                menu = false
+                                onReply()
+                            },
+                            onCopy = {
+                                menu = false
+                                onCopy()
+                            },
+                            onSave = {
+                                menu = false
+                                onSave()
+                            },
+                            onDelete = {
+                                menu = false
+                                onDelete()
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReactionPills(pills: List<ReactionPill>, onPillClick: (String) -> Unit, onPillLongClick: () -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        for (pill in pills) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (pill.mine) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                modifier = Modifier.combinedClickable(
+                    onClick = { onPillClick(pill.emoji) },
+                    onLongClick = onPillLongClick,
+                ),
+            ) {
+                Text(
+                    text = if (pill.count > 1) "${pill.emoji} ${pill.count}" else pill.emoji,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
             }
         }
     }
@@ -3514,17 +3851,80 @@ internal fun applyIncoming(
         if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
             stopCallAudio()
         }
-        if (row.kind == "deleted" || row.kind == "expired") {
-            val idx = messages.indexOfFirst {
-                it.convId == row.convId && it.convSeq == row.target && it.kind != "reaction"
+        when (row.kind) {
+            "removed" -> {
+                messages.removeAll {
+                    it.convId == row.convId &&
+                        (
+                            (it.convSeq == row.target && it.kind != "reaction") ||
+                                (it.kind == "reaction" && it.target == row.target)
+                            )
+                }
+                messages.removeAll {
+                    it.convId == row.convId && it.kind == "deleted" && it.target == row.target
+                }
+                for (i in messages.indices) {
+                    val m = messages[i]
+                    if (m.convId == row.convId && m.replyTo == row.target && row.target != 0UL) {
+                        messages[i] = m.copy(replyTo = 0UL)
+                    }
+                }
+                // Drop any optimistic pending rows for the deleted seq.
+                continue
             }
-            if (idx >= 0) {
-                val old = messages[idx]
-                messages[idx] = old.copy(hidden = true, kind = row.kind, text = "", fileBytes = byteArrayOf())
+            "reaction_removed" -> {
+                val idx = messages.indexOfFirst {
+                    it.convId == row.convId &&
+                        it.kind == "reaction" &&
+                        it.target == row.target &&
+                        it.emoji == row.emoji &&
+                        (if (row.outgoing) it.outgoing else !it.outgoing)
+                }
+                if (idx >= 0) messages.removeAt(idx)
+                continue
+            }
+            "deleted" -> {
+                // Legacy tombstone: migrate to hard delete.
+                messages.removeAll {
+                    it.convId == row.convId &&
+                        (
+                            (it.convSeq == row.target && it.kind != "reaction") ||
+                                (it.kind == "reaction" && it.target == row.target)
+                            )
+                }
+                for (i in messages.indices) {
+                    val m = messages[i]
+                    if (m.convId == row.convId && m.replyTo == row.target && row.target != 0UL) {
+                        messages[i] = m.copy(replyTo = 0UL)
+                    }
+                }
+                continue
+            }
+            "expired" -> {
+                val idx = messages.indexOfFirst {
+                    it.convId == row.convId && it.convSeq == row.target && it.kind != "reaction"
+                }
+                if (idx >= 0) {
+                    val old = messages[idx]
+                    messages[idx] = old.copy(hidden = true, kind = row.kind, text = "", fileBytes = byteArrayOf())
+                }
+            }
+            "reaction" -> {
+                val already = messages.any {
+                    it.convId == row.convId &&
+                        it.kind == "reaction" &&
+                        it.target == row.target &&
+                        it.emoji == row.emoji &&
+                        it.outgoing == row.outgoing &&
+                        (it.outgoing || it.senderId == row.senderId)
+                }
+                if (already) continue
             }
         }
-        if (messages.none { it.convId == row.convId && it.convSeq == row.convSeq && it.kind == row.kind }) {
-            messages.add(row)
+        if (row.kind != "removed" && row.kind != "reaction_removed" && row.kind != "deleted") {
+            if (messages.none { it.convId == row.convId && it.convSeq == row.convSeq && it.kind == row.kind }) {
+                messages.add(row)
+            }
         }
         if (row.outgoing && outgoing != null) {
             val key = outgoingMapKey(row)

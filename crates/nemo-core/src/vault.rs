@@ -56,6 +56,9 @@ pub struct InboxRow {
     pub outgoing: bool,
     pub sender_id: String,
     pub sender_name: String,
+    /// Quoted message seq for replies. 0 = none. Cleared when the quoted
+    /// message is hard-deleted (quote hidden, not tombstoned).
+    pub reply_to: u64,
 }
 
 pub struct Vault {
@@ -598,6 +601,7 @@ fn encode_inbox_row(row: &InboxRow) -> Value {
         (13, Value::Uint(if row.outgoing { 1 } else { 0 })),
         (14, Value::Text(row.sender_id.clone())),
         (15, Value::Text(row.sender_name.clone())),
+        (16, Value::Uint(row.reply_to)),
     ])
 }
 
@@ -649,6 +653,11 @@ fn decode_inbox_row(item: &Value) -> Result<InboxRow> {
                 .map_err(|_| CoreError::VaultCorrupt)?
                 .to_owned(),
             Err(_) => String::new(),
+        },
+        // Vaults written before replies existed lack key 16.
+        reply_to: match cbor::map_get(&m, 16) {
+            Ok(v) => cbor::expect_uint(v).map_err(|_| CoreError::VaultCorrupt)?,
+            Err(_) => 0,
         },
     })
 }

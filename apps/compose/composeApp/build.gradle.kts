@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "org.nemo"
-version = "0.3.6"
+version = "0.4.0"
 
 val repoRoot = rootProject.projectDir.parentFile.parentFile
 val ffiDebugDir = repoRoot.resolve("target/debug")

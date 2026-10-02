@@ -196,5 +196,6 @@ class ChatDateTest {
 
         senderId = "",
         senderName = "",
+        replyTo = 0UL,
     )
 }

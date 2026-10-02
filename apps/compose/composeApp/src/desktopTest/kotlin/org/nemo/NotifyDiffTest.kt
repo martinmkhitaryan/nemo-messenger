@@ -37,7 +37,7 @@ class NotifyDiffTest {
     fun systemRowsAdvanceSeenButStaySilent() {
         val rows = listOf(
             row(convSeq = 2UL, kind = "reaction"),
-            row(convSeq = 3UL, kind = "deleted"),
+            row(convSeq = 3UL, kind = "removed"),
             row(convSeq = 4UL, kind = "call_end"),
             row(convSeq = 5UL, kind = "disappear"),
         )
@@ -95,6 +95,7 @@ class NotifyDiffTest {
 
         senderId = "",
         senderName = "",
+        replyTo = 0UL,
     )
 
     private companion object {
