@@ -2275,14 +2275,20 @@ private fun ChatThread(
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                     keyboardActions = KeyboardActions(onSend = { requestSend() }),
                                     decorationBox = { inner ->
-                                        Box {
-                                            if (draft.isEmpty()) {
+                                        // No wrapping Box: it sizes to content and caps the
+                                        // paragraph at ~119px, tripping wrap/scroll (and a
+                                        // misplaced cursor) once text passes it. inner()
+                                        // fills the field on its own.
+                                        if (draft.isEmpty()) {
+                                            Box {
                                                 Text(
                                                     "Message",
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     fontSize = 16.sp,
                                                 )
+                                                inner()
                                             }
+                                        } else {
                                             inner()
                                         }
                                     },
