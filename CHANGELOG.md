@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.3.5] - 2026-10-02
+
+### Fixed
+
+- Background arrivals no longer mark messages seen: viewport read
+  tracking is gated on foreground, so an open-but-backgrounded chat
+  keeps messages unread until actually viewed.
+- Notification taps no longer force a passphrase prompt: MainActivity is
+  `singleTask`, so taps resume the live unlocked instance instead of
+  recreating it. Genuine process-death taps still correctly lock.
+
 ## [0.3.4] - 2026-10-02
 
 ### Added

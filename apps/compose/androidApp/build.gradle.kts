@@ -17,8 +17,8 @@ android {
         applicationId = "org.nemo"
         minSdk = 35
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.3.4"
+        versionCode = 9
+        versionName = "0.3.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {

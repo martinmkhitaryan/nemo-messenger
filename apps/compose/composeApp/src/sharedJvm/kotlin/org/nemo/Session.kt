@@ -1889,6 +1889,7 @@ private fun ChatThread(
     acceptedInvites: Set<String> = emptySet(),
     admittedJoins: Set<String> = emptySet(),
     showSenderNames: Boolean = false,
+    foreground: Boolean = true,
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -1967,7 +1968,7 @@ private fun ChatThread(
             seedDone = true
         }
     }
-    LaunchedEffect(listState, dividerAt, messages.size, markEnabled) {
+    LaunchedEffect(listState, dividerAt, messages.size, markEnabled, foreground) {
         // markEnabled is a key (not just a guard): the opening jump enables
         // marking after the first layout, and distinctUntilChanged would
         // otherwise swallow the initial viewport forever — a chat that fits
@@ -1995,7 +1996,10 @@ private fun ChatThread(
             if (scrolling) userScrolled = true
             // Landing rows count only after the user scrolls, or when the
             // viewport holds the bottom (at-bottom reading / all fits).
-            if (markEnabled && (userScrolled || nearBottom) && maxSeq > 0UL) {
+            // Backgrounded layouts still report viewports, so marking is
+            // gated on foreground: background arrivals stay unread and are
+            // picked up when the effect restarts on return to foreground.
+            if (foreground && markEnabled && (userScrolled || nearBottom) && maxSeq > 0UL) {
                 latestVisibleRead.value(maxSeq)
             }
         }
@@ -2519,6 +2523,7 @@ private fun ActiveChatThread(
         messages = messages.filter { it.convId == target.id },
         entryMark = remember(target.id) { lastRead[target.id] ?: 0UL },
         readMark = lastRead[target.id] ?: 0UL,
+        foreground = isForeground,
         onVisibleRead = { seq ->
             markVisibleRead(lastRead, vaultDir, scope, target.id, seq)
             // Viewport-tracked peer receipts: accumulate the max, flush when
