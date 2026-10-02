@@ -4,3 +4,6 @@
 *.swp
 .build-venv/
 __pycache__/
+# Dropped-in review screenshots (keep the tree clean)
+Screenshot*.png
+photo_*.jpg
