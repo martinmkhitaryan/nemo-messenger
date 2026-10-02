@@ -8,6 +8,13 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.3.2] - 2026-10-02
+
+### Changed
+
+- Your own sent join-request card no longer shows a Copy button — just
+  the sent state. Incoming cards are unchanged.
+
 ## [0.3.1] - 2026-10-02
 
 ### Added

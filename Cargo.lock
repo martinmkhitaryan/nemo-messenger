@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2993,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-ffi"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "nemo-core",
@@ -3007,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "nemo-wire"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",

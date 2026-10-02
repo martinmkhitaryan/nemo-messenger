@@ -2844,7 +2844,7 @@ internal fun MessageBubble(
                         } else {
                             null
                         },
-                        onCopy = if (!joinAdmitted && onCopyJoin != null) {
+                        onCopy = if (!mine && !joinAdmitted && onCopyJoin != null) {
                             { onCopyJoin(row) }
                         } else {
                             null
