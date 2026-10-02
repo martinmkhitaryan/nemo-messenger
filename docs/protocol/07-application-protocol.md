@@ -39,6 +39,7 @@ No UUID. `conv_seq` is local to the pair or group as the clients agree (start at
 | `capability` | 5 `contact_capability` (bstr 32) | Recipient's new write token for this conversation |
 | `binding_gossip` | 5 `identity_id`, 6 `seq`, 7 `server_id` | Gossip home-server binding |
 | `disappear` | 5 `seconds` (uint) or 0 = off | Per-conversation setting; last one wins; show in UI |
+| `group_name` | 5 `group_id` (bstr 32), 6 `name` (tstr, max 128) | 1:1 only, applied silently (no bubble): names/renames the group on receipt; sent automatically on admit when the joiner is a contact |
 | `call_invite` | 5 `call_id` (bstr 16), 6 `sdp`, 7 `dtls_fp` (tstr), 8 `ice` (array of tstr), 9 `expires_at` | Envelope `ttl_bucket` = 1 |
 | `call_ringing` | 5 `call_id` | |
 | `call_answer` | 5 `call_id`, 6 `sdp`, 7 `dtls_fp`, 8 `ice` | |

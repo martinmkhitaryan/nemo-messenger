@@ -54,6 +54,8 @@ pub struct InboxRow {
     pub hidden: bool,
     pub displayed_at: u64,
     pub outgoing: bool,
+    pub sender_id: String,
+    pub sender_name: String,
 }
 
 pub struct Vault {
@@ -594,6 +596,8 @@ fn encode_inbox_row(row: &InboxRow) -> Value {
         (11, Value::Uint(if row.hidden { 1 } else { 0 })),
         (12, Value::Uint(row.displayed_at)),
         (13, Value::Uint(if row.outgoing { 1 } else { 0 })),
+        (14, Value::Text(row.sender_id.clone())),
+        (15, Value::Text(row.sender_name.clone())),
     ])
 }
 
@@ -629,10 +633,22 @@ fn decode_inbox_row(item: &Value) -> Result<InboxRow> {
         target: uint(10)?,
         hidden: uint(11)? != 0,
         displayed_at: uint(12)?,
-        // Missing key → false (vaults written before outgoing was stored).
+        // Missing keys → defaults (vaults written before these were stored).
         outgoing: match cbor::map_get(&m, 13) {
             Ok(v) => cbor::expect_uint(v).map_err(|_| CoreError::VaultCorrupt)? != 0,
             Err(_) => false,
+        },
+        sender_id: match cbor::map_get(&m, 14) {
+            Ok(v) => cbor::expect_text(v)
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_owned(),
+            Err(_) => String::new(),
+        },
+        sender_name: match cbor::map_get(&m, 15) {
+            Ok(v) => cbor::expect_text(v)
+                .map_err(|_| CoreError::VaultCorrupt)?
+                .to_owned(),
+            Err(_) => String::new(),
         },
     })
 }

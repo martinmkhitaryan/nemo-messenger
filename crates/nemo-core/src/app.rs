@@ -12,6 +12,7 @@ use crate::error::{CoreError, Result};
 
 pub const TEXT_MAX_BYTES: usize = 8192;
 pub const EMOJI_MAX_BYTES: usize = 32;
+pub const GROUP_NAME_MAX_BYTES: usize = 128;
 pub const CALL_ID_LEN: usize = 16;
 pub const CONTACT_CAP_LEN: usize = KEY_LEN;
 
@@ -76,6 +77,10 @@ pub enum AppBody {
     Disappear {
         seconds: u64,
     },
+    GroupName {
+        group_id: [u8; KEY_LEN],
+        name: String,
+    },
     CallInvite {
         call_id: [u8; CALL_ID_LEN],
         sdp: String,
@@ -139,6 +144,7 @@ impl AppMessage {
             AppBody::Capability { .. } => "capability",
             AppBody::BindingGossip { .. } => "binding_gossip",
             AppBody::Disappear { .. } => "disappear",
+            AppBody::GroupName { .. } => "group_name",
             AppBody::CallInvite { .. } => "call_invite",
             AppBody::CallRinging { .. } => "call_ringing",
             AppBody::CallAnswer { .. } => "call_answer",
@@ -267,6 +273,10 @@ fn extra_fields(body: &AppBody, pairs: &mut Vec<(u64, Value)>) {
             pairs.push((7, Value::Bytes(server_id.to_vec())));
         }
         AppBody::Disappear { seconds } => pairs.push((5, Value::Uint(*seconds))),
+        AppBody::GroupName { group_id, name } => {
+            pairs.push((5, Value::Bytes(group_id.to_vec())));
+            pairs.push((6, Value::Text(name.clone())));
+        }
         AppBody::CallInvite {
             call_id,
             sdp,
@@ -354,6 +364,10 @@ fn parse_body(msg_type: &str, m: &[(u64, Value)]) -> Result<AppBody> {
         "disappear" => AppBody::Disappear {
             seconds: cbor::expect_uint(cbor::map_get(m, 5)?)?,
         },
+        "group_name" => AppBody::GroupName {
+            group_id: fixed(cbor::expect_bytes(cbor::map_get(m, 5)?)?)?,
+            name: cbor::expect_text(cbor::map_get(m, 6)?)?.to_owned(),
+        },
         "call_invite" => AppBody::CallInvite {
             call_id: call_id(cbor::map_get(m, 5)?)?,
             sdp: cbor::expect_text(cbor::map_get(m, 6)?)?.to_owned(),
@@ -393,6 +407,11 @@ fn validate(msg: &AppMessage) -> Result<()> {
     match &msg.body {
         AppBody::Text { text } => {
             if text.len() > TEXT_MAX_BYTES {
+                return Err(CoreError::TextTooLong);
+            }
+        }
+        AppBody::GroupName { name, .. } => {
+            if name.len() > GROUP_NAME_MAX_BYTES {
                 return Err(CoreError::TextTooLong);
             }
         }
@@ -521,6 +540,32 @@ mod tests {
         let long = "x".repeat(TEXT_MAX_BYTES + 1);
         assert!(matches!(
             encode_text(1, 0, &long),
+            Err(CoreError::TextTooLong)
+        ));
+    }
+
+    #[test]
+    fn group_name_roundtrip_and_cap() {
+        let out = roundtrip(AppBody::GroupName {
+            group_id: [11u8; KEY_LEN],
+            name: "crew".into(),
+        });
+        assert_eq!(
+            out.body,
+            AppBody::GroupName {
+                group_id: [11u8; KEY_LEN],
+                name: "crew".into(),
+            }
+        );
+        assert_eq!(out.msg_type(), "group_name");
+        assert!(matches!(
+            encode(&AppMessage {
+                header: header(1),
+                body: AppBody::GroupName {
+                    group_id: [11u8; KEY_LEN],
+                    name: "x".repeat(GROUP_NAME_MAX_BYTES + 1),
+                },
+            }),
             Err(CoreError::TextTooLong)
         ));
     }

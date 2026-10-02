@@ -193,5 +193,8 @@ class ChatDateTest {
         hidden = false,
         displayedAt = 1UL,
         outgoing = false,
+
+        senderId = "",
+        senderName = "",
     )
 }

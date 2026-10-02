@@ -170,6 +170,9 @@ class UnreadCountTest {
         hidden = hidden,
         displayedAt = 1UL,
         outgoing = outgoing,
+
+        senderId = "",
+        senderName = "",
     )
 
     private companion object {

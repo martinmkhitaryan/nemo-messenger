@@ -92,5 +92,8 @@ class VaultStoreTest {
         hidden = false,
         displayedAt = 1UL,
         outgoing = false,
+
+        senderId = "",
+        senderName = "",
     )
 }

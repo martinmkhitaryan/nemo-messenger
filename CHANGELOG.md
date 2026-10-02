@@ -8,6 +8,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.3.3] - 2026-10-02
+
+### Added
+
+- Group display names sync to joiners: admitting auto-sends the name
+  over E2EE 1:1 when the joiner is a contact; it applies silently
+  (stashed if the Welcome lands later). Renames will sync the same way.
+- Group messages show their author: incoming group bubbles carry a sender
+  header (contact nickname, else short id), sourced from the MLS leaf.
+
 ## [0.3.2] - 2026-10-02
 
 ### Changed

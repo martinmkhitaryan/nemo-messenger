@@ -59,6 +59,10 @@ pub struct DisplayRow {
     pub displayed_at: u64,
     /// True if this installation authored the row (survives vault reload).
     pub outgoing: bool,
+    /// Hex `identity_id` of a group message author. Empty for 1:1 and own rows.
+    pub sender_id: String,
+    /// Contact nickname of the author at receive time, if known. Else empty.
+    pub sender_name: String,
 }
 
 /// Hosted MLS group the shell can list. No signing keys.
@@ -132,6 +136,10 @@ struct Inner {
     groups: Vec<LiveGroup>,
     pending: HashMap<[u8; KEY_LEN], PendingEntry>,
     minted: HashMap<[u8; KEY_LEN], GroupInvite>,
+    /// Group display names received before the Welcome was processed.
+    /// Applied when the group joins; deliberately not persisted (the
+    /// admitter's name sync and the Welcome normally arrive together).
+    pending_names: HashMap<[u8; KEY_LEN], String>,
     disappear: HashMap<String, u64>,
     pending_invites: HashMap<String, PendingInvite>,
     live_call: Option<Arc<Call>>,
@@ -351,6 +359,8 @@ fn emit_call(
             hidden: false,
             displayed_at: now,
             outgoing: true,
+            sender_id: String::new(),
+            sender_name: String::new(),
         })
     }
 }
@@ -616,6 +626,8 @@ fn to_inbox_row(row: &DisplayRow) -> InboxRow {
         hidden: row.hidden,
         displayed_at: row.displayed_at,
         outgoing: row.outgoing,
+        sender_id: row.sender_id.clone(),
+        sender_name: row.sender_name.clone(),
     }
 }
 
@@ -635,6 +647,8 @@ fn from_inbox_row(row: InboxRow) -> DisplayRow {
         hidden: row.hidden,
         displayed_at: row.displayed_at,
         outgoing: row.outgoing,
+        sender_id: row.sender_id,
+        sender_name: row.sender_name,
     }
 }
 
@@ -676,6 +690,7 @@ fn empty_inner(
         groups: Vec::new(),
         pending: HashMap::new(),
         minted: HashMap::new(),
+        pending_names: HashMap::new(),
         disappear: HashMap::new(),
         pending_invites: HashMap::new(),
         live_call: None,
@@ -1305,6 +1320,8 @@ impl NemoClient {
             hidden: false,
             displayed_at: now,
             outgoing: true,
+            sender_id: String::new(),
+            sender_name: String::new(),
         };
         inner.inbox.push(row.clone());
         persist(&inner)?;
@@ -1330,6 +1347,7 @@ impl NemoClient {
                 call_connected,
                 group_discovery_at,
                 gossip_sent,
+                pending_names,
                 ..
             } = &mut *inner;
             let session = match state {
@@ -1486,6 +1504,24 @@ impl NemoClient {
                                     seconds.to_string(),
                                     0, false
                                 ));
+                            }
+                            Ok(AppMessage {
+                                body: AppBody::GroupName { group_id, name },
+                                ..
+                            }) => {
+                                // Silent metadata sync (no bubble): name the
+                                // group if already joined, else stash until
+                                // the Welcome is processed below.
+                                if !name.is_empty() {
+                                    if let Some(g) = groups
+                                        .iter_mut()
+                                        .find(|g| g.host.group_id == group_id)
+                                    {
+                                        g.nickname = name;
+                                    } else {
+                                        pending_names.insert(group_id, name);
+                                    }
+                                }
                             }
                             Ok(AppMessage {
                                 body: AppBody::ProtocolAck { upto },
@@ -1734,10 +1770,11 @@ impl NemoClient {
                         host_base: session.home_base.clone(),
                     };
                     session.remember_group(live.clone());
+                    let nickname = pending_names.remove(&gid).unwrap_or_default();
                     groups.push(LiveGroup {
                         host: live,
                         mls,
-                        nickname: String::new(),
+                        nickname,
                     });
                 }
 
@@ -1754,28 +1791,36 @@ impl NemoClient {
                         MessageType::MlsApp => {
                             let mut opened = None;
                             for g in groups.iter_mut() {
-                                if let Ok(plaintext) = g.mls.decrypt_from_mailbox(
-                                    session.install.mls_provider(),
-                                    &row.inner,
-                                ) {
-                                    opened = Some((g.host.clone(), plaintext));
+                                if let Ok((plaintext, sender)) = g.mls
+                                    .decrypt_from_mailbox_with_sender(
+                                        session.install.mls_provider(),
+                                        &row.inner,
+                                    )
+                                {
+                                    opened = Some((g.host.clone(), plaintext, sender));
                                     break;
                                 }
                             }
-                            if let Some((host, plaintext)) = opened {
+                            if let Some((host, plaintext, sender)) = opened {
+                                let sender_hex = ids::to_hex(&sender);
+                                let sender_name =
+                                    nicknames.get(&sender_hex).cloned().unwrap_or_default();
                                 match decode(&plaintext) {
                                     Ok(AppMessage {
                                         header,
                                         body: AppBody::Text { text },
                                     }) => {
-                                        new_rows.push(push_text(
+                                        let mut out = push_text(
                                             inbox,
                                             next_seq,
                                             ids::to_hex(&host.group_id),
                                             header.conv_seq,
                                             text,
                                             header.sent_at, false
-                                        ));
+                                        );
+                                        out.sender_id = sender_hex;
+                                        out.sender_name = sender_name;
+                                        new_rows.push(out);
                                     }
                                     Ok(AppMessage {
                                         header,
@@ -1792,7 +1837,7 @@ impl NemoClient {
                                             token,
                                         )) {
                                             if let Ok(bytes) = open_group_file(&enc_file, &blob) {
-                                                new_rows.push(push_file(
+                                                let mut out = push_file(
                                                     inbox,
                                                     next_seq,
                                                     ids::to_hex(&host.group_id),
@@ -1801,7 +1846,10 @@ impl NemoClient {
                                                     meta,
                                                     bytes,
                                                     ids::to_hex(&token), false
-                                                ));
+                                                );
+                                                out.sender_id = sender_hex.clone();
+                                                out.sender_name = sender_name.clone();
+                                                new_rows.push(out);
                                             }
                                         }
                                     }
@@ -2033,6 +2081,8 @@ impl NemoClient {
                 state,
                 groups,
                 minted,
+                next_seq,
+                disappear,
                 ..
             } = &mut *inner;
             let session = match state {
@@ -2083,6 +2133,33 @@ impl NemoClient {
             ))?;
             let outer = Group::wrap_handshake(&req.hpke, req.cap, TtlBucket::DEFAULT, welcome)?;
             block_on(session.post_envelope(&outer))?;
+            // Sync the group display name to the joiner over 1:1
+            // (best-effort, silent on receipt). Strangers without a
+            // contact entry are skipped by `send_to`.
+            let peer_hex = ids::to_hex(&invitee_id);
+            let name = groups
+                .iter()
+                .find(|x| x.host.group_id == req.group_id)
+                .map(|x| x.nickname.clone())
+                .unwrap_or_default();
+            if !name.is_empty() {
+                let seq = bump_seq(next_seq, &peer_hex);
+                let ttl = ttl_for(disappear, &peer_hex);
+                let msg = AppMessage {
+                    header: AppHeader {
+                        conv_seq: seq,
+                        sent_at: now_unix(),
+                        reply_to: None,
+                    },
+                    body: AppBody::GroupName {
+                        group_id: req.group_id,
+                        name,
+                    },
+                };
+                if let Ok(ptext) = encode(&msg) {
+                    let _ = block_on(session.send_to(&invitee_id, ttl, &ptext, now_unix()));
+                }
+            }
         }
         persist(&inner)?;
         Ok(ids::to_hex(&req.credential_id))
@@ -2129,6 +2206,8 @@ impl NemoClient {
                 hidden: false,
                 displayed_at: now,
                 outgoing: true,
+                sender_id: String::new(),
+                sender_name: String::new(),
             }
         };
         inner.inbox.push(row.clone());
@@ -2295,6 +2374,8 @@ impl NemoClient {
                 hidden: false,
                 displayed_at: now,
                 outgoing: true,
+                sender_id: String::new(),
+                sender_name: String::new(),
             }
         };
         inner.inbox.push(row.clone());
@@ -2796,6 +2877,8 @@ fn push_text(
         hidden: false,
         displayed_at: sent_at,
         outgoing,
+        sender_id: String::new(),
+        sender_name: String::new(),
     };
     inbox.push(row.clone());
     row
@@ -2831,6 +2914,8 @@ fn push_file(
         hidden: false,
         displayed_at: sent_at,
         outgoing,
+        sender_id: String::new(),
+        sender_name: String::new(),
     };
     inbox.push(row.clone());
     row
@@ -2889,6 +2974,8 @@ fn push_control(
         hidden: kind == "deleted",
         displayed_at: sent_at,
         outgoing,
+        sender_id: String::new(),
+        sender_name: String::new(),
     };
     inbox.push(row.clone());
     row
@@ -3179,6 +3266,8 @@ mod tests {
             hidden: false,
             displayed_at: 1,
             outgoing: false,
+            sender_id: String::new(),
+            sender_name: String::new(),
         };
         assert_eq!(row.conv_id.len(), 64);
         let _ = row.text;
@@ -3326,6 +3415,43 @@ mod tests {
         assert_eq!(groups[0].nickname, "crew");
         drop(alice2);
         let _ = fs::remove_dir_all(&alice_dir);
+    }
+
+    #[test]
+    fn group_name_sync_and_sender_attribution() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-gsync-a");
+        let bob_dir = temp_dir("nemo-ffi-gsync-b");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base).unwrap();
+        let alice_id = alice.identity_id_hex().unwrap();
+        alice
+            .add_contact(bob.mint_share_uri().unwrap(), "Bob".into())
+            .unwrap();
+        bob.add_contact(alice.mint_share_uri().unwrap(), "Alice".into())
+            .unwrap();
+        let gid = alice.create_group("crew".into()).unwrap();
+        let invite = alice.mint_group_invite(gid.clone()).unwrap();
+        let join = bob.accept_group_invite(invite).unwrap();
+        alice.admit_join(join).unwrap();
+        // Admit syncs the display name over 1:1; the Welcome may land in
+        // either order, so the joiner applies whichever arrives first.
+        let _ = bob.fetch_now().unwrap();
+        let groups = bob.list_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].nickname, "crew");
+
+        alice.send_group_text(gid.clone(), "hi crew".into()).unwrap();
+        let rows = bob.fetch_now().unwrap();
+        let msg = rows.iter().find(|r| r.text == "hi crew").expect("group text");
+        assert_eq!(msg.sender_id, alice_id);
+        assert_eq!(msg.sender_name, "Alice");
+        drop(alice);
+        drop(bob);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
     }
 
     #[test]

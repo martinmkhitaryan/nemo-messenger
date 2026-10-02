@@ -299,6 +299,9 @@ private fun optimisticTextRow(chatId: String, text: String, localId: String): Di
     hidden = false,
     displayedAt = nowUnixSecs(),
     outgoing = true,
+
+    senderId = "",
+    senderName = "",
 )
 
 private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray, localId: String): DisplayRow = DisplayRow(
@@ -316,6 +319,9 @@ private fun optimisticFileRow(chatId: String, fileName: String, bytes: ByteArray
     hidden = false,
     displayedAt = nowUnixSecs(),
     outgoing = true,
+
+    senderId = "",
+    senderName = "",
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1879,6 +1885,7 @@ private fun ChatThread(
     onCopyInvite: ((DisplayRow) -> Unit)? = null,
     acceptedInvites: Set<String> = emptySet(),
     admittedJoins: Set<String> = emptySet(),
+    showSenderNames: Boolean = false,
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -2344,6 +2351,7 @@ private fun ChatThread(
                                 onCopyInvite = onCopyInvite,
                                 acceptedInvites = acceptedInvites,
                                 admittedJoins = admittedJoins,
+                                showSenderNames = showSenderNames,
                             )
                         }
                     }
@@ -2627,6 +2635,7 @@ private fun ActiveChatThread(
         onCopyInvite = onCopyInvite,
         acceptedInvites = acceptedInvites,
         admittedJoins = admittedJoins,
+        showSenderNames = target.isGroup,
     )
 }
 
@@ -2696,6 +2705,7 @@ internal fun MessageBubble(
     onCopyInvite: ((DisplayRow) -> Unit)? = null,
     inviteAccepted: Boolean = false,
     joinAdmitted: Boolean = false,
+    showSenderNames: Boolean = false,
 ) {
     var menu by remember { mutableStateOf(false) }
     val dark = nemoDarkTheme()
@@ -2803,6 +2813,22 @@ internal fun MessageBubble(
                     .clickable(enabled = !conceal) { menu = true }
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
+                val senderLabel = if (showSenderNames && !mine) {
+                    row.senderName.ifBlank {
+                        shortId(row.senderId).ifBlank { "" }
+                    }
+                } else {
+                    ""
+                }
+                if (senderLabel.isNotEmpty()) {
+                    Text(
+                        text = senderLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = bodyColor,
+                        maxLines = 1,
+                    )
+                }
                 if (isGroupInviteUri(row.text) && (onAcceptInvite != null || onCopyInvite != null)) {
                     GroupInviteCard(
                         mine = mine,

@@ -286,9 +286,30 @@ impl Group {
     }
 
     pub fn decrypt(&mut self, provider: &MlsProvider, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        Ok(self.decrypt_with_sender(provider, ciphertext)?.0)
+    }
+
+    /// Decrypt an application message and return the sender's `identity_id`
+    /// (from the member leaf credential). Non-member senders are rejected.
+    pub fn decrypt_with_sender(
+        &mut self,
+        provider: &MlsProvider,
+        ciphertext: &[u8],
+    ) -> Result<(Vec<u8>, IdentityId)> {
         let processed = self.process(provider, ciphertext)?;
+        let sender = match processed.sender() {
+            Sender::Member(index) => {
+                let member = self
+                    .mls
+                    .members()
+                    .find(|m| m.index == *index)
+                    .ok_or(CoreError::Mls("unknown message sender".into()))?;
+                identity_id(&identity_pk_from_credential(&member.credential)?)
+            }
+            _ => return Err(CoreError::ExternalMlsJoin),
+        };
         match processed.into_content() {
-            ProcessedMessageContent::ApplicationMessage(m) => Ok(m.into_bytes()),
+            ProcessedMessageContent::ApplicationMessage(m) => Ok((m.into_bytes(), sender)),
             _ => Err(CoreError::Mls("expected application message".into())),
         }
     }
@@ -316,8 +337,16 @@ impl Group {
         provider: &MlsProvider,
         inner: &InnerEnvelope,
     ) -> Result<Vec<u8>> {
+        Ok(self.decrypt_from_mailbox_with_sender(provider, inner)?.0)
+    }
+
+    pub fn decrypt_from_mailbox_with_sender(
+        &mut self,
+        provider: &MlsProvider,
+        inner: &InnerEnvelope,
+    ) -> Result<(Vec<u8>, IdentityId)> {
         let body = mailbox::expect_type(inner, MessageType::MlsApp)?;
-        self.decrypt(provider, body)
+        self.decrypt_with_sender(provider, body)
     }
 
     pub fn wrap_handshake(

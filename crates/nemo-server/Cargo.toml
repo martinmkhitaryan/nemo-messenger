@@ -1,6 +1,6 @@
 [package]
 name = "nemo-server"
-version = "0.3.2"
+version = "0.3.3"
 edition.workspace = true
 license = "MIT"
 description = "Blind delivery: mailboxes, capabilities, group streams. MUST NOT depend on libsignal or nemo-core."

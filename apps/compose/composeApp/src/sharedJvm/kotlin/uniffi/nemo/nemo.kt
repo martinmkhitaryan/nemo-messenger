@@ -2675,6 +2675,16 @@ data class DisplayRow (
      * True if this installation authored the row (survives vault reload).
      */
     var `outgoing`: kotlin.Boolean
+    , 
+    /**
+     * Hex `identity_id` of a group message author. Empty for 1:1 and own rows.
+     */
+    var `senderId`: kotlin.String
+    , 
+    /**
+     * Contact nickname of the author at receive time, if known. Else empty.
+     */
+    var `senderName`: kotlin.String
     
 ){
     
@@ -2705,6 +2715,8 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterBoolean.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
@@ -2722,7 +2734,9 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterULong.allocationSize(value.`target`) +
             FfiConverterBoolean.allocationSize(value.`hidden`) +
             FfiConverterULong.allocationSize(value.`displayedAt`) +
-            FfiConverterBoolean.allocationSize(value.`outgoing`)
+            FfiConverterBoolean.allocationSize(value.`outgoing`) +
+            FfiConverterString.allocationSize(value.`senderId`) +
+            FfiConverterString.allocationSize(value.`senderName`)
     )
 
     override fun write(value: DisplayRow, buf: ByteBuffer) {
@@ -2740,6 +2754,8 @@ public object FfiConverterTypeDisplayRow: FfiConverterRustBuffer<DisplayRow> {
             FfiConverterBoolean.write(value.`hidden`, buf)
             FfiConverterULong.write(value.`displayedAt`, buf)
             FfiConverterBoolean.write(value.`outgoing`, buf)
+            FfiConverterString.write(value.`senderId`, buf)
+            FfiConverterString.write(value.`senderName`, buf)
     }
 }
 

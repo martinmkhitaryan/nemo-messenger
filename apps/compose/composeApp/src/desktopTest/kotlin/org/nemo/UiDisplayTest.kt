@@ -80,6 +80,9 @@ class UiDisplayTest {
             hidden = false,
             displayedAt = 1UL,
             outgoing = true,
+
+            senderId = "",
+            senderName = "",
         )
         val messages = mutableListOf(sent)
         val outgoing = mutableMapOf<String, Boolean>()
@@ -108,6 +111,9 @@ class UiDisplayTest {
             hidden = false,
             displayedAt = 1UL,
             outgoing = true,
+
+            senderId = "",
+            senderName = "",
         )
         val messages = mutableListOf(sent(1UL), sent(2UL))
         val outgoing = mutableMapOf<String, Boolean>()
@@ -172,5 +178,8 @@ class UiDisplayTest {
         hidden = hidden,
         displayedAt = 1UL,
         outgoing = false,
+
+        senderId = "",
+        senderName = "",
     )
 }

@@ -536,6 +536,7 @@ internal fun DatedMessageItem(
     onCopyInvite: ((DisplayRow) -> Unit)? = null,
     acceptedInvites: Set<String> = emptySet(),
     admittedJoins: Set<String> = emptySet(),
+    showSenderNames: Boolean = false,
 ) {
     val key = outgoingMapKey(row)
     val mine = row.outgoing || outgoing[key] == true
@@ -602,6 +603,7 @@ internal fun DatedMessageItem(
             onCopyInvite = onCopyInvite,
             inviteAccepted = acceptedInvites.contains(messageListKey(row)),
             joinAdmitted = admittedJoins.contains(messageListKey(row)),
+            showSenderNames = showSenderNames,
             // No animateItem: with reverseLayout, a new message shifts every
             // visible index and placement animation makes the thread shake.
             modifier = Modifier.padding(top = gap),
