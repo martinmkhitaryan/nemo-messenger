@@ -92,6 +92,14 @@ struct LiveGroup {
     nickname: String,
 }
 
+fn group_names(groups: &[LiveGroup]) -> std::collections::HashMap<String, String> {
+    groups
+        .iter()
+        .filter(|g| !g.nickname.is_empty())
+        .map(|g| (ids::to_hex(&g.host.group_id), g.nickname.clone()))
+        .collect()
+}
+
 struct PendingEntry {
     pending: PendingJoin,
     host: HostAccept,
@@ -549,7 +557,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
         Some(ClientState::Registered(session)) => {
             vault.save_home(&session.install, &session.snapshot())?;
             vault.save_groups(&session.install, inner.groups.iter().map(|g| &g.mls))?;
-            vault.save_display(&inner.nicknames, &inner.disappear)?;
+            vault.save_display(&inner.nicknames, &inner.disappear, &group_names(&inner.groups))?;
             vault.save_inbox(
                 &inner
                     .inbox
@@ -571,7 +579,11 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
         }
         Some(ClientState::Local(install)) => {
             vault.save(install)?;
-            vault.save_display(&inner.nicknames, &inner.disappear)?;
+            vault.save_display(
+                &inner.nicknames,
+                &inner.disappear,
+                &std::collections::HashMap::new(),
+            )?;
             vault.save_inbox(
                 &inner
                     .inbox
@@ -1030,9 +1042,14 @@ impl NemoClient {
         };
         let mut inner = empty_inner(Some(state), Some(vault), None);
         inner.groups = groups;
-        if let Ok((nicks, timers)) = inner.vault.as_ref().unwrap().load_display() {
+        if let Ok((nicks, timers, gnames)) = inner.vault.as_ref().unwrap().load_display() {
             inner.nicknames = nicks;
             inner.disappear = timers;
+            for g in inner.groups.iter_mut() {
+                if let Some(name) = gnames.get(&ids::to_hex(&g.host.group_id)) {
+                    g.nickname = name.clone();
+                }
+            }
         }
         if let Ok((rows, seqs, acked, read)) = inner.vault.as_ref().unwrap().load_inbox() {
             inner.inbox = rows.into_iter().map(from_inbox_row).collect();
@@ -3286,6 +3303,29 @@ mod tests {
         drop(bob2);
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn group_nickname_survives_reopen() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-gname-a");
+        let alice = client_at(&alice_dir);
+        alice.register(base).unwrap();
+        let gid = alice.create_group("crew".into()).unwrap();
+        assert_eq!(alice.list_groups().unwrap()[0].nickname, "crew");
+        drop(alice);
+        let alice2 = NemoClient::open_at(
+            alice_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let groups = alice2.list_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, gid);
+        assert_eq!(groups[0].nickname, "crew");
+        drop(alice2);
+        let _ = fs::remove_dir_all(&alice_dir);
     }
 
     #[test]

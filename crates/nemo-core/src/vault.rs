@@ -199,11 +199,12 @@ impl Vault {
         Ok(Some(HomeState::decode(&bytes)?))
     }
 
-    /// Nicknames and disappear timers only. Never ratchet or MLS keys.
+    /// Nicknames, group names, and disappear timers only. Never ratchet or MLS keys.
     pub fn save_display(
         &self,
         nicknames: &HashMap<String, String>,
         disappear: &HashMap<String, u64>,
+        group_names: &HashMap<String, String>,
     ) -> Result<()> {
         let mut nicks = Vec::new();
         let mut keys: Vec<_> = nicknames.keys().cloned().collect();
@@ -223,19 +224,35 @@ impl Vault {
                 Value::Uint(disappear[&k]),
             ]));
         }
+        let mut gnames = Vec::new();
+        let mut gkeys: Vec<_> = group_names.keys().cloned().collect();
+        gkeys.sort();
+        for k in gkeys {
+            gnames.push(Value::Array(vec![
+                Value::Text(k.clone()),
+                Value::Text(group_names[&k].clone()),
+            ]));
+        }
         self.put(
             DISPLAY_KEY,
             &cbor::encode(&Value::Map(vec![
                 (0, Value::Uint(1)),
                 (1, Value::Array(nicks)),
                 (2, Value::Array(timers)),
+                (3, Value::Array(gnames)),
             ])),
         )
     }
 
-    pub fn load_display(&self) -> Result<(HashMap<String, String>, HashMap<String, u64>)> {
+    pub fn load_display(
+        &self,
+    ) -> Result<(
+        HashMap<String, String>,
+        HashMap<String, u64>,
+        HashMap<String, String>,
+    )> {
         let Some(bytes) = self.get_opt(DISPLAY_KEY)? else {
-            return Ok((HashMap::new(), HashMap::new()));
+            return Ok((HashMap::new(), HashMap::new(), HashMap::new()));
         };
         let Value::Map(m) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
             return Err(CoreError::VaultCorrupt);
@@ -279,7 +296,27 @@ impl Vault {
             let secs = cbor::expect_uint(&row[1]).map_err(|_| CoreError::VaultCorrupt)?;
             disappear.insert(k, secs);
         }
-        Ok((nicknames, disappear))
+        // Key 3 (group names) is optional: vaults written before group names
+        // were persisted have no entry and load with an empty map.
+        let mut group_names = HashMap::new();
+        if let Some(v) = cbor::map_get_opt(&m, 3) {
+            for item in cbor::expect_array(v).map_err(|_| CoreError::VaultCorrupt)? {
+                let Value::Array(row) = item else {
+                    return Err(CoreError::VaultCorrupt);
+                };
+                if row.len() != 2 {
+                    return Err(CoreError::VaultCorrupt);
+                }
+                let k = cbor::expect_text(&row[0])
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned();
+                let name = cbor::expect_text(&row[1])
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned();
+                group_names.insert(k, name);
+            }
+        }
+        Ok((nicknames, disappear, group_names))
     }
 
     /// Decrypted display rows + per-conversation seq counters + per-conversation

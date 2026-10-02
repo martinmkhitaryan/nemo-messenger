@@ -8,14 +8,30 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.3.1] - 2026-10-02
+
+### Added
+
+- Accepting a group invite card now automatically sends the join request
+  back to the inviter — no contact picker step. Invite cards flip to
+  `Request sent` and join cards to `Admitted ✓` once tapped, so the same
+  invite or request can't be submitted twice. Group-thread/clipboard
+  invites still fall back to the manual Join sheet.
+
+### Fixed
+
+- Group names survive app restart. They were kept only in memory and reset
+  to `Group` on every unlock; now they persist in the vault display store
+  (old vaults load unchanged).
+
 ## [0.3.0] - 2026-10-01
 
 ### Added
 
 - Group invites and join requests can be sent directly to a 1:1 contact
   instead of copy-paste. Incoming invites render as a card with
-  Accept/Copy; Accept automatically sends the join request back to the
-  inviter. Incoming join requests render as a card with Admit/Copy.
+  Accept/Copy; incoming join requests render as a card with Admit/Copy.
+  Accept opens the Join sheet with the request ready to send.
   Manual copy-paste stays as fallback at every step. Consent is unchanged:
   joining still needs the invitee's Accept tap and the member's Admit tap,
   never silent auto-add.

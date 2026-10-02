@@ -135,6 +135,7 @@ class ExchangeTest {
 
             alice.close()
             val alice2 = NemoClient.openAt(aliceDir.absolutePath, pass, ByteArray(0))
+            assertEquals("crew", alice2.listGroups().first { it.groupId == gid }.nickname)
             alice2.sendGroupText(gid, "after reopen")
             val second = bob.fetchNow()
             assertEquals(1, second.size)

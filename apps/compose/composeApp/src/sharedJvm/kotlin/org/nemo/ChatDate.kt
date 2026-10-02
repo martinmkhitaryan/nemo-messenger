@@ -530,10 +530,12 @@ internal fun DatedMessageItem(
     onReact: (DisplayRow) -> Unit,
     onDelete: (DisplayRow) -> Unit,
     onSave: (DisplayRow) -> Unit,
-    onAdmitJoin: ((String) -> Unit)? = null,
-    onCopyJoin: ((String) -> Unit)? = null,
-    onAcceptInvite: ((String, String) -> Unit)? = null,
-    onCopyInvite: ((String) -> Unit)? = null,
+    onAdmitJoin: ((DisplayRow) -> Unit)? = null,
+    onCopyJoin: ((DisplayRow) -> Unit)? = null,
+    onAcceptInvite: ((DisplayRow) -> Unit)? = null,
+    onCopyInvite: ((DisplayRow) -> Unit)? = null,
+    acceptedInvites: Set<String> = emptySet(),
+    admittedJoins: Set<String> = emptySet(),
 ) {
     val key = outgoingMapKey(row)
     val mine = row.outgoing || outgoing[key] == true
@@ -596,8 +598,10 @@ internal fun DatedMessageItem(
             onSave = { onSave(row) },
             onAdmitJoin = onAdmitJoin,
             onCopyJoin = onCopyJoin,
-            onAcceptInvite = onAcceptInvite?.let { cb -> { text: String -> cb(text, row.convId) } },
+            onAcceptInvite = onAcceptInvite,
             onCopyInvite = onCopyInvite,
+            inviteAccepted = acceptedInvites.contains(messageListKey(row)),
+            joinAdmitted = admittedJoins.contains(messageListKey(row)),
             // No animateItem: with reverseLayout, a new message shifts every
             // visible index and placement animation makes the thread shake.
             modifier = Modifier.padding(top = gap),

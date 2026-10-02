@@ -126,3 +126,25 @@ fn vault_needs_matching_device_secret() {
     assert_eq!(loaded.identity_id(), install.identity_id());
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn display_roundtrip_keeps_group_names() {
+    use std::collections::HashMap;
+    let dir = temp_dir();
+    let (install, _) = Installation::create().unwrap();
+    let vault = Vault::create(&dir, "correct horse", &install).unwrap();
+    let mut nicks = HashMap::new();
+    nicks.insert("id-a".to_string(), "Alice".to_string());
+    let mut timers = HashMap::new();
+    timers.insert("id-a".to_string(), 60u64);
+    let mut groups = HashMap::new();
+    groups.insert("gid-1".to_string(), "crew".to_string());
+    vault.save_display(&nicks, &timers, &groups).unwrap();
+    drop(vault);
+    let (vault, _) = Vault::open(&dir, "correct horse").unwrap();
+    let (n, t, g) = vault.load_display().unwrap();
+    assert_eq!(n.get("id-a").map(String::as_str), Some("Alice"));
+    assert_eq!(t.get("id-a"), Some(&60u64));
+    assert_eq!(g.get("gid-1").map(String::as_str), Some("crew"));
+    let _ = fs::remove_dir_all(&dir);
+}
