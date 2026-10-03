@@ -8,6 +8,15 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.4.5] - 2026-10-03
+
+### Added
+
+- Server token-capability GC: share tokens expire with 1d / 7d
+  (reserved) buffers, idle contact capabilities are pruned after 30d
+  keeping the newest per mailbox, with opportunistic prune on mint
+  and a 24h periodic sweeper.
+
 ## [0.4.4] - 2026-10-03
 
 ### Fixed

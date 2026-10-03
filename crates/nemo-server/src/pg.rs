@@ -113,6 +113,9 @@ async fn persist_inner(
     for owner in &hd.tokens_dropped {
         delete_tokens_owner(&mut tx, owner).await?;
     }
+    for token in &hd.tokens_dropped_exact {
+        delete_token_exact(&mut tx, token).await?;
+    }
     for token in &hd.tokens {
         upsert_token(&mut tx, home, token).await?;
     }
@@ -326,6 +329,17 @@ async fn delete_tokens_owner(
 ) -> Result<()> {
     sqlx::query("DELETE FROM tokens WHERE mailbox = $1")
         .bind(owner.as_slice())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn delete_token_exact(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    token: &[u8; KEY_LEN],
+) -> Result<()> {
+    sqlx::query("DELETE FROM tokens WHERE token = $1")
+        .bind(token.as_slice())
         .execute(&mut **tx)
         .await?;
     Ok(())

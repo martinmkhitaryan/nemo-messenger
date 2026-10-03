@@ -21,6 +21,16 @@ pub const FETCH_LIMIT_MAX: u64 = 256;
 pub const SHARE_TTL_DEFAULT: u64 = INTRO_TTL_30_MIN;
 pub const HPKE_ENC_WINDOW: usize = 1024;
 pub const CONTACT_GRACE_SECS: u64 = 72 * 3600;
+/// Contact capability idle GC fuse (ADR-0008): a non-newest
+/// cap whose last use (`window_start`) is older than this is dead.
+pub const CONTACT_CAP_IDLE_SECS: u64 = 30 * 24 * 3600;
+/// Share-token GC buffers (ADR-0008), anchored on `expires_at`
+/// so no schema change is needed: TTLs are at most 1h, so `expires_at + buffer`
+/// is ~buffer after creation.
+pub const SHARE_EXPIRED_BUFFER_SECS: u64 = 24 * 3600;
+pub const SHARE_RESERVED_BUFFER_SECS: u64 = 7 * 24 * 3600;
+/// Periodic token sweeper interval for `pump_loop`.
+pub const TOKEN_SWEEP_INTERVAL_SECS: u64 = 24 * 3600;
 pub const OWNER_MAX_AGE: u64 = MailboxOwnerAuth::MAX_AGE_SECS;
 pub const RATE_PER_MIN: usize = 30;
 pub const MAILBOX_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -103,6 +113,9 @@ pub struct HomeServer {
     pub(crate) seen_enc: HashMap<[u8; KEY_LEN], u64>,
     pub(crate) peers: HashMap<ServerId, PeerState>,
     pub(crate) outbound: Vec<OutboundRow>,
+    /// Last wall-clock (`now`) token-GC sweep. In-memory only, so a restart
+    /// sweeps on first tick and cleans legacy rows immediately.
+    pub(crate) last_token_sweep: u64,
     /// Incremental-persistence journal. Mutation methods record what changed;
     /// `pg::persist` drains it and writes only those rows. Empty means the
     /// database already matches memory, so persist is a no-op.
@@ -134,6 +147,9 @@ pub(crate) struct HomeDirty {
     pub tokens: HashSet<[u8; KEY_LEN]>,
     /// `DELETE` all tokens of these owners (mailbox disabled).
     pub tokens_dropped: HashSet<IdentityId>,
+    /// `DELETE` these exact tokens (capability GC). Owner deletes stay in
+    /// `tokens_dropped`; this is per-token expiry pruning.
+    pub tokens_dropped_exact: HashSet<[u8; KEY_LEN]>,
     /// Rewrite these owners' prekey queues (`DELETE` + batched `INSERT`).
     pub prekeys: HashSet<IdentityId>,
     /// Rewrite these owners' membership lists.
@@ -158,6 +174,7 @@ impl HomeDirty {
             && self.mailbox_cleared.is_empty()
             && self.tokens.is_empty()
             && self.tokens_dropped.is_empty()
+            && self.tokens_dropped_exact.is_empty()
             && self.prekeys.is_empty()
             && self.memberships.is_empty()
             && self.peers.is_empty()
@@ -182,6 +199,7 @@ impl HomeDirty {
         self.mailbox_cleared.extend(other.mailbox_cleared);
         self.tokens.extend(other.tokens);
         self.tokens_dropped.extend(other.tokens_dropped);
+        self.tokens_dropped_exact.extend(other.tokens_dropped_exact);
         self.prekeys.extend(other.prekeys);
         self.memberships.extend(other.memberships);
         self.peers.extend(other.peers);
@@ -228,6 +246,7 @@ impl HomeServer {
             seen_enc: HashMap::new(),
             peers: HashMap::new(),
             outbound: Vec::new(),
+            last_token_sweep: 0,
             dirty: HomeDirty::default(),
         }
     }
@@ -293,6 +312,7 @@ impl HomeServer {
             seen_enc: HashMap::new(),
             peers: HashMap::new(),
             outbound: Vec::new(),
+            last_token_sweep: 0,
             dirty: HomeDirty::default(),
         }
     }
@@ -303,6 +323,11 @@ impl HomeServer {
 
     pub fn server_id(&self) -> ServerId {
         self.hpke.server_id()
+    }
+
+    /// Number of capability tokens held in memory (operator deploy check).
+    pub fn token_count(&self) -> usize {
+        self.tokens.len()
     }
 
     pub fn bundle(&self) -> &ServerBundle {
@@ -585,6 +610,9 @@ impl HomeServer {
 
     pub fn mint_contact_capability(&mut self, owner: IdentityId) -> Result<[u8; KEY_LEN]> {
         self.require_mailbox(owner)?;
+        // Opportunistic prune (amortized, no new jobs): sweep this mailbox's
+        // dead tokens before minting, so steady-state stays bounded.
+        self.sweep_dead_tokens_for(owner);
         let token = random_token();
         self.tokens.push((
             token,
@@ -894,6 +922,169 @@ impl HomeServer {
         }
     }
 
+    /// Periodic sweeper gate: true when `TOKEN_SWEEP_INTERVAL_SECS` elapsed
+    /// since the last sweep. `last_token_sweep == 0` (fresh boot) is always due,
+    /// so deploying cleans legacy rows on first tick.
+    pub fn token_sweep_due(&self) -> bool {
+        self.now.saturating_sub(self.last_token_sweep) >= TOKEN_SWEEP_INTERVAL_SECS
+    }
+
+    pub fn record_token_sweep(&mut self) {
+        self.last_token_sweep = self.now;
+    }
+
+    /// Sweep dead capability tokens for one mailbox (opportunistic prune).
+    /// Returns the number of rows removed from memory (durable via `dirty`).
+    pub fn sweep_dead_tokens_for(&mut self, owner: IdentityId) -> usize {
+        let survivor = self.newest_contact_idx_for(owner);
+        let now = self.now;
+        let dead: Vec<[u8; KEY_LEN]> = self
+            .tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (tok, kind))| {
+                if !token_belongs_to(kind, owner) {
+                    return None;
+                }
+                // Orphaned mailbox rows are always reclaimable.
+                if self.mailboxes.get(&owner).is_none_or(|m| m.disabled) {
+                    return Some(*tok);
+                }
+                match kind {
+                    TokenKind::Share {
+                        expires_at,
+                        reserved_prekey,
+                        ..
+                    } => share_token_dead(*expires_at, reserved_prekey, now).then_some(*tok),
+                    TokenKind::Contact {
+                        grace_until,
+                        window_start,
+                        ..
+                    } => {
+                        if Some(i) == survivor {
+                            return None;
+                        }
+                        // In-grace replacements stay valid: never reap early.
+                        if grace_until.is_some_and(|g| now < g) {
+                            return None;
+                        }
+                        contact_token_dead(*window_start, now).then_some(*tok)
+                    }
+                }
+            })
+            .collect();
+        self.drop_tokens_exact(dead)
+    }
+
+    /// Sweep dead capability tokens for all mailboxes (periodic sweeper).
+    /// Keeps the newest contact cap per mailbox, reaps idle/expired shares.
+    pub fn sweep_dead_tokens(&mut self) -> usize {
+        // Survivors per mailbox: newest minted (max `window_start`, tie last).
+        let mut survivors: HashMap<IdentityId, usize> = HashMap::new();
+        let mut best_start: HashMap<IdentityId, u64> = HashMap::new();
+        for (i, (_, kind)) in self.tokens.iter().enumerate() {
+            if let TokenKind::Contact {
+                mailbox,
+                window_start,
+                ..
+            } = kind
+            {
+                let keep = match best_start.get(mailbox) {
+                    None => true,
+                    Some(&s) => *window_start > s || (*window_start == s),
+                };
+                // Later index wins ties: Vec order is mint order in memory.
+                if keep {
+                    best_start.insert(*mailbox, *window_start);
+                    survivors.insert(*mailbox, i);
+                }
+            }
+        }
+        let now = self.now;
+        // Snapshot disabled set to avoid borrowing `mailboxes` inside retain.
+        let disabled: HashSet<IdentityId> = self
+            .mailboxes
+            .iter()
+            .filter_map(|(id, m)| m.disabled.then_some(*id))
+            .collect();
+        let dead: Vec<[u8; KEY_LEN]> = self
+            .tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (tok, kind))| {
+                let owner = token_mailbox(kind);
+                // Orphan or disabled owner: reclaim everything.
+                if !self.mailboxes.contains_key(&owner) || disabled.contains(&owner) {
+                    return Some(*tok);
+                }
+                match kind {
+                    TokenKind::Share {
+                        expires_at,
+                        reserved_prekey,
+                        ..
+                    } => share_token_dead(*expires_at, reserved_prekey, now).then_some(*tok),
+                    TokenKind::Contact {
+                        grace_until,
+                        window_start,
+                        ..
+                    } => {
+                        if survivors.get(&owner).is_some_and(|&s| s == i) {
+                            return None;
+                        }
+                        if grace_until.is_some_and(|g| now < g) {
+                            return None;
+                        }
+                        contact_token_dead(*window_start, now).then_some(*tok)
+                    }
+                }
+            })
+            .collect();
+        self.drop_tokens_exact(dead)
+    }
+
+    /// Newest contact-capability index for `owner` (mint order = Vec order,
+    /// tie-broken by greatest `window_start` so reloads stay deterministic).
+    fn newest_contact_idx_for(&self, owner: IdentityId) -> Option<usize> {
+        let mut best: Option<(usize, u64)> = None;
+        for (i, (_, kind)) in self.tokens.iter().enumerate() {
+            if let TokenKind::Contact {
+                mailbox,
+                window_start,
+                ..
+            } = kind
+            {
+                if *mailbox != owner {
+                    continue;
+                }
+                match best {
+                    None => best = Some((i, *window_start)),
+                    Some((bi, bs)) => {
+                        if *window_start > bs || (*window_start == bs && i > bi) {
+                            best = Some((i, *window_start));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    /// Remove tokens from memory and journal per-token deletes.
+    /// Upsert entries for the same tokens are dropped: `pg::persist` skips
+    /// upserts for rows already gone, so they must not resurrect.
+    fn drop_tokens_exact(&mut self, dead: Vec<[u8; KEY_LEN]>) -> usize {
+        if dead.is_empty() {
+            return 0;
+        }
+        let gone: HashSet<[u8; KEY_LEN]> = dead.iter().copied().collect();
+        self.tokens.retain(|(tok, _)| !gone.contains(tok));
+        for tok in &dead {
+            self.dirty.tokens.remove(tok);
+        }
+        self.dirty.tokens_dropped_exact.extend(dead.iter().copied());
+        dead.len()
+    }
+
     fn require_mailbox(&self, owner: IdentityId) -> Result<()> {
         match self.mailboxes.get(&owner) {
             Some(m) if !m.disabled => Ok(()),
@@ -956,6 +1147,33 @@ fn envelope_expiry(now: u64, ttl: TtlBucket, max_age: u64) -> u64 {
     }
 }
 
+/// Share-token death (ADR-0008): `expires_at + buffer`.
+/// Reserved tokens get the 7-day retry window, all others the 1-day buffer
+/// (expired unburned and burned-without-reservation collapse to the same fuse).
+fn share_token_dead(expires_at: u64, reserved_prekey: &Option<Vec<u8>>, now: u64) -> bool {
+    let buf = if reserved_prekey.is_some() {
+        SHARE_RESERVED_BUFFER_SECS
+    } else {
+        SHARE_EXPIRED_BUFFER_SECS
+    };
+    now > expires_at.saturating_add(buf)
+}
+
+/// Contact-cap death: last use (`window_start`) older than the idle fuse.
+fn contact_token_dead(window_start: u64, now: u64) -> bool {
+    now.saturating_sub(window_start) > CONTACT_CAP_IDLE_SECS
+}
+
+fn token_mailbox(kind: &TokenKind) -> IdentityId {
+    match kind {
+        TokenKind::Share { mailbox, .. } | TokenKind::Contact { mailbox, .. } => *mailbox,
+    }
+}
+
+fn token_belongs_to(kind: &TokenKind, owner: IdentityId) -> bool {
+    token_mailbox(kind) == owner
+}
+
 pub(crate) fn random_token() -> [u8; KEY_LEN] {
     let mut t = [0u8; KEY_LEN];
     rand::rng().fill_bytes(&mut t);
@@ -991,6 +1209,188 @@ mod tests {
         assert_eq!(restored.server_id(), src.server_id());
         assert_eq!(restored.hpke_public(), src.hpke_public());
         assert_eq!(restored.bundle().host, "restored");
+    }
+
+    fn test_mailbox(home: &mut HomeServer) -> IdentityId {
+        let sk = SigningKey::generate(&mut rand::rng());
+        let pk = sk.verifying_key().to_bytes();
+        let id = ids::identity_id(&pk);
+        home.register(id, pk).unwrap();
+        id
+    }
+
+    fn push_share(
+        home: &mut HomeServer,
+        owner: IdentityId,
+        expires_at: u64,
+        burned: bool,
+        reserved: bool,
+    ) -> [u8; KEY_LEN] {
+        let tok = random_token();
+        home.tokens.push((
+            tok,
+            TokenKind::Share {
+                mailbox: owner,
+                expires_at,
+                burned,
+                reserved_prekey: reserved.then(|| vec![1, 2, 3]),
+            },
+        ));
+        tok
+    }
+
+    fn push_contact(
+        home: &mut HomeServer,
+        owner: IdentityId,
+        window_start: u64,
+        grace_until: Option<u64>,
+    ) -> [u8; KEY_LEN] {
+        let tok = random_token();
+        home.tokens.push((
+            tok,
+            TokenKind::Contact {
+                mailbox: owner,
+                grace_until,
+                window_start,
+                window_count: 0,
+            },
+        ));
+        tok
+    }
+
+    #[test]
+    fn share_gc_expired_and_burned_buffers() {
+        let mut home = HomeServer::new();
+        let id = test_mailbox(&mut home);
+        let base: u64 = 1_700_000_000;
+        home.now = base;
+        let exp = base + 1_800; // 30min TTL
+
+        let live = push_share(&mut home, id, exp, false, false);
+        let within_buf = push_share(&mut home, id, exp, false, false);
+        let past_buf = push_share(&mut home, id, exp, false, false);
+        let burned_fresh = push_share(&mut home, id, exp, true, false);
+        let reserved_keep = push_share(&mut home, id, exp, true, true);
+        let reserved_old = push_share(&mut home, id, exp, true, true);
+
+        // live + within 1d buffer kept; past 1d reaped.
+        home.now = exp + SHARE_EXPIRED_BUFFER_SECS - 10;
+        assert_eq!(home.sweep_dead_tokens_for(id), 0);
+        // Move past the 1d fuse but inside the 7d reserved window.
+        home.now = exp + SHARE_EXPIRED_BUFFER_SECS + 10;
+        let n = home.sweep_dead_tokens_for(id);
+        // live/within/past/burned collapse to expired+1d; reserved survives.
+        assert!(n >= 3, "expected share sweep, got {n}");
+        assert!(
+            home.tokens.iter().all(|(t, _)| *t != past_buf),
+            "expired past buffer must go"
+        );
+        assert!(
+            home.tokens.iter().all(|(t, _)| *t != burned_fresh),
+            "burned without reservation must go after 1d"
+        );
+        assert!(
+            home.tokens.iter().any(|(t, _)| *t == reserved_keep),
+            "burned with reservation must survive 1d (7d window)"
+        );
+        assert!(home.dirty.tokens_dropped_exact.contains(&past_buf));
+
+        // Reserved survives until expires + 7d.
+        home.now = exp + SHARE_RESERVED_BUFFER_SECS - 10;
+        assert!(home.tokens.iter().any(|(t, _)| *t == reserved_keep));
+        home.now = exp + SHARE_RESERVED_BUFFER_SECS + 10;
+        home.sweep_dead_tokens_for(id);
+        assert!(
+            home.tokens.iter().all(|(t, _)| *t != reserved_keep),
+            "reserved must go after 7d"
+        );
+        assert!(
+            home.tokens.iter().all(|(t, _)| *t != reserved_old),
+            "reserved must go after 7d"
+        );
+        let _ = (live, within_buf);
+    }
+
+    #[test]
+    fn contact_gc_newest_always_kept_and_idle() {
+        let mut home = HomeServer::new();
+        let id = test_mailbox(&mut home);
+        let base: u64 = 1_700_000_000;
+        home.now = base;
+        let old = push_contact(&mut home, id, base, None);
+        let mid = push_contact(&mut home, id, base + 5 * 24 * 3600, None);
+        let newest = push_contact(&mut home, id, base + 10 * 24 * 3600, None);
+
+        // All idle >30d: only newest survives.
+        home.now = base + 45 * 24 * 3600;
+        let n = home.sweep_dead_tokens_for(id);
+        assert_eq!(n, 2);
+        assert!(home.tokens.iter().any(|(t, _)| *t == newest));
+        assert!(home.tokens.iter().all(|(t, _)| *t != old && *t != mid));
+
+        // Recently used non-newest is kept.
+        let mut home = HomeServer::new();
+        let id = test_mailbox(&mut home);
+        home.now = base;
+        let _old = push_contact(&mut home, id, base, None);
+        let recent = push_contact(&mut home, id, base + 40 * 24 * 3600, None);
+        let _newest = push_contact(&mut home, id, base + 40 * 24 * 3600, None);
+        home.now = base + 45 * 24 * 3600;
+        home.sweep_dead_tokens_for(id);
+        assert!(
+            home.tokens.iter().any(|(t, _)| *t == recent),
+            "idle <30d must be kept"
+        );
+    }
+
+    #[test]
+    fn contact_gc_grace_keeps_idle_but_expired_grace_goes() {
+        let mut home = HomeServer::new();
+        let id = test_mailbox(&mut home);
+        let base: u64 = 1_700_000_000;
+        home.now = base;
+        let grace_kept = push_contact(&mut home, id, base, Some(base + 50 * 24 * 3600));
+        let grace_dead = push_contact(&mut home, id, base, Some(base + 40 * 24 * 3600));
+        let _newest = push_contact(&mut home, id, base + 44 * 24 * 3600, None);
+        home.now = base + 45 * 24 * 3600;
+        home.sweep_dead_tokens_for(id);
+        assert!(
+            home.tokens.iter().any(|(t, _)| *t == grace_kept),
+            "in-grace cap must survive even when idle"
+        );
+        assert!(
+            home.tokens.iter().all(|(t, _)| *t != grace_dead),
+            "grace-expired idle cap must go"
+        );
+    }
+
+    #[test]
+    fn mint_prunes_opportunistically_and_sweep_gate() {
+        let mut home = HomeServer::new();
+        let id = test_mailbox(&mut home);
+        let base: u64 = 1_700_000_000;
+        home.now = base;
+        let oldest = push_contact(&mut home, id, base, None);
+        let _middle = push_contact(&mut home, id, base + 24 * 3600, None);
+        home.now = base + 40 * 24 * 3600;
+        // Mint sweeps the same mailbox first: non-survivor idle goes,
+        // survivor (previous newest) stays until the next sweep.
+        let newest = home.mint_contact_capability(id).unwrap();
+        assert!(
+            home.tokens.iter().all(|(t, _)| *t != oldest),
+            "opportunistic prune must drop idle non-newest"
+        );
+        assert!(home.tokens.iter().any(|(t, _)| *t == newest));
+        assert!(home.dirty.tokens_dropped_exact.contains(&oldest));
+
+        // Gate: fresh boot is due, recent sweep is not.
+        home.last_token_sweep = 0;
+        home.now = base + 40 * 24 * 3600;
+        assert!(home.token_sweep_due());
+        home.record_token_sweep();
+        assert!(!home.token_sweep_due());
+        home.now += TOKEN_SWEEP_INTERVAL_SECS;
+        assert!(home.token_sweep_due());
     }
 }
 

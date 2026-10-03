@@ -1,6 +1,6 @@
 [package]
 name = "nemo-wire"
-version = "0.4.4"
+version = "0.4.5"
 edition.workspace = true
 license.workspace = true
 description = "Nemo Messenger version-1 encodings shared by client and server (MIT). No libsignal."

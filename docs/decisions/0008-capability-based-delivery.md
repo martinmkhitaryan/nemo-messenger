@@ -73,6 +73,20 @@ Considered for maximum unlinkability. Rejected for v1: requires a large pre-shar
 - Data model has `DeliveryCapability` and `MemberCredential` (ADR-0018).
 - Abuse controls in README 46.4 are specified per capability class and per peer server, never per sender.
 
+## Token expiry / GC policy
+
+- Share tokens: dead when `now > expires_at + buffer`, `1d` normally and
+  `7d` when a prekey is reserved (retry window). Burned state needs no extra
+  column: TTLs are at most `1h`, so `expires_at + buffer` bounds lifetime.
+- Contact capabilities: dead when not the newest minted for their mailbox
+  and last use (`window_start`) is older than `30d`. The newest per mailbox
+  is never deleted; in-grace replacements (`now < grace_until`) are never
+  reaped early.
+- Accepted edge: a peer idle `>30d` holding only a deleted old cap gets
+  `Denied` and re-arms via its peer's next rotation or a fresh share. No
+  silent loss.
+
 ## History
 
 - 2026-09-19 — Accepted. Capability-based delivery addressing.
+- 2026-10-03 — Amended: token expiry/GC policy.

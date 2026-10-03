@@ -330,6 +330,90 @@ async fn flow_queues_and_windows(pool: &sqlx::PgPool) {
     assert_eq!(home.mailbox_head(id), 1030);
 }
 
+async fn flow_token_gc(pool: &sqlx::PgPool) {
+    use nemo_server::home::CONTACT_CAP_IDLE_SECS;
+    let mut home = HomeServer::advertise("pg-test-gc".to_string(), 8443);
+    let mut groups = GroupHost::new();
+    let base: u64 = 1_700_000_100;
+    home.now = base;
+
+    let sk = SigningKey::generate(&mut rand::rng());
+    let pk = sk.verifying_key().to_bytes();
+    let id = identity_id(&pk);
+    home.register(id, pk).unwrap();
+    home.publish_prekey(id, vec![42]).unwrap();
+    home.publish_prekey(id, vec![43]).unwrap();
+
+    // Shares: plain-expired, burned bare, burned+reserved.
+    let s_expire = home.mint_share_token(id, None).unwrap();
+    let s_burn = home.mint_share_token(id, None).unwrap();
+    let s_res = home.mint_share_token(id, None).unwrap();
+    assert_eq!(home.fetch_prekey(s_res).unwrap(), vec![42]);
+    home.ingest(&seal_for(&home, s_res, vec![1])).unwrap();
+    home.ingest(&seal_for(&home, s_burn, vec![2])).unwrap();
+
+    // Contacts: two old idle, one newest.
+    let c_old1 = home.mint_contact_capability(id).unwrap();
+    home.now = base + 24 * 3600;
+    let c_old2 = home.mint_contact_capability(id).unwrap();
+    home.now = base + 2 * 24 * 3600;
+    let c_new = home.mint_contact_capability(id).unwrap();
+    home.ingest(&seal_for(&home, c_new, vec![3])).unwrap();
+
+    pg::persist(pool, &mut home, &mut groups)
+        .await
+        .expect("persist gc r1");
+    let count_r1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tokens")
+        .fetch_one(pool)
+        .await
+        .expect("count r1");
+    assert!(count_r1 >= 6, "expected tokens persisted, got {count_r1}");
+
+    // Past the 30d contact fuse (and well past all share fuses: 1d/7d).
+    home.now = base + 2 * 24 * 3600 + CONTACT_CAP_IDLE_SECS + 100;
+    // Refresh newest use so it is not idle.
+    home.ingest(&seal_for(&home, c_new, vec![4])).unwrap();
+    let swept = home.sweep_dead_tokens();
+    assert!(swept >= 4, "expected share+contact sweep, got {swept}");
+
+    pg::persist(pool, &mut home, &mut groups)
+        .await
+        .expect("persist gc r2");
+    let (mut loaded, mut loaded_groups) =
+        pg::load(pool).await.expect("load gc").expect("state gc");
+    let count_r2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tokens")
+        .fetch_one(pool)
+        .await
+        .expect("count r2");
+    assert!(
+        count_r2 < count_r1,
+        "swept rows must stay gone after reload ({count_r1} -> {count_r2})"
+    );
+    // Newest contact cap still sends.
+    loaded.now = home.now;
+    let seq = loaded.ingest(&seal_for(&loaded, c_new, vec![5])).unwrap();
+    assert!(seq > 0);
+    // Old contact caps are gone: unknown-token Denied.
+    assert!(loaded.ingest(&seal_for(&loaded, c_old1, vec![6])).is_err());
+    assert!(loaded.ingest(&seal_for(&loaded, c_old2, vec![7])).is_err());
+    // Swept shares stay gone.
+    assert!(loaded.fetch_prekey(s_expire).is_err());
+    assert!(loaded.fetch_prekey(s_burn).is_err());
+    assert!(loaded.fetch_prekey(s_res).is_err());
+    let count_r3: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tokens")
+        .fetch_one(pool)
+        .await
+        .expect("count r3");
+    assert_eq!(
+        count_r2, count_r3,
+        "failed sends must not resurrect swept rows"
+    );
+
+    pg::persist(pool, &mut loaded, &mut loaded_groups)
+        .await
+        .expect("persist gc r3");
+}
+
 #[tokio::test]
 async fn postgres_incremental_persist() {
     // One driver, sequential flows: all flows share a single database, so
@@ -342,4 +426,5 @@ async fn postgres_incremental_persist() {
     flow_survives_reload(&pool).await;
     flow_incremental_rounds(&pool).await;
     flow_queues_and_windows(&pool).await;
+    flow_token_gc(&pool).await;
 }

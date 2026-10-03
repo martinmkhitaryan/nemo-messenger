@@ -346,6 +346,20 @@ pub async fn pump_loop(state: AppState) {
                 .map(|d| d.as_secs())
                 .unwrap_or(home.now);
         }
+        // Periodic token-capability sweeper (24h gate, first tick sweeps).
+        let swept = {
+            let mut home = state.home.lock().await;
+            if !home.token_sweep_due() {
+                0
+            } else {
+                let n = home.sweep_dead_tokens();
+                home.record_token_sweep();
+                n
+            }
+        };
+        if swept > 0 {
+            state.persist().await;
+        }
         pump_due(&state).await;
     }
 }

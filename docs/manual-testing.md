@@ -29,17 +29,27 @@ reference deploy (Caddy + TLS + Postgres):
 - Viewport gating: single-message chats mark viewed on open without
   scrolling; date pill stays hidden while writing.
 
+## Manually verified in 0.4.5
+
+Verified live during development on desktop two-pane against the
+reference deploy:
+
+- Groups: New group -> copy invite -> Join group with `nemo-j:` request
+  -> admit.
+- Message replies and reactions.
+- Group message seen logic is not implemented.
+
 ## Not manually tested
 
 Implemented, covered by automated tests where noted in `testing.md`:
-groups, 1:1 voice calls (no live-audio check passed), High/Maximum
-cover traffic and Tor, server federation. Group read receipts are
-future work and depend on groups being manually tested first.
+group messaging and group seen ticks, 1:1 voice calls (no live-audio
+check passed), High/Maximum cover traffic and Tor, server federation.
+Group read receipts are future work: seen logic is not implemented
+for groups.
 
 ## Left to test (required before 1.0.0)
 
-- Groups: New group -> copy invite -> Join group with `nemo-j:` request
-  -> admit -> both sides send, on desktop and Android
+- Groups: group seen ticks once seen logic is implemented
   (`testing.md` freeze checklist).
 - 1:1 live call: audible speech with real mic (not silence frames),
   ringing/reject/cancel, mic permission, via coturn on desktop two-pane
