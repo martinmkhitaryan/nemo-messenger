@@ -94,7 +94,6 @@ internal fun quoteAuthorName(quote: DisplayRow, mine: Boolean, contacts: Map<Str
 @Composable
 internal fun ReplyQuoteHeader(
     quote: DisplayRow,
-    mine: Boolean,
     bodyColor: Color,
     onJump: (() -> Unit)? = null,
     contacts: Map<String, String> = emptyMap(),
@@ -193,7 +192,6 @@ private data class MenuAction(
  */
 @Composable
 internal fun FluidMessageMenuContent(
-    target: DisplayRow,
     pills: List<ReactionPill>,
     canSave: Boolean,
     canCopy: Boolean,

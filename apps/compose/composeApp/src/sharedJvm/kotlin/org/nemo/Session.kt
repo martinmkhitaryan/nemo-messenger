@@ -183,8 +183,6 @@ internal const val CREATE_FOOTNOTE = "No recovery if you lose this passphrase."
 
 internal const val UNLOCK_FOOTNOTE = "There is no recovery if the passphrase is wrong."
 
-internal fun canSaveAttachment(row: DisplayRow): Boolean = row.fileName.isNotEmpty() && row.fileBytes.isNotEmpty() && !row.hidden
-
 /**
  * Human-readable one-liner for backend/transport failures. Raw engine
  * strings ("busy", connection stack traces) must never reach the UI.
@@ -3214,7 +3212,6 @@ internal fun MessageBubble(
                             if (quote != null) {
                                 ReplyQuoteHeader(
                                     quote = quote,
-                                    mine = mine,
                                     bodyColor = bodyColor,
                                     contacts = contacts,
                                 )
@@ -3334,7 +3331,6 @@ internal fun MessageBubble(
                         },
                     ) {
                         FluidMessageMenuContent(
-                            target = row,
                             pills = pills,
                             canSave = canSave,
                             canCopy = canCopy,
@@ -3852,8 +3848,6 @@ private fun PassField(label: String, value: String, onChange: (String) -> Unit, 
         ),
     )
 }
-
-internal fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
 
 /**
  * One-shot open jump: land the anchor bubble, then correct from the measured

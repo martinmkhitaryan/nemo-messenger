@@ -89,3 +89,9 @@ internal const val TEXT_MAX_BYTES: Int = 8192
 internal fun draftByteSize(text: String): Int = text.toByteArray().size
 
 internal fun isOverTextLimit(text: String): Boolean = draftByteSize(text.trim()) > TEXT_MAX_BYTES
+
+/** Short identity label: first 6 chars plus ellipsis when long. */
+internal fun shortId(id: String) = if (id.length <= 10) id else "${id.take(6)}…"
+
+/** True when a bubble offers Save: an unhidden file row with payload bytes. */
+internal fun canSaveAttachment(row: DisplayRow): Boolean = row.fileName.isNotEmpty() && row.fileBytes.isNotEmpty() && !row.hidden
