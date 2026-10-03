@@ -45,7 +45,7 @@ User (holds revocation phrase off-device)
 | Peer server | Same as home server for traffic it handles | Same |
 | Push provider | Delivering an opaque wake | Anything in the payload beyond a token with no size or type hint |
 | TURN operator | Relaying encrypted RTP | Content; it sees IPs and call duration |
-| Certificate authorities / DNS | Optional transport protection | Server identity (`server_id = H(server_public_key)`) |
+| Certificate authorities / DNS | Optional transport protection | Server identity (`server_id = SHA-256(server_hpke_public_key)`) |
 
 The server is assumed potentially malicious at all times ([ADR-0001](../decisions/0001-untrusted-server-blind-delivery.md)). It may drop, delay, replay, reorder, serve stale discovery, or lie about routing. Protocols must tolerate that and detect what can be detected. A server must never be able to decrypt content, forge an identity, silently replace a verified key, or recover historical keys from its own state.
 
@@ -62,7 +62,7 @@ These must remain true through every later phase and in any implementation of th
 - A user identity is a keypair. `identity_id = H(identity_public_key)`. Servers may keep internal row ids; those ids are never the identity ([ADR-0002](../decisions/0002-cryptographic-identity-no-registry.md)).
 - One client installation is one identity. There is no device layer, enrollment, linking, or key hierarchy ([ADR-0003](../decisions/0003-single-key-identity.md)).
 - The identity private key never leaves the installation.
-- A server identity is a keypair. `server_id = H(server_public_key)`. TLS/Web PKI may protect transport; it is not the source of server identity.
+- A server identity is two keys: `server_hpke_public_key` (X25519, encryption) + `server_sign_public_key` (Ed25519, federation pin). `server_id = SHA-256(server_hpke_public_key)`. TLS/Web PKI may protect transport; it is not the source of server identity.
 
 ### 3.2 Confidentiality and keys
 
@@ -137,7 +137,7 @@ Wire encodings of these objects are phase 2. The lifecycle itself is binding now
 2. `identity_id = H(identity_public_key)`.
 3. The client displays the revocation private key once (24-word phrase and/or QR) and then MUST NOT store it.
 4. UX MUST state that the identity and its history cannot be recovered or exported.
-5. The client registers with a home server: publishes identity public key, revocation public key, a signed `HomeServerBinding` (`server_id`, `server_public_key`, endpoints, monotonic `seq`, `expires_at`), and a finite one-time PQXDH prekey stock. The server never sees private keys.
+5. The client registers with a home server: publishes identity public key, revocation public key, a signed `HomeServerBinding` (`server_id`, `server_hpke_public_key`, `server_sign_public_key`, `host`, monotonic `seq`, `expires_at`), and a finite one-time PQXDH prekey stock. The server never sees private keys.
 
 ### 5.2 Use
 

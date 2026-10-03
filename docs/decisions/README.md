@@ -75,7 +75,7 @@ IDs match reading order (foundations first). New records take the next free numb
 | ID | Date | Title | Status |
 | --- | --- | --- | --- |
 | [ADR-0025](0025-self-hostable-open-source-no-custom-crypto.md) | 2026-09-19 | Self-hostable, open source, established cryptography only | Accepted |
-| [ADR-0026](0026-target-platforms.md) | 2026-09-19 | Android, Linux and Windows first; iOS later; shared Rust core | Accepted |
+| [ADR-0026](0026-target-platforms.md) | 2026-09-19 | Android, Linux and Windows; iOS, macOS and web out of scope; shared Rust core | Accepted |
 | [ADR-0027](0027-protocol-first-development-order.md) | 2026-09-19 | Protocol-first development order; APIs and schemas come last | Accepted |
 | [ADR-0028](0028-implementation-languages-and-libraries.md) | 2026-09-19 | Implementation languages and libraries | Accepted |
 | [ADR-0029](0029-cryptographic-identifiers-and-encodings.md) | 2026-09-19 | Cryptographic identifiers, contact-card encoding, MLS suite, and PCS interval | Accepted |

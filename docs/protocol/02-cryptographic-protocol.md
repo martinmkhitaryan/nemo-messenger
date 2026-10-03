@@ -151,7 +151,7 @@ Rules already decided, restated:
 
 - A 1:1 session is exactly one pair of identity keys.
 - After PQXDH, Double Ratchet as implemented by libsignal, including its post-quantum ratchet if present in that library version.
-- Skipped-message keys: keep at least 1000; delete after the corresponding plaintext is processed and the skip window no longer needs them. Size the window against mailbox retention in phase 4; if they disagree, raise the skip window, not the retention, in a later record.
+- Skipped-message keys: keep at least 2000; delete after the corresponding plaintext is processed and the skip window no longer needs them. Size the window against mailbox retention in phase 4; if they disagree, raise the skip window, not the retention, in a later record.
 - Do not fall back to a weaker handshake if PQXDH material is missing.
 - A 1:1 that becomes a group starts a **new** MLS group; no history, no in-place upgrade.
 

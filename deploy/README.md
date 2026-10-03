@@ -26,7 +26,7 @@ Optional 1:1 media relay:
 docker compose -f deploy/compose.yml --profile calls up --build
 ```
 
-TURN credentials are issued by `POST /v1/turn` (ADR-0035). Set the same `NEMO_TURN_SECRET` on `nemo-server` and coturn `--static-auth-secret` (compose defaults both to `nemo-dev-turn`). `NEMO_TURN_URL` defaults to `turn:127.0.0.1:3478`; use the host LAN address when an Android device must allocate. Static `NEMO_TURN_USER` / `NEMO_TURN_PASS` remain a client fallback when that route is unreachable.
+TURN credentials are issued by `POST /v1/turn` (ADR-0035). Set the same `NEMO_TURN_SECRET` on `nemo-server` and coturn `--static-auth-secret` (compose defaults both to `nemo-dev-turn`; a bare `nemo-server` without that env generates an ephemeral random secret). `NEMO_TURN_URL` defaults to `turn:127.0.0.1:3478`; use the host LAN address when an Android device must allocate. Static `NEMO_TURN_USER` / `NEMO_TURN_PASS` remain a client fallback when that route is unreachable (ignored by the server).
 
 ## Postgres password
 

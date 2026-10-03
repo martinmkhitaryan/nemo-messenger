@@ -1445,7 +1445,9 @@ async fn fetch_bundle<T: HomeTransport>(transport: &T) -> Result<ServerBundle> {
             body: vec![],
         })
         .await?;
-    Ok(ServerBundle::decode(check_body(&res)?)?)
+    let bundle = ServerBundle::decode(check_body(&res)?)?;
+    bundle.verify()?;
+    Ok(bundle)
 }
 
 fn now_unix() -> u64 {

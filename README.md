@@ -3,7 +3,7 @@
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
-**Status:** Revision 15 (2026-09-28) — v1 specification frozen, 0.1.0 implemented<br>
+**Status:** Revision 15 (2026-09-28) — v1 specification frozen<br>
 **Document type:** Product requirements and architectural specification<br>
 **Scope:** Identity, messaging, cryptography, delivery, privacy, federation, voice calls, and infrastructure<br>
 **Decision history:** [`docs/decisions/`](docs/decisions/README.md)<br>
@@ -16,7 +16,6 @@
 
 > Manual testing status (tested, untested, must-test before 1.0.0):
 > [`docs/manual-testing.md`](docs/manual-testing.md).
-> No FCM by design.
 > See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
@@ -27,8 +26,8 @@ The choices below are binding for the current design. Each one has a full record
 
 | Decision | Summary | Record |
 | --- | --- | --- |
-| Untrusted server | The server is infrastructure, not authority. All content is E2EE; the server stores ciphertext temporarily, holds no user keys, and cannot read, forge or substitute. | [ADR-0001](docs/decisions/0001-untrusted-server-blind-delivery.md) |
-| Cryptographic identity | Users and servers are keypairs, `id = H(pubkey)`. No accounts, no registry. The user-to-server binding is a statement signed by the user, so identity is portable. On migrate the old server drops tokens, prekeys, contact capabilities, and the old mailbox. | [ADR-0002](docs/decisions/0002-cryptographic-identity-no-registry.md) |
+| Untrusted server | The server is infrastructure, not authority. All content is E2EE; the server stores ciphertext temporarily, holds no user private keys and no conversation keys, and cannot read, forge or substitute. | [ADR-0001](docs/decisions/0001-untrusted-server-blind-delivery.md) |
+| Cryptographic identity | Users and servers are keypairs, `id = H(pubkey)`. No accounts, no registry. The user-to-server binding is a statement signed by the user, so identity is portable. On migrate the old server drops unused share tokens and the old one-time prekey stock, revokes contact capabilities, and disables the old mailbox. | [ADR-0002](docs/decisions/0002-cryptographic-identity-no-registry.md) |
 | One key, one installation | One client installation is one identity. No device layer, no linking, no key hierarchy. A new device is a new identity. | [ADR-0003](docs/decisions/0003-single-key-identity.md) |
 | Revocation | Every identity has a separate revocation key, exported once and kept off-device. Its only power is to kill the identity. Clients MUST refresh discovery for 1:1 contacts and for every MLS-group identity, then MUST Remove. Host drops the credential on a RemoveBundle, not by parsing MLS. No successor, no recovery. | [ADR-0004](docs/decisions/0004-revocation-key.md) |
 | Cryptography | Double Ratchet with post-quantum setup (PQXDH, libsignal-class) for 1:1; MLS for groups (not PQ; clients MUST periodically commit Updates). One-time prekeys only; at most one reserved per live share token; a new 1:1 waits if the stock is empty. MLS-only was evaluated and rejected. | [ADR-0005](docs/decisions/0005-double-ratchet-and-mls.md) |
@@ -37,7 +36,7 @@ The choices below are binding for the current design. Each one has a full record
 | Addressing | Envelopes are addressed by random delivery capabilities, never by identity. Share tokens are one-time; contact capabilities are private per conversation; member credentials are not mailbox tokens. | [ADR-0008](docs/decisions/0008-capability-based-delivery.md) |
 | Sealed sender | No sender field on any server-visible envelope. | [ADR-0009](docs/decisions/0009-sealed-sender.md) |
 | Padding | Every envelope is padded to a fixed size bucket, always on. | [ADR-0010](docs/decisions/0010-padding-buckets.md) |
-| Version field | Every card, envelope and server-to-server frame begins with a protocol version. | [ADR-0011](docs/decisions/0011-protocol-version-field.md) |
+| Version field | Every card, envelope, key package wrapper and server-to-server frame begins with a protocol version. | [ADR-0011](docs/decisions/0011-protocol-version-field.md) |
 | Identifiers | No globally meaningful message IDs; only per-container sequence numbers. | [ADR-0012](docs/decisions/0012-no-global-message-identifiers.md) |
 | Timestamps | Server receipt times are internal, coarse, and never returned to clients. | [ADR-0013](docs/decisions/0013-internal-server-timestamps.md) |
 | Envelope TTL | Inner envelope may carry a small fixed `ttl_bucket` for early drop of undelivered ciphertext. | [ADR-0014](docs/decisions/0014-sender-chosen-ttl-bucket.md) |
@@ -54,12 +53,12 @@ The choices below are binding for the current design. Each one has a full record
 | Open and self-hosted | Fully self-hostable, open source, standard audited cryptography only, no custom primitives. | [ADR-0025](docs/decisions/0025-self-hostable-open-source-no-custom-crypto.md) |
 | Platforms | Android, Linux, and Windows. No iOS, macOS, or web. Single Rust core. | [ADR-0026](docs/decisions/0026-target-platforms.md) |
 | Development order | Security model, then protocols, then envelope, delivery, federation, privacy, application; APIs and schemas last. | [ADR-0027](docs/decisions/0027-protocol-first-development-order.md) |
-| Implementation stack | Rust core and Rust server; libsignal primitives + OpenMLS; Compose Multiplatform + UniFFI; Axum + sqlx + PostgreSQL + Caddy; spec/server MIT, client AGPL; no Cargo workspace until the protocols exist. | [ADR-0028](docs/decisions/0028-implementation-languages-and-libraries.md) |
-| Crypto encodings | SHA-256 ids; CBOR contact card ≤400 bytes (`nemo:1:` URI); MLS suite 0x0003; Update every 7 days / 72 h before send; 30-minute share tokens. | [ADR-0029](docs/decisions/0029-cryptographic-identifiers-and-encodings.md) |
+| Implementation stack | Rust core and Rust server; libsignal primitives + OpenMLS; Compose Multiplatform + UniFFI; Axum + sqlx + PostgreSQL + Caddy; spec/server MIT, client AGPL. | [ADR-0028](docs/decisions/0028-implementation-languages-and-libraries.md) |
+| Crypto encodings | SHA-256 ids; CBOR contact card ≤400 bytes (`nemo:1:` URI); MLS suite 0x0003; Update every 7 days / 72 h before send (24 h should on online); share-token TTL set {5, 30, 60} min, default 30 min; prekey stock 100, restock below 25. | [ADR-0029](docs/decisions/0029-cryptographic-identifiers-and-encodings.md) |
 | Envelopes | Version-1 buckets: text 1/4/16 KiB inner, 20 KiB outer; attachments up to 16 MiB; ttl 60s/1h/1d; no sender field. | [ADR-0030](docs/decisions/0030-envelope-buckets-and-layout.md) |
-| Mailboxes | 14-day / 500 MiB default retention; owner-only fetch; DR skip window ≥2000. | [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md) |
+| Mailboxes | Mailbox 14-day / 500 MiB and group stream 30-day / 2 GiB (+ 4 GiB file budget) default retention; owner-only fetch; DR skip window ≥2000. | [ADR-0031](docs/decisions/0031-mailbox-retention-and-owner-auth.md) |
 | Federation hop | Server Ed25519 + HPKE X25519; TLS 1.3 with pinned keys; not Web PKI. | [ADR-0032](docs/decisions/0032-server-signing-key-and-federation-tls.md) |
-| HTTP and schema | Client-to-home `/v1` on localhost HTTP; Caddy terminates TLS; CBOR/octet-stream, never JSON; Postgres DDL from phases 1–5 only. | [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md) |
+| HTTP and schema | Client-to-home `/v1` on `0.0.0.0:8787` HTTP behind Caddy TLS; Caddy terminates TLS; CBOR/octet-stream for cards, envelopes, discovery, owner auth and group frames, never JSON there; Postgres DDL from phases 1–5 only. | [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md) |
 | Local vault | App passphrase (min 8); Argon2id; SQLCipher in `nemo-core`; device secret mixed in (Android Keystore / OS credential store); revocation mnemonic never stored; lost passphrase or lost device secret is a lost identity. | [ADR-0034](docs/decisions/0034-local-vault-passphrase.md) |
 | TURN credentials | Per-call HMAC-SHA1 REST creds from `POST /v1/turn`; username is not identity; no credentials table. | [ADR-0035](docs/decisions/0035-ephemeral-turn-credentials.md) |
 
@@ -266,7 +265,7 @@ On a valid statement:
 
 The revocation key cannot authorise a new identity, recover messages or do anything other than revoke. It does not protect messages already readable on a stolen device.
 
-Clients **MUST** refresh discovery on a coarse interval (hours) for existing 1:1 contacts **and** for every identity in every MLS group they belong to, then **MUST** commit MLS Remove. The host fans the `RemoveBundle` to the pre-revoke set (including the removed member), then drops that member credential and prunes fan-out (ADR-0018). It does not parse MLS.
+Clients **MUST** refresh discovery at least every 12 h (SHOULD every 4 h) for existing 1:1 contacts **and** for every identity in every MLS group they belong to, then **MUST** commit MLS Remove. The host fans the `RemoveBundle` to the pre-revoke set (including the removed member), then drops that member credential and prunes fan-out (ADR-0018). It does not parse MLS.
 
 ---
 
@@ -280,11 +279,12 @@ ContactCard
 ├── identity_public_key
 ├── revocation_public_key
 ├── home_server_binding         signed by identity key:
-│   ├── server_id
-│   ├── server_public_key       used for the HPKE layer in section 10
-│   ├── endpoints
+│   ├── server_id                 SHA-256(server_hpke_public_key)
+│   ├── server_hpke_public_key    X25519, used for the HPKE layer in section 10
+│   ├── server_sign_public_key    Ed25519, federation mTLS pin
+│   ├── host                      1–64 chars, DNS or .onion, no scheme/path
 │   ├── seq                     monotonically increasing; clients pin the highest seen
-│   └── expires_at
+│   └── expires_at                reject if past by >300 s
 └── share_token                 one-time, short-TTL introduction token minted for this share (ADR-0007)
 ```
 
@@ -326,13 +326,10 @@ This means:
 Servers should also have cryptographic identities.
 
 ```text
-Server Keypair
-      |
-      v
-Server Public Key
-      |
-      v
-server_id = H(server_public_key)
+Server keys (two halves, section 10 and ADR-0032)
+├── server_hpke_public_key    X25519, encryption to server
+├── server_sign_public_key    Ed25519, federation mTLS pin
+└── server_id = SHA-256(server_hpke_public_key)
 ```
 
 This allows clients to identify servers cryptographically instead of trusting a central registry.
@@ -390,7 +387,7 @@ Discovery answers "give me material for identity X". It does **not** answer "who
 
 Discovery responses are **untrusted input**.
 
-The client must verify returned cryptographic information rather than blindly trusting the server: prekeys must be signed by the identity key; home-server bindings must carry a `seq` not lower than the one previously pinned; revocation statements must verify against the revocation public key from the contact card. Clients gossip the latest observed home-server binding `seq` inside existing encrypted sessions and alert on conflict. Clients MUST periodically refresh discovery for existing 1:1 contacts and for every identity in every MLS group they belong to, on a coarse interval (hours), so a revocation is noticed without waiting for the next send (ADR-0004).
+The client must verify returned cryptographic information rather than blindly trusting the server: prekeys must be signed by the identity key; home-server bindings must carry a `seq` not lower than the one previously pinned; revocation statements must verify against the revocation public key from the contact card. Clients gossip the latest observed home-server binding `seq` inside existing encrypted sessions and alert on conflict. Clients MUST periodically refresh discovery at least every 12 h (SHOULD every 4 h) for existing 1:1 contacts and for every identity in every MLS group they belong to, so a revocation is noticed without waiting for the next send (ADR-0004).
 
 The discovery service should not contain:
 
@@ -679,7 +676,7 @@ A 1:1 conversation that grows into a group starts a new MLS group; there is no i
 
 **Prekeys are one-time only.** Discovery serves a finite stock, and only to a requester who presents a live unused share token. At most one prekey is reserved per token; a repeat fetch returns that same reserved key. There is no reusable last-resort prekey. If the stock is empty, a **new** 1:1 cannot start until the recipient comes online and restocks. Existing conversations are unaffected.
 
-**Groups are not post-quantum.** MLS PQ ciphersuites are still drafts; do not claim PQ for groups. Clients **MUST** periodically commit MLS Updates so post-compromise security does not depend on someone happening to speak. The interval is specified with the group state machine.
+**Groups are not post-quantum.** MLS PQ ciphersuites are still drafts; do not claim PQ for groups. Clients **MUST** periodically commit MLS Updates (every 7 days, MUST NOT send if last own Update >72 h, SHOULD update if >24 h) so post-compromise security does not depend on someone happening to speak.
 
 ---
 
@@ -894,7 +891,7 @@ old cryptographic material can be removed according to the protocol state machin
 
 A later compromise should not automatically reveal historical group traffic.
 
-Clients **MUST** periodically commit MLS Updates so a quiet group still heals (ADR-0005). The interval is specified with the group state machine; this document does not pick a number. Groups are not post-quantum.
+Clients **MUST** periodically commit MLS Updates so a quiet group still heals (ADR-0005): every 7 days, MUST NOT send if last own Update >72 h, SHOULD update if >24 h. Groups are not post-quantum.
 
 ---
 
@@ -1014,7 +1011,7 @@ T -> Bob's mailbox
 Alice sends:
 
 ```text
-POST /delivery/T
+POST /v1/envelopes (OuterEnvelope to her home server)
 ```
 
 with an opaque encrypted envelope.
@@ -1032,7 +1029,7 @@ Bob
 
 Alice
  |
- +-- POST /delivery/T
+ +-- POST /v1/envelopes with OuterEnvelope
  |
  +-- encrypted envelope
 ```
@@ -1060,7 +1057,7 @@ Contact capability
 ├── one per (conversation, recipient)
 ├── exchanged only inside an established encrypted session
 ├── never published
-└── rotated in-band; old capability kept alive briefly for in-flight messages
+└── rotated in-band; old capability kept alive 72 h after owner confirm for in-flight messages
 
 Member credential (ADR-0018)
 ├── reserved (inert) on accept; activated on admit — same id, never a new one
@@ -1109,7 +1106,7 @@ Decided:
 
 * A contact capability is scoped to one recipient identity and one conversation (there are no devices). Share tokens are scoped to one mint and one purpose.
 * An identity has many active tokens: outstanding unused share tokens (each short-lived) plus one contact capability per conversation, plus one member credential per group.
-* Rotation of contact capabilities is done in-band: the recipient sends the new capability over the encrypted session, keeps the old one alive for a grace period, then revokes it.
+* Rotation of contact capabilities is done in-band: the recipient sends the new capability over the encrypted session, keeps the old one alive for 72 h after owner confirm, then revokes it.
 * A compromised contact capability is revoked at the server and replaced in-band. A leaked unused share token is already one-shot; the next share mints a new one.
 * Tokens are not transferred between servers. On migration (section 11) the identity obtains fresh tokens on the new server and distributes them in-band.
 * The server can trivially correlate successive generations of the same conversation's token (the replacement arrives in the same mailbox). This is accepted; the protection is against cross-conversation correlation, not intra-conversation.
@@ -1519,7 +1516,7 @@ Revocation affects:
 
 Limits:
 
-* 1:1 contacts who share no group with the identity learn of the revocation when they next fetch discovery for it, through gossip from a shared contact, or through any shared group. Clients MUST refresh discovery on a coarse interval (hours) for existing 1:1 contacts **and** for every identity in every MLS group they belong to, then MUST commit Remove. The home server cannot notify unknown contacts or foreign group hosts because it does not know them. Until a `RemoveBundle` is admitted, a stolen client may still hold member credentials on those hosts. The host does not parse MLS.
+* 1:1 contacts who share no group with the identity learn of the revocation when they next fetch discovery for it, through gossip from a shared contact, or through any shared group. Clients MUST refresh discovery at least every 12 h (SHOULD every 4 h) for existing 1:1 contacts **and** for every identity in every MLS group they belong to, then MUST commit Remove. The home server cannot notify unknown contacts or foreign group hosts because it does not know them. Until a `RemoveBundle` is admitted, a stolen client may still hold member credentials on those hosts. The host does not parse MLS.
 * Messages already on the stolen device remain readable there.
 
 ---
@@ -1727,11 +1724,12 @@ Identity
 ```text
 HomeServerBinding
 ├── identity_id
-├── server_id
-├── server_public_key
-├── endpoints
+├── server_id                   SHA-256(server_hpke_public_key)
+├── server_hpke_public_key      X25519
+├── server_sign_public_key      Ed25519
+├── host                        1–64 chars, no scheme/path
 ├── seq
-├── expires_at
+├── expires_at                  reject if past by >300 s
 └── signature                     by identity key
 
 RevocationStatement
@@ -1786,9 +1784,10 @@ GroupStream
 
 ```text
 ServerPeer
-├── server_id
-├── server_public_key
-├── endpoints
+├── server_id                   SHA-256(server_hpke_public_key)
+├── server_hpke_public_key      X25519
+├── server_sign_public_key      Ed25519
+├── host
 ├── trust_state
 └── rate_limit_state
 ```
@@ -2227,7 +2226,7 @@ The initial product should focus on:
 ## Platforms (ADR-0026, ADR-0028)
 
 * Android, Linux, Windows (not iOS, macOS, or web);
-* Android 15+ (minSdk 35); JDK 21, Android SDK 37 / NDK 27.2 for builds (see `deploy/README.md`);
+* Android 15+ (minSdk 35, target 36); JDK 21, Android SDK 37 / NDK 27.2.12479018 for builds (see `deploy/README.md`);
 * opaque wakes on Android via foreground service + poll; no FCM by design; long-lived connection otherwise;
 * encrypted message retrieval after wake-up;
 * single Rust core with a Compose Multiplatform shell over UniFFI.
@@ -2272,31 +2271,31 @@ There are no devices. A new installation is a new identity; see section 35.
 
 ## 53.4 Delivery capabilities — resolved at the architecture level (ADR-0008)
 
-Share tokens, contact capabilities, and member credentials; group invites and admits are client-signed; per-conversation scoping; in-band rotation; see sections 22–23 and ADR-0007 / ADR-0018. Open at the protocol level: exact rotation grace period, capability encoding, server-side rate-limit parameters.
+Share tokens, contact capabilities, and member credentials; group invites and admits are client-signed; per-conversation scoping; in-band rotation with 72 h grace after owner confirm; capability encoding per phase 4; per-capability 30/min and per-peer 100/s limits; see sections 22–23 and ADR-0007 / ADR-0018.
 
 ---
 
 ## 53.5 Federation — resolved at the architecture level (ADR-0016)
 
-Server-to-server with HPKE-nested envelopes; see section 10. Open at the protocol level: HPKE suite, server authentication handshake, replay protection, retry/expiry, peer trust bootstrapping.
+Server-to-server with HPKE-nested envelopes; see section 10. Resolved at the protocol level: HPKE suite, server authentication handshake, replay protection, retry/expiry, peer trust bootstrapping (phase 5, ADR-0032).
 
 ---
 
 ## 53.6 Push notifications — resolved at the architecture level (ADR-0020)
 
-Opaque wake-up only; the device fetches its own ciphertext. Open at the protocol level (see 53.12): wake-token format, coalescing rules, desktop background delivery without a push provider.
+Opaque wake-up only; the device fetches its own ciphertext. Resolved at the protocol level: empty binary wake on WebSocket `/v1/wakeup`, coalesced to at most one per 10 s; poll fetch required. Remaining open (see 53.12): desktop background delivery without a push provider.
 
 ---
 
 ## 53.7 Multiple devices — removed (ADR-0003)
 
-Not a goal. Peer-linked identities are the only compatible future extension (section 52).
+Not a goal. A new installation is a new identity; no linking, no pairing.
 
 ---
 
 ## 53.8 Message ordering — resolved at the architecture level (ADR-0015)
 
-Per-container sequence numbers, idempotency tokens, three acknowledgement kinds; see section 38. Open: skipped-key window sizes, MLS out-of-order tolerance policy, retention defaults.
+Per-container sequence numbers, idempotency tokens, three acknowledgement kinds; see section 38. Resolved: DR skip window ≥2000, MLS out-of-order per RFC 9420, retention mailbox 14d/500MiB and stream 30d/2GiB (ADR-0031).
 
 ---
 
@@ -2332,7 +2331,7 @@ Still open (v1.2, each needs a new ADR):
 
 * TURN credential issuance across servers for cross-server calls (section 64, ADR-0024; [v1.2](docs/v1.2.md) L8).
 * Behaviour when a hosting server is unreachable for an extended time: how a group detects it and re-forms ([v1.2](docs/v1.2.md) L4).
-* Push wake-token format beyond "opaque 32-byte token", and desktop background delivery when the app is not running ([v1.2](docs/v1.2.md) L9).
+* Push wake is an empty binary frame on `/v1/wakeup` (10 s coalesce), and desktop background delivery when the app is not running ([v1.2](docs/v1.2.md) L9).
 
 ---
 
@@ -2384,7 +2383,7 @@ Defines:
 
 **Complete (HTTP + DDL + sqlx):** [`docs/protocol/08-api-and-persistence.md`](docs/protocol/08-api-and-persistence.md), [ADR-0033](docs/decisions/0033-local-http-api-and-postgres-schema.md)
 
-* HTTP `/v1` on localhost; Caddy TLS;
+* HTTP `/v1` on `0.0.0.0:8787` behind Caddy TLS;
 * Postgres schema from phases 1–5 only; sqlx load-on-start and write-through when `DATABASE_URL` is set;
 * outbound queue as specified in phase 5;
 * no Redis;

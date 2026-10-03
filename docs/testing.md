@@ -20,7 +20,7 @@ cd apps/compose && ./gradlew assembleDebug
 
 `desktopTest` registers two vaults on a local `nemo-server`, exchanges text and a file, and joins a group.
 
-Android instrumented tests run on an Android 16 (API 36) emulator in CI (`connectedDebugAndroidTest`). They are the Android product suite: create-screen copy, QR, vault, 1:1 text/file, group join. They do not listen to a microphone. A live audible call is still a manual check.
+Android instrumented tests run on an Android 36 emulator image in CI (`connectedDebugAndroidTest`), minSdk 35 (Android 15), target 36. They are the Android product suite: create-screen copy, QR, vault, 1:1 text/file, group join. They do not listen to a microphone. A live audible call is still a manual check.
 
 ```text
 # host server the emulator reaches as 10.0.2.2
@@ -47,7 +47,7 @@ cargo test -p nemo-wire -p nemo-server --test no_libsignal
 source scripts/dev-env.sh
 cd apps/compose && ./gradlew --no-daemon desktopTest
 
-# APK (needs Android SDK 36 + NDK 27.2.12479018 + cargo-ndk)
+# APK (needs Android SDK 37 / target 36, minSdk 35 + NDK 27.2.12479018 + cargo-ndk)
 cd apps/compose && ./gradlew --no-daemon assembleDebug
 ```
 
@@ -170,7 +170,7 @@ Wipe the vault: uninstall the app, or `adb uninstall org.nemo`.
 
 ## Android (physical device)
 
-USB debugging, Android 16, debug APK.
+USB debugging, Android 15+, debug APK.
 
 ```text
 source scripts/dev-env.sh
@@ -196,4 +196,4 @@ Walk the same checklist as desktop: register, 1:1 text, group invite→accept→
 | Connect fails from a phone | Home URL still `localhost` / `10.0.2.2`, or port 8443 not reachable on LAN |
 | Call rings, no audio | Coturn profile not up; `NEMO_TURN_URL` is still `127.0.0.1` on a phone |
 | TURN 401 | `NEMO_TURN_SECRET` missing on `nemo-server` or not the same as coturn `--static-auth-secret` |
-| App will not install | Device below Android 16 |
+| App will not install | Device below Android 15 (minSdk 35) |

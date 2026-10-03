@@ -127,3 +127,4 @@ Rejected: UniFFI is the Kotlin/Swift path; flutter_rust_bridge assumes Flutter.
 - 2026-09-21 — Amendment: Compose/UniFFI is Android, Linux, and Windows. iOS Swift bindings are out of scope (ADR-0026).
 - 2026-09-21 — Amendment: High/Maximum client→home uses SOCKS5 to Arti, not a system `tor` binary.
 - 2026-09-29 — Amendment: FCM rejected; push entries above updated to no-platform-push.
+- 2026-10-03 — Amendment: Cargo workspace exists (`nemo-wire`, `nemo-core`, `nemo-server`, `nemo-ffi`) because phases 1–8 are complete. The `no workspace until protocols exist` planning clause is spent.

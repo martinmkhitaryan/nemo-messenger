@@ -1,4 +1,4 @@
-# ADR-0026: Android, Linux and Windows first; iOS later; shared Rust core
+# ADR-0026: Android, Linux and Windows; iOS, macOS and web out of scope; shared Rust core
 
 - **Status:** Accepted
 - **Date:** 2026-09-19

@@ -4,5 +4,6 @@ members = ["crates/nemo-wire", "crates/nemo-core", "crates/nemo-server", "crates
 
 [workspace.package]
 edition = "2021"
+# Workspace default applies to nemo-wire only; nemo-core/nemo-ffi override to AGPL-3.0-only per-crate.
 license = "MIT"
 repository = "https://github.com/martinmkhitaryan/nemo-messenger"
