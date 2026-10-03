@@ -61,6 +61,21 @@ internal fun peerAccentColor(key: String): Color {
     return PEER_ACCENT_COLORS[h % PEER_ACCENT_COLORS.size]
 }
 
+/**
+ * Stable accent key for a quoted message: same user must always map to the
+ * same color. Never include [DisplayRow.convSeq] — sender ids are blank for
+ * own messages, so seq-qualified fallbacks change color per message.
+ */
+internal fun quoteAccentKey(quote: DisplayRow): String = when {
+    quote.outgoing -> "you"
+    quote.senderId.isNotBlank() -> quote.senderId
+    quote.convId.isNotBlank() -> quote.convId
+    else -> "peer"
+}
+
+/** Fixed horizontal chrome of [ReplyQuoteHeader]: bar start + bar + gaps + end padding. */
+internal const val REPLY_QUOTE_DECOR_DP: Int = 27
+
 internal fun quoteAuthorName(quote: DisplayRow, mine: Boolean, contacts: Map<String, String> = emptyMap()): String = when {
     quote.outgoing || mine -> "You"
     quote.senderName.isNotBlank() -> quote.senderName
@@ -84,7 +99,7 @@ internal fun ReplyQuoteHeader(
     onJump: (() -> Unit)? = null,
     contacts: Map<String, String> = emptyMap(),
 ) {
-    val accent = peerAccentColor(quote.senderId.ifBlank { quote.convId + quote.convSeq.toString() })
+    val accent = peerAccentColor(quoteAccentKey(quote))
     val author = quoteAuthorName(quote, mine = false, contacts = contacts)
     Row(
         modifier = Modifier

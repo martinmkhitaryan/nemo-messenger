@@ -226,6 +226,43 @@ class UiDisplayTest {
         assertNull(shareCardBytes("nemo:1:zz"))
     }
 
+    @Test
+    fun quoteAccentStablePerUser() {
+        fun q(outgoing: Boolean, senderId: String, convId: String, seq: ULong) = DisplayRow(
+            convId = convId,
+            convSeq = seq,
+            text = "hi",
+            sentAt = 1UL,
+            fileName = "",
+            fileMime = "",
+            fileBytes = byteArrayOf(),
+            fetchToken = "",
+            kind = "",
+            emoji = "",
+            target = 0UL,
+            hidden = false,
+            displayedAt = 1UL,
+            outgoing = outgoing,
+            senderId = senderId,
+            senderName = "",
+            replyTo = 0UL,
+        )
+        // Own messages: blank senderId, different seq must still share one color.
+        val mine1 = q(true, "", "ab".repeat(32), 1UL)
+        val mine2 = q(true, "", "ab".repeat(32), 2UL)
+        assertEquals(quoteAccentKey(mine1), quoteAccentKey(mine2))
+        assertEquals(peerAccentColor(quoteAccentKey(mine1)), peerAccentColor(quoteAccentKey(mine2)))
+        // 1:1 incoming with blank senderId: stable per conversation, ignores seq.
+        val peer1 = q(false, "", "cd".repeat(32), 1UL)
+        val peer2 = q(false, "", "cd".repeat(32), 2UL)
+        assertEquals(quoteAccentKey(peer1), quoteAccentKey(peer2))
+        // Group: stable per sender, ignores seq.
+        val g1 = q(false, "senderA", "group1", 1UL)
+        val g2 = q(false, "senderA", "group1", 9UL)
+        assertEquals(quoteAccentKey(g1), quoteAccentKey(g2))
+        assertEquals(peerAccentColor(quoteAccentKey(g1)), peerAccentColor(quoteAccentKey(g2)))
+    }
+
     private fun row(
         kind: String = "",
         text: String = "hello",

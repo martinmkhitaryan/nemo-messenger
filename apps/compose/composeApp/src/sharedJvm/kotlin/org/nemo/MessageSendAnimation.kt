@@ -126,6 +126,8 @@ internal fun BubbleContent(
     forceCorner: Boolean = false,
     /** Quoted preview text: widens the bubble, so the probe must know it. */
     quoteText: String = "",
+    /** Quoted author line: may be wider than the preview, plus header chrome. */
+    quoteAuthorText: String = "",
     /** Group sender label: same, may be the widest child. */
     senderText: String = "",
     modifier: Modifier = Modifier,
@@ -137,7 +139,7 @@ internal fun BubbleContent(
     val timeStyle = MaterialTheme.typography.labelSmall
     val smallStyle = MaterialTheme.typography.bodySmall
     val labelStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
-    val layout = remember(text, timeLabel, hasStatus, measureWidth, forceCorner, quoteText, senderText) {
+    val layout = remember(text, timeLabel, hasStatus, measureWidth, forceCorner, quoteText, quoteAuthorText, senderText) {
         val contentPx = with(density) { measureWidth.roundToPx() }.coerceAtLeast(1)
         fun natural(t: String, style: TextStyle): Int {
             if (t.isEmpty()) return 0
@@ -146,11 +148,22 @@ internal fun BubbleContent(
         val timeWidthPx = measurer.measure(text = timeLabel, style = timeStyle).size.width +
             with(density) { 8.dp.roundToPx() } +
             if (hasStatus) with(density) { 17.dp.roundToPx() } else 0
+        // Quote header width: max(author, preview) + fixed chrome (bar + gaps).
+        // Without the chrome the text box renders narrower than the header above
+        // it, so a wide quote leaves the corner time stranded mid-bubble.
+        val quoteHeaderPx = if (quoteText.isEmpty() && quoteAuthorText.isEmpty()) {
+            0
+        } else {
+            maxOf(
+                natural(quoteText, smallStyle),
+                natural(quoteAuthorText, labelStyle),
+            ) + with(density) { REPLY_QUOTE_DECOR_DP.dp.roundToPx() }
+        }
         // True no-padding bubble width: every child renders at a width at or
         // above its natural size, so nothing reflows past this probe.
         var renderPx = maxOf(
             natural(text, bodyStyle),
-            natural(quoteText, smallStyle),
+            quoteHeaderPx,
             natural(senderText, labelStyle),
             1,
         ).coerceAtMost(contentPx)

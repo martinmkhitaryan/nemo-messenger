@@ -2286,9 +2286,7 @@ private fun ChatThread(
                                         .clip(RoundedCornerShape(2.dp))
                                         .background(
                                             peerAccentColor(
-                                                replyTo.senderId.ifBlank {
-                                                    replyTo.convId + replyTo.convSeq.toString()
-                                                },
+                                                quoteAccentKey(replyTo),
                                             ),
                                         ),
                                 )
@@ -2301,9 +2299,7 @@ private fun ChatThread(
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.SemiBold,
                                             color = peerAccentColor(
-                                                replyTo.senderId.ifBlank {
-                                                    replyTo.convId + replyTo.convSeq.toString()
-                                                },
+                                                quoteAccentKey(replyTo),
                                             ),
                                             maxLines = 1,
                                         )
@@ -3235,7 +3231,7 @@ internal fun MessageBubble(
                                     color = bodyColor,
                                 )
                                 Spacer(Modifier.height(4.dp))
-                                Box {
+                                Box(Modifier.fillMaxWidth()) {
                                     ReactionPills(
                                         pills = pills,
                                         onPillClick = onPillClick,
@@ -3273,6 +3269,9 @@ internal fun MessageBubble(
                                         shortQuoteText(
                                             if (it.fileName.isNotEmpty()) "📎 ${it.fileName}" else it.text,
                                         )
+                                    } ?: "",
+                                    quoteAuthorText = quote?.let {
+                                        quoteAuthorName(it, mine = false, contacts = contacts)
                                     } ?: "",
                                     senderText = senderLabel,
                                     status = {

@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.4.3] - 2026-10-03
+
+### Fixed
+
+- Reply quote accent is stable per user: own quotes always share one
+  color instead of changing per message (seq-qualified fallback keys
+  removed in bubble and composer preview).
+- Reply bubble timestamp pins to the bubble corner when the quote is
+  wider than the reply: the width probe now includes the quote author
+  plus header chrome, and pill rows fill the bubble width.
+
 ## [0.4.2] - 2026-10-03
 
 ### Fixed
