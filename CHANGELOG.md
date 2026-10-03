@@ -8,6 +8,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.4.4] - 2026-10-03
+
+### Fixed
+
+- Reaction-pill bubbles hug their content again: the pills row no
+  longer fills the bubble width, which had stretched incoming bubbles
+  with reactions full-width.
+
 ## [0.4.3] - 2026-10-03
 
 ### Fixed

@@ -3228,7 +3228,7 @@ internal fun MessageBubble(
                                     color = bodyColor,
                                 )
                                 Spacer(Modifier.height(4.dp))
-                                Box(Modifier.fillMaxWidth()) {
+                                Box {
                                     ReactionPills(
                                         pills = pills,
                                         onPillClick = onPillClick,
