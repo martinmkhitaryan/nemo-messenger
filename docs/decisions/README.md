@@ -13,7 +13,7 @@ Each decision lives in its own file and is never edited to say something differe
 
 ## Decision log
 
-IDs match reading order (foundations first). New records take the next free number (0036 is next) and are listed where a reader should encounter the decision.
+IDs match reading order (foundations first). New records take the next free number (0037 is next) and are listed where a reader should encounter the decision.
 
 ### Foundations
 
@@ -69,6 +69,7 @@ IDs match reading order (foundations first). New records take the next free numb
 | ID | Date | Title | Status |
 | --- | --- | --- | --- |
 | [ADR-0024](0024-voice-call-architecture.md) | 2026-09-19 | Voice call architecture: E2EE signaling, WebRTC media, SFrame keyed from MLS for groups | Accepted |
+| [ADR-0036](0036-android-in-app-keyboard.md) | 2026-10-04 | Android in-app keyboard (opt-in, nice-to-have); system IME stays default | Proposed |
 
 ### Product and process
 
@@ -92,7 +93,7 @@ IDs match reading order (foundations first). New records take the next free numb
 
 ## Adding a decision
 
-1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0036 is next).
+1. Copy `TEMPLATE.md` to `NNNN-short-title.md` with the next free number (0037 is next).
 2. Fill in every section. "Alternatives considered" and "Cons" are mandatory; a decision without a stated cost has not been thought through.
 3. Add a row to the log above under the fitting heading.
 4. Update the affected sections of `../../README.md` so the specification and the record agree, and add the record to the summary table in README section 0.
