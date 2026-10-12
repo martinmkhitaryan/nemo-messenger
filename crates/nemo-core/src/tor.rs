@@ -19,6 +19,17 @@ pub fn is_loopback_origin(base: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
 }
 
+/// Cleartext HTTP is loopback-only, plus the Android emulator's host alias
+/// (`10.0.2.2` is the machine running the emulator). Same exception as
+/// `network_security_config.xml`. Not a LAN exemption — phones use HTTPS.
+pub fn allow_cleartext_http(base: &str) -> bool {
+    is_loopback_origin(base) || is_android_emulator_host(base)
+}
+
+fn is_android_emulator_host(base: &str) -> bool {
+    cfg!(target_os = "android") && origin_host(base) == "10.0.2.2"
+}
+
 pub fn socks_addr() -> String {
     std::env::var("NEMO_TOR_SOCKS").unwrap_or_else(|_| "127.0.0.1:9150".into())
 }
@@ -222,5 +233,13 @@ mod tests {
         assert!(is_loopback_origin("http://127.0.0.1:8787"));
         assert!(is_loopback_origin("https://localhost:8443"));
         assert!(!is_loopback_origin("https://home.example:8443"));
+        assert!(!is_loopback_origin("http://10.0.2.2:18787"));
+        assert!(!is_loopback_origin("http://192.168.1.20:8787"));
+        assert!(super::allow_cleartext_http("http://127.0.0.1:18787"));
+        assert!(!super::allow_cleartext_http("http://192.168.1.20:18787"));
+        assert_eq!(
+            super::allow_cleartext_http("http://10.0.2.2:18787"),
+            cfg!(target_os = "android")
+        );
     }
 }

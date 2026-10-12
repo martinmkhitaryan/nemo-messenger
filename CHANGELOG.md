@@ -29,6 +29,11 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Signed prekey rotation every 48h. Client-side `SigningKeyReplace`.
 - Security-review playbook in `docs/security-review.md`.
 
+### Fixed
+
+- Android emulator instrumented tests: allow cleartext HTTP to `10.0.2.2`
+  (the emulator's host loopback), matching `network_security_config.xml`.
+
 ## [0.4.6] - 2026-10-03
 
 ### Fixed

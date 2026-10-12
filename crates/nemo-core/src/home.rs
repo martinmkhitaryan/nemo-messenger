@@ -1675,7 +1675,7 @@ pub struct HttpHome {
 impl HttpHome {
     pub fn new(base: impl Into<String>) -> Result<Self> {
         let base = base.into().trim_end_matches('/').to_string();
-        if base.starts_with("http://") && !crate::tor::is_loopback_origin(&base) {
+        if base.starts_with("http://") && !crate::tor::allow_cleartext_http(&base) {
             return Err(CoreError::Transport(
                 "cleartext HTTP is only allowed on loopback".into(),
             ));
@@ -1987,6 +1987,16 @@ mod wakeup_url_tests {
             wakeup_url("http://127.0.0.1:8787"),
             "ws://127.0.0.1:8787/v1/wakeup"
         );
+    }
+
+    #[test]
+    fn http_home_cleartext_only_loopback_or_android_emulator() {
+        assert!(super::HttpHome::new("http://127.0.0.1:8787").is_ok());
+        assert!(super::HttpHome::new("http://localhost:8787").is_ok());
+        assert!(super::HttpHome::new("http://example.invalid:8787").is_err());
+        assert!(super::HttpHome::new("https://example.invalid:8443").is_ok());
+        let emulator = super::HttpHome::new("http://10.0.2.2:18787");
+        assert_eq!(emulator.is_ok(), cfg!(target_os = "android"));
     }
 
     #[test]
