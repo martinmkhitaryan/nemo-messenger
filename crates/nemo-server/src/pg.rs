@@ -27,6 +27,8 @@ pub enum PersistError {
     Sqlx(#[from] sqlx::Error),
     #[error("corrupt postgres row: {0}")]
     Corrupt(&'static str),
+    #[error(transparent)]
+    Identity(#[from] crate::identity::IdentityFileError),
 }
 
 pub type Result<T> = std::result::Result<T, PersistError>;
@@ -44,13 +46,32 @@ pub async fn connect(url: &str) -> Result<PgPool> {
 }
 
 /// Load durable state, or mint a new identity and persist it.
+///
+/// HPKE/signing secrets come from `identity_path` (0600 file). A legacy
+/// Postgres row that still holds secrets is migrated into that file once.
 pub async fn load_or_init(
     pool: &PgPool,
     host: &str,
     s2s_port: u16,
+    identity_path: &std::path::Path,
 ) -> Result<(HomeServer, GroupHost)> {
-    match load(pool).await? {
+    let file_keys = match crate::identity::load(identity_path) {
+        Ok(k) => Some(k),
+        Err(crate::identity::IdentityFileError::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound =>
+        {
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
+    match load_keys(pool, file_keys.clone()).await? {
         Some((mut home, mut groups)) => {
+            if file_keys.is_none() {
+                let (hpke, sign) = home.identity_keys();
+                crate::identity::save(identity_path, &hpke, &sign)?;
+                home.dirty.server_identity = true;
+                persist(pool, &mut home, &mut groups).await?;
+            }
             if home.bundle().host != host || home.bundle().s2s_port != s2s_port as u64 {
                 home.rebind_host(host.to_string(), s2s_port);
                 persist(pool, &mut home, &mut groups).await?;
@@ -58,7 +79,14 @@ pub async fn load_or_init(
             Ok((home, groups))
         }
         None => {
-            let mut home = HomeServer::advertise(host.to_string(), s2s_port);
+            let mut home = if let Some((hpke, sign)) = file_keys {
+                HomeServer::from_identity(hpke, sign, host.to_string(), s2s_port)
+            } else {
+                let h = HomeServer::advertise(host.to_string(), s2s_port);
+                let (hpke, sign) = h.identity_keys();
+                crate::identity::save(identity_path, &hpke, &sign)?;
+                h
+            };
             let mut groups = GroupHost::new();
             persist(pool, &mut home, &mut groups).await?;
             Ok((home, groups))
@@ -169,9 +197,9 @@ async fn upsert_server_identity(
          sign_secret = excluded.sign_secret, sign_public = excluded.sign_public, \
          host = excluded.host, s2s_port = excluded.s2s_port",
     )
-    .bind(home.hpke.secret.as_slice())
+    .bind(None::<Vec<u8>>)
     .bind(home.hpke.public.as_slice())
-    .bind(home.sign.to_bytes().as_slice())
+    .bind(None::<Vec<u8>>)
     .bind(home.sign.verifying_key().to_bytes().as_slice())
     .bind(home.bundle.host.as_str())
     .bind(home.bundle.s2s_port as i32)
@@ -546,13 +574,14 @@ async fn upsert_group(
         return Ok(());
     };
     sqlx::query(
-        "INSERT INTO groups (group_id, next_seq, bytes) VALUES ($1, $2, $3) \
+        "INSERT INTO groups (group_id, next_seq, bytes, creator) VALUES ($1, $2, $3, $4) \
          ON CONFLICT (group_id) DO UPDATE SET \
-         next_seq = excluded.next_seq, bytes = excluded.bytes",
+         next_seq = excluded.next_seq, bytes = excluded.bytes, creator = excluded.creator",
     )
     .bind(gid.0.as_slice())
     .bind(g.next_seq as i64)
     .bind(g.bytes as i64)
+    .bind(g.creator.as_ref().map(|c| c.as_slice()))
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -606,13 +635,14 @@ async fn rewrite_invites(
         return Ok(());
     }
     let mut qb = sqlx::QueryBuilder::new(
-        "INSERT INTO group_invites (group_id, nonce, expires_at, invitee_binding) ",
+        "INSERT INTO group_invites (group_id, nonce, expires_at, invitee_binding, salt) ",
     );
     qb.push_values(g.invites.iter(), |mut b, (nonce, inv)| {
         b.push_bind(gid.0.as_slice())
             .push_bind(nonce.as_slice())
             .push_bind(inv.expires_at as i64)
-            .push_bind(inv.invitee_binding.as_ref().map(|x| x.as_slice()));
+            .push_bind(inv.invitee_binding.as_ref().map(|x| x.as_slice()))
+            .push_bind(inv.salt.as_ref().map(|x| x.as_slice()));
     });
     qb.build().execute(&mut **tx).await?;
     Ok(())
@@ -635,14 +665,17 @@ async fn rewrite_pending(
     }
     let mut qb = sqlx::QueryBuilder::new(
         "INSERT INTO group_pending \
-         (group_id, pending_id, credential_id, credential_secret, expires_at) ",
+         (group_id, pending_id, credential_id, credential_secret, expires_at, \
+          invitee_binding, salt) ",
     );
     qb.push_values(g.pending.iter(), |mut b, (pid, p)| {
         b.push_bind(gid.0.as_slice())
             .push_bind(pid.as_slice())
             .push_bind(p.cred.credential_id.as_slice())
             .push_bind(p.cred.credential_secret.as_slice())
-            .push_bind(p.expires_at as i64);
+            .push_bind(p.expires_at as i64)
+            .push_bind(p.invitee_binding.as_ref().map(|x| x.as_slice()))
+            .push_bind(p.salt.as_ref().map(|x| x.as_slice()));
     });
     qb.build().execute(&mut **tx).await?;
     Ok(())
@@ -715,6 +748,13 @@ async fn upsert_file(
 }
 
 pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
+    load_keys(pool, None).await
+}
+
+pub async fn load_keys(
+    pool: &PgPool,
+    keys: Option<(HpkeKeypair, SigningKey)>,
+) -> Result<Option<(HomeServer, GroupHost)>> {
     let ident = sqlx::query(
         "SELECT hpke_secret, hpke_public, sign_secret, sign_public, host, s2s_port \
          FROM server_identity",
@@ -725,17 +765,36 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
         return Ok(None);
     };
 
-    let hpke_secret: Vec<u8> = ident.try_get("hpke_secret")?;
+    let hpke_secret: Option<Vec<u8>> = ident.try_get("hpke_secret")?;
     let hpke_public: Vec<u8> = ident.try_get("hpke_public")?;
-    let sign_secret: Vec<u8> = ident.try_get("sign_secret")?;
+    let sign_secret: Option<Vec<u8>> = ident.try_get("sign_secret")?;
     let host: String = ident.try_get("host")?;
     let s2s_port: i32 = ident.try_get("s2s_port")?;
-    let hpke = HpkeKeypair {
-        public: key32(&hpke_public)?,
-        secret: key32(&hpke_secret)?,
+    let (hpke, sign) = match keys {
+        Some((hpke, sign)) => {
+            if hpke.public.as_slice() != hpke_public.as_slice() {
+                return Err(PersistError::Corrupt("identity file hpke does not match row"));
+            }
+            (hpke, sign)
+        }
+        None => {
+            let secret = hpke_secret
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or(PersistError::Corrupt("server identity secrets missing"))?;
+            let sign_bytes = sign_secret
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .ok_or(PersistError::Corrupt("server identity secrets missing"))?;
+            (
+                HpkeKeypair {
+                    public: key32(&hpke_public)?,
+                    secret: key32(secret)?,
+                },
+                SigningKey::from_bytes(&key32(sign_bytes)?),
+            )
+        }
     };
-    let sign_bytes = key32(&sign_secret)?;
-    let sign = SigningKey::from_bytes(&sign_bytes);
     let mut home = HomeServer::from_identity(hpke, sign, host, s2s_port as u16);
     let mut groups = GroupHost::new();
 
@@ -868,7 +927,7 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
         home.memberships.entry(id).or_default().push(gid);
     }
 
-    let g_rows = sqlx::query("SELECT group_id, next_seq, bytes FROM groups")
+    let g_rows = sqlx::query("SELECT group_id, next_seq, bytes, creator FROM groups")
         .fetch_all(pool)
         .await?;
     for row in g_rows {
@@ -882,6 +941,7 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
                 pending: HashMap::new(),
                 bytes: row.try_get::<i64, _>("bytes")? as u64,
                 stream: Vec::new(),
+                creator: opt_key(row.try_get("creator")?)?,
             },
         );
     }
@@ -920,7 +980,7 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
     }
 
     let inv_rows =
-        sqlx::query("SELECT group_id, nonce, expires_at, invitee_binding FROM group_invites")
+        sqlx::query("SELECT group_id, nonce, expires_at, invitee_binding, salt FROM group_invites")
             .fetch_all(pool)
             .await?;
     for row in inv_rows {
@@ -932,14 +992,15 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
                 StoredInvite {
                     expires_at: row.try_get::<i64, _>("expires_at")? as u64,
                     invitee_binding: opt_key(row.try_get("invitee_binding")?)?,
+                    salt: opt_key(row.try_get("salt")?)?,
                 },
             );
         }
     }
 
     let pend_rows = sqlx::query(
-        "SELECT group_id, pending_id, credential_id, credential_secret, expires_at \
-         FROM group_pending",
+        "SELECT group_id, pending_id, credential_id, credential_secret, expires_at, \
+         invitee_binding, salt FROM group_pending",
     )
     .fetch_all(pool)
     .await?;
@@ -959,6 +1020,8 @@ pub async fn load(pool: &PgPool) -> Result<Option<(HomeServer, GroupHost)>> {
                         )?,
                     },
                     expires_at: row.try_get::<i64, _>("expires_at")? as u64,
+                    invitee_binding: opt_key(row.try_get("invitee_binding")?)?,
+                    salt: opt_key(row.try_get("salt")?)?,
                 },
             );
         }

@@ -19,6 +19,11 @@ pub const SIGNING_KEY_REPLACE: &str = "signing-key-replace";
 pub const SERVER_BUNDLE: &str = "server-bundle";
 pub const SERVER_SIGN_ROTATE: &str = "server-sign-rotate";
 pub const MAILBOX_OWNER: &str = "mailbox-owner";
+/// Identity-key signature inside a 1:1 session binding the Nemo identity to
+/// the libsignal session key and the offered contact capability.
+pub const CAPABILITY_INTRO: &str = "capability-intro";
+/// Home-server signature over an HTTP response (`nemo-server-sig`).
+pub const SERVER_RESPONSE: &str = "server-response";
 
 pub fn message(context: &str, payload: &[u8]) -> Result<Vec<u8>> {
     if context.is_empty() || context.contains('/') || !context.is_ascii() {

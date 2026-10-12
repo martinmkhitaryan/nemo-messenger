@@ -21,7 +21,10 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/nemo-server /usr/local/bin/nemo-server
+RUN mkdir -p /var/lib/nemo && chown nobody:nogroup /var/lib/nemo
 ENV NEMO_LISTEN=0.0.0.0:8787
+ENV NEMO_IDENTITY_FILE=/var/lib/nemo/identity.cbor
 EXPOSE 8787
+VOLUME ["/var/lib/nemo"]
 USER nobody
 CMD ["nemo-server"]

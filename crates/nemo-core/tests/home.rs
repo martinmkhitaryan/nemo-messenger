@@ -73,6 +73,12 @@ impl HomeTransport for RouterTransport {
             .await
             .map_err(|_| CoreError::HomeHttp(0))?;
         let status = res.status().as_u16();
+        let mut headers = Vec::new();
+        for (k, v) in res.headers() {
+            if let Ok(v) = v.to_str() {
+                headers.push((k.as_str().to_string(), v.to_string()));
+            }
+        }
         let body = res
             .into_body()
             .collect()
@@ -80,7 +86,11 @@ impl HomeTransport for RouterTransport {
             .map_err(|_| CoreError::HomeHttp(status))?
             .to_bytes()
             .to_vec();
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
+        })
     }
 }
 
@@ -603,7 +613,7 @@ async fn add_contact_fetches_discovery_and_prekey_on_peer_home() {
 
 #[tokio::test]
 async fn bob_replies_after_capability_intro_without_card() {
-    use nemo_core::{encode, AppBody, AppHeader, AppMessage, CapabilityIntro};
+    use nemo_core::{encode, AppBody, AppHeader, AppMessage};
 
     let transport = RouterTransport::single(router(AppState::new()));
     let now = now_unix();
@@ -629,13 +639,12 @@ async fn bob_replies_after_capability_intro_without_card() {
         },
         body: AppBody::Capability {
             contact_capability: alice_cap,
-            intro: Some(CapabilityIntro {
-                identity_id: alice.identity_id(),
-                identity_public_key: alice.install.identity_public_key(),
-                revocation_public_key: alice.install.revocation_public_key(),
-                dest_hpke: alice.hpke_public(),
-                binding_seq: alice.install.binding_seq(),
-            }),
+            intro: Some(
+                alice
+                    .install
+                    .sign_capability_intro(bob.identity_id(), alice_cap, alice.hpke_public())
+                    .unwrap(),
+            ),
         },
     })
     .unwrap();

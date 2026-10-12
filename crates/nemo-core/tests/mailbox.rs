@@ -21,8 +21,11 @@ fn two_member_group() -> (Installation, Installation, Group, Group) {
     let mut reserved = [0u8; 32];
     rand::rng().fill_bytes(&mut reserved);
     let pending = bob.prepare_join(reserved).unwrap();
-    let (_commit, welcome) = alice_group
-        .admit(alice.mls_provider(), &pending.key_package)
+    let (commit, welcome) = alice_group
+        .admit(alice.mls_provider(), &pending.key_package, reserved)
+        .unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &commit)
         .unwrap();
     let bob_group = pending.join(bob.mls_provider(), &welcome).unwrap();
     (alice, bob, alice_group, bob_group)
@@ -138,7 +141,7 @@ fn welcome_through_mailbox() {
     rand::rng().fill_bytes(&mut reserved);
     let pending = bob.prepare_join(reserved).unwrap();
     let (_commit, welcome) = alice_group
-        .admit(alice.mls_provider(), &pending.key_package)
+        .admit(alice.mls_provider(), &pending.key_package, reserved)
         .unwrap();
     let outer =
         Group::wrap_handshake(&bob_server.public, cap, TtlBucket::DEFAULT, welcome).unwrap();
@@ -154,14 +157,15 @@ fn remove_bundle_through_mailbox() {
     let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
     let bob_server = HpkeKeypair::generate();
     let cap = random_capability();
+    let host = [0x11u8; 32];
     let bundle = alice_group
-        .remove(alice.mls_provider(), bob_group.credential_id())
+        .remove(alice.mls_provider(), host, bob_group.credential_id())
         .unwrap();
     let outer = Group::wrap_remove(&bob_server.public, cap, TtlBucket::DEFAULT, &bundle).unwrap();
     let inner = mailbox::deliver(&bob_server, &outer).unwrap();
     assert_eq!(inner.padded_message.type_, MessageType::RemoveBundle);
     bob_group
-        .apply_remove_from_mailbox(bob.mls_provider(), &inner)
+        .apply_remove_from_mailbox(bob.mls_provider(), &host, &inner)
         .unwrap();
     assert_eq!(bob_group.member_count(), 1);
 }

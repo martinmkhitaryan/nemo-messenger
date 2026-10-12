@@ -32,8 +32,16 @@ fn register(home: &mut HomeServer) -> (SigningKey, [u8; KEY_LEN]) {
     (sk, id)
 }
 
-fn auth(sk: &SigningKey, id: [u8; KEY_LEN], ts: u64) -> MailboxOwnerAuth {
-    MailboxOwnerAuth::sign(sk, id.to_vec(), 0, 16, ts).unwrap()
+fn auth(sk: &SigningKey, id: [u8; KEY_LEN], ts: u64, server_id: [u8; KEY_LEN]) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        0,
+        16,
+        ts,
+        nemo_wire::AuthScope::body(server_id, "POST", "/v1/mailbox/fetch"),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -65,7 +73,8 @@ async fn mtls_forwards_envelope() {
 
     let mut home_b = state_b.home.lock().await;
     let now = home_b.now;
-    let rows = home_b.fetch(bob, &auth(&bob_sk, bob, now), now).unwrap();
+    let sid = home_b.server_id();
+    let rows = home_b.fetch(bob, &auth(&bob_sk, bob, now, sid), now).unwrap();
     assert_eq!(rows.len(), 1);
 }
 
@@ -165,8 +174,9 @@ async fn expired_outbound_is_expired_over_wire() {
     assert_eq!(state_a.home.lock().await.outbound_len(), 0);
     let mut home_b = state_b.home.lock().await;
     let now = home_b.now;
+    let sid = home_b.server_id();
     assert!(home_b
-        .fetch(bob, &auth(&bob_sk, bob, now), now)
+        .fetch(bob, &auth(&bob_sk, bob, now, sid), now)
         .unwrap()
         .is_empty());
 }

@@ -15,7 +15,8 @@ use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{MessageType, OuterEnvelope};
 use nemo_wire::ids::{self, IdentityId, KEY_LEN};
 use nemo_wire::{
-    ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, MailboxOwnerAuth, RevocationStatement,
+    AuthScope, ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, MailboxOwnerAuth,
+    RevocationStatement, RESPONSE_NONCE_HEADER, RESPONSE_SIG_HEADER, sign_response,
 };
 use sqlx::PgPool;
 use tokio::sync::Notify;
@@ -97,13 +98,46 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups/{id}/accept", post(group_accept))
         .route("/v1/groups/{id}/admit", post(group_admit))
         .route("/v1/groups/{id}/fanout", post(group_fanout))
+        .route("/v1/groups/{id}/pending-lookup", post(group_pending_lookup))
         .route(
             "/v1/groups/{id}/files/{token}",
             get(group_fetch_file).post(group_upload_file),
         )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
-        .layer(middleware::from_fn_with_state(persist_state, persist_after))
+        .layer(middleware::from_fn_with_state(persist_state.clone(), persist_after))
+        .layer(middleware::from_fn_with_state(persist_state, sign_after))
         .with_state(state)
+}
+
+async fn sign_after(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let nonce = header_token(req.headers(), RESPONSE_NONCE_HEADER);
+    let res = next.run(req).await;
+    let Some(nonce) = nonce else {
+        return res;
+    };
+    let status = res.status();
+    let headers = res.headers().clone();
+    let body_bytes = match axum::body::to_bytes(res.into_body(), BODY_LIMIT).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sig = {
+        let home = st.home.lock().await;
+        match sign_response(&home.sign, &nonce, status.as_u16(), &body_bytes) {
+            Ok(s) => s,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    };
+    let mut signed = Response::new(axum::body::Body::from(body_bytes));
+    *signed.status_mut() = status;
+    *signed.headers_mut() = headers;
+    if let Ok(v) = header::HeaderValue::from_str(&ids::to_hex(&sig)) {
+        signed.headers_mut().insert(
+            header::HeaderName::from_static(RESPONSE_SIG_HEADER),
+            v,
+        );
+    }
+    signed
 }
 
 async fn persist_after(State(st): State<AppState>, req: Request, next: Next) -> Response {
@@ -220,7 +254,8 @@ async fn upload_prekey(State(st): State<AppState>, headers: HeaderMap, body: Byt
     };
     let mut home = st.home.lock().await;
     home.now = unix_now();
-    if let Err(e) = home.check_owner(owner, &auth, unix_now()) {
+    let scope = AuthScope::header(home.server_id(), "POST", "/v1/prekeys", &body);
+    if let Err(e) = home.check_owner(owner, &auth, unix_now(), &scope) {
         return map_err(e);
     }
     match home.publish_prekey(owner, body.to_vec()) {
@@ -307,8 +342,9 @@ async fn issue_turn(State(st): State<AppState>, headers: HeaderMap) -> Response 
         Ok(v) => v,
         Err(s) => return s.into_response(),
     };
-    let home = st.home.lock().await;
-    if let Err(e) = home.check_owner(owner, &auth, unix_now()) {
+    let mut home = st.home.lock().await;
+    let scope = AuthScope::header(home.server_id(), "POST", "/v1/turn", &[]);
+    if let Err(e) = home.check_owner(owner, &auth, unix_now(), &scope) {
         return map_err(e).into_response();
     }
     drop(home);
@@ -328,7 +364,13 @@ async fn mint_token(st: AppState, headers: HeaderMap, share: bool) -> Response {
     };
     let mut home = st.home.lock().await;
     home.now = unix_now();
-    if let Err(e) = home.check_owner(owner, &auth, unix_now()) {
+    let path = if share {
+        "/v1/tokens/share"
+    } else {
+        "/v1/tokens/contact"
+    };
+    let scope = AuthScope::header(home.server_id(), "POST", path, &[]);
+    if let Err(e) = home.check_owner(owner, &auth, unix_now(), &scope) {
         return map_err(e).into_response();
     }
     let minted = if share {
@@ -369,8 +411,9 @@ async fn wakeup(State(st): State<AppState>, headers: HeaderMap, ws: WebSocketUpg
         Err(s) => return s.into_response(),
     };
     {
-        let home = st.home.lock().await;
-        if let Err(e) = home.check_owner(owner, &auth, unix_now()) {
+        let mut home = st.home.lock().await;
+        let scope = AuthScope::header(home.server_id(), "GET", "/v1/wakeup", &[]);
+        if let Err(e) = home.check_owner(owner, &auth, unix_now(), &scope) {
             return map_err(e).into_response();
         }
     }
@@ -411,7 +454,11 @@ async fn run_wakeup(st: AppState, owner: IdentityId, cursor: u64, mut ws: WebSoc
     }
 }
 
-async fn create_group(State(st): State<AppState>, body: Bytes) -> Response {
+async fn create_group(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let (owner, auth) = match require_owner(&headers) {
+        Ok(v) => v,
+        Err(s) => return s.into_response(),
+    };
     let Some(m) = decode_map(&body) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -424,14 +471,25 @@ async fn create_group(State(st): State<AppState>, body: Bytes) -> Response {
     let Ok(hpke) = read_key(&m, 2) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    {
+        let mut home = st.home.lock().await;
+        let scope = AuthScope::header(home.server_id(), "POST", "/v1/groups", &body);
+        if let Err(e) = home.check_owner(owner, &auth, unix_now(), &scope) {
+            return map_err(e).into_response();
+        }
+        if home.capability_mailbox(&cap) != Some(owner) || !fanout_ok(&home, cap, hpke) {
+            return denied().into_response();
+        }
+    }
     let mut host = st.groups.lock().await;
     host.now = unix_now();
-    match host.create_group(
+    match host.create_group_for(
         signing_pk,
         FanoutTarget {
             delivery_capability: cap,
             home_hpke_public: hpke,
         },
+        Some(owner),
     ) {
         Ok(created) => cbor_ok(cbor::encode(&Value::Map(vec![
             (0, Value::Bytes(created.group_id.0.to_vec())),
@@ -539,6 +597,9 @@ async fn group_accept(State(st): State<AppState>, Path(id): Path<String>, body: 
             if let Some(b) = pending.invitee_binding {
                 pairs.push((3, Value::Bytes(b.to_vec())));
             }
+            if let Some(s) = pending.salt {
+                pairs.push((4, Value::Bytes(s.to_vec())));
+            }
             cbor_ok(cbor::encode(&Value::Map(pairs)))
         }
         Err(e) => map_err(e).into_response(),
@@ -570,6 +631,12 @@ async fn group_admit(State(st): State<AppState>, Path(id): Path<String>, body: B
     let Ok(hpke) = read_key(&m, 5) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    {
+        let home = st.home.lock().await;
+        if !fanout_ok(&home, cap, hpke) {
+            return denied().into_response();
+        }
+    }
     let mut host = st.groups.lock().await;
     host.now = unix_now();
     match host.admit(
@@ -610,6 +677,12 @@ async fn group_fanout(
     let Ok(hpke) = read_key(&m, 3) else {
         return StatusCode::BAD_REQUEST;
     };
+    {
+        let home = st.home.lock().await;
+        if !fanout_ok(&home, cap, hpke) {
+            return StatusCode::FORBIDDEN;
+        }
+    }
     let mut host = st.groups.lock().await;
     host.now = unix_now();
     match host.refresh_fanout(
@@ -666,6 +739,46 @@ async fn group_fetch_file(
     match host.fetch_file(group_id, &cred, fetch_token) {
         Ok(blob) => ([(header::CONTENT_TYPE, "application/octet-stream")], blob).into_response(),
         Err(e) => map_err(e).into_response(),
+    }
+}
+
+async fn group_pending_lookup(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(group_id) = parse_group_id(&id) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(m) = decode_map(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(cred) = read_cred(&m) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(pending_id) = read_key(&m, 2) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let host = st.groups.lock().await;
+    match host.lookup_pending(group_id, &cred, pending_id) {
+        Ok(looked) => {
+            let mut pairs = vec![(0, Value::Bytes(looked.credential_id.to_vec()))];
+            if let Some(b) = looked.invitee_binding {
+                pairs.push((1, Value::Bytes(b.to_vec())));
+            }
+            if let Some(s) = looked.salt {
+                pairs.push((2, Value::Bytes(s.to_vec())));
+            }
+            cbor_ok(cbor::encode(&Value::Map(pairs)))
+        }
+        Err(e) => map_err(e).into_response(),
+    }
+}
+
+fn fanout_ok(home: &HomeServer, cap: [u8; KEY_LEN], hpke: [u8; KEY_LEN]) -> bool {
+    match home.capability_mailbox(&cap) {
+        Some(_) => hpke == home.hpke_public(),
+        None => hpke != home.hpke_public() && home.fanout_hpke_allowed(&hpke),
     }
 }
 

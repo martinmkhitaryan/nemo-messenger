@@ -6,8 +6,8 @@ use nemo_wire::envelope::{InnerEnvelope, MessageType, PaddedMessage, TtlBucket};
 use nemo_wire::hpke::seal_to_server;
 use nemo_wire::ids::KEY_LEN;
 use nemo_wire::{
-    identity_id, AttachmentReserve, AttachmentSizeBucket, ContactCard, GroupAdmit, GroupInvite,
-    HomeServerBinding, MailboxOwnerAuth, RemoveBundle, RevocationStatement, SigningKey,
+    identity_id, AttachmentReserve, AttachmentSizeBucket, AuthScope, ContactCard, GroupAdmit,
+    GroupInvite, HomeServerBinding, MailboxOwnerAuth, RemoveBundle, RevocationStatement, SigningKey,
     INTRO_TTL_30_MIN,
 };
 use rand::Rng;
@@ -39,8 +39,59 @@ fn register(home: &mut HomeServer) -> (SigningKey, [u8; KEY_LEN]) {
     (sk, id)
 }
 
-fn auth(sk: &SigningKey, id: [u8; KEY_LEN], cursor: u64, limit: u64, ts: u64) -> MailboxOwnerAuth {
-    MailboxOwnerAuth::sign(sk, id.to_vec(), cursor, limit, ts).unwrap()
+fn fetch_auth(
+    sk: &SigningKey,
+    id: [u8; KEY_LEN],
+    cursor: u64,
+    limit: u64,
+    ts: u64,
+    server_id: [u8; KEY_LEN],
+) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        cursor,
+        limit,
+        ts,
+        AuthScope::body(server_id, "POST", "/v1/mailbox/fetch"),
+    )
+    .unwrap()
+}
+
+fn ack_auth(
+    sk: &SigningKey,
+    id: [u8; KEY_LEN],
+    cursor: u64,
+    ts: u64,
+    server_id: [u8; KEY_LEN],
+) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        cursor,
+        1,
+        ts,
+        AuthScope::body(server_id, "POST", "/v1/mailbox/ack"),
+    )
+    .unwrap()
+}
+
+fn env_auth(
+    sk: &SigningKey,
+    id: [u8; KEY_LEN],
+    ts: u64,
+    server_id: [u8; KEY_LEN],
+    outer: &nemo_wire::OuterEnvelope,
+) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        0,
+        16,
+        ts,
+        AuthScope::header(server_id, "POST", "/v1/envelopes", &outer.encode()),
+    )
+    .unwrap()
 }
 
 fn ingest_outers(homes: &mut [&mut HomeServer], outers: Vec<nemo_wire::OuterEnvelope>) {
@@ -130,24 +181,39 @@ fn owner_fetch_ack_not_capability() {
 
     let ts = home.now;
     let stranger = SigningKey::generate(&mut rand::rng());
-    let bad = auth(&stranger, id, 0, 16, ts);
+    let bad = fetch_auth(&stranger, id, 0, 16, ts, home.server_id());
     assert!(home.fetch(id, &bad, ts).is_err());
 
-    let rows = home.fetch(id, &auth(&sk, id, 0, 16, ts), ts).unwrap();
+    let rows = home
+        .fetch(id, &fetch_auth(&sk, id, 0, 16, ts, home.server_id()), ts)
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].seq, 1);
 
-    let stale = auth(&sk, id, 0, 16, ts.saturating_sub(121));
+    let stale = fetch_auth(&sk, id, 0, 16, ts.saturating_sub(121), home.server_id());
     assert!(matches!(
         home.fetch(id, &stale, ts),
         Err(ServerError::OwnerAuth)
     ));
 
-    home.ack(id, &auth(&sk, id, 1, 0, ts), ts).unwrap();
+    home.ack(id, &ack_auth(&sk, id, 1, ts, home.server_id()), ts).unwrap();
     assert!(home
-        .fetch(id, &auth(&sk, id, 0, 16, ts), ts)
+        .fetch(id, &fetch_auth(&sk, id, 0, 16, ts, home.server_id()), ts)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn owner_auth_nonce_cannot_be_replayed() {
+    let mut home = HomeServer::new();
+    let (sk, id) = register(&mut home);
+    let ts = home.now;
+    let auth = fetch_auth(&sk, id, 0, 16, ts, home.server_id());
+    home.fetch(id, &auth, ts).unwrap();
+    assert!(matches!(
+        home.fetch(id, &auth, ts),
+        Err(ServerError::OwnerAuth)
+    ));
 }
 
 #[test]
@@ -208,7 +274,7 @@ fn ttl_expires_before_fetch() {
     .unwrap();
     home.now += 61;
     assert!(home
-        .fetch(id, &auth(&sk, id, 0, 16, home.now), home.now)
+        .fetch(id, &fetch_auth(&sk, id, 0, 16, home.now, home.server_id()), home.now)
         .unwrap()
         .is_empty());
 }
@@ -232,7 +298,7 @@ fn retention_drops_oldest() {
         .unwrap();
     }
     let rows = home
-        .fetch(id, &auth(&sk, id, 0, 16, home.now), home.now)
+        .fetch(id, &fetch_auth(&sk, id, 0, 16, home.now, home.server_id()), home.now)
         .unwrap();
     assert!(rows.len() < 3);
     assert_eq!(rows.last().map(|r| r.seq), Some(3));
@@ -297,14 +363,14 @@ fn group_fanout_and_remove() {
     let alice_rows = alice_home
         .fetch(
             alice_id,
-            &auth(&alice_sk, alice_id, 0, 16, alice_home.now),
+            &fetch_auth(&alice_sk, alice_id, 0, 16, alice_home.now, alice_home.server_id()),
             alice_home.now,
         )
         .unwrap();
     let bob_rows = bob_home
         .fetch(
             bob_id,
-            &auth(&bob_sk, bob_id, 0, 16, bob_home.now),
+            &fetch_auth(&bob_sk, bob_id, 0, 16, bob_home.now, bob_home.server_id()),
             bob_home.now,
         )
         .unwrap();
@@ -315,8 +381,13 @@ fn group_fanout_and_remove() {
         MessageType::MlsHandshake
     );
 
-    let bundle =
-        RemoveBundle::sign(&alice_group_sk, pending.cred.credential_id, vec![1, 2, 3]).unwrap();
+    let bundle = RemoveBundle::sign(
+        &alice_group_sk,
+        created.group_id.0,
+        pending.cred.credential_id,
+        vec![1, 2, 3],
+    )
+    .unwrap();
     let removed = host
         .append(
             created.group_id,
@@ -338,7 +409,7 @@ fn group_fanout_and_remove() {
     let bob_after = bob_home
         .fetch(
             bob_id,
-            &auth(&bob_sk, bob_id, 0, 16, bob_home.now),
+            &fetch_auth(&bob_sk, bob_id, 0, 16, bob_home.now, bob_home.server_id()),
             bob_home.now,
         )
         .unwrap();
@@ -571,12 +642,12 @@ fn enqueue_from_owner_requires_auth() {
         MessageType::DoubleRatchet,
         vec![1],
     );
-    let bad = auth(&sk, id, 0, 16, home.now - 10_000);
+    let bad = env_auth(&sk, id, home.now - 10_000, home.server_id(), &outer);
     assert!(matches!(
         home.enqueue_from_owner(id, &bad, home.now, outer.clone()),
         Err(ServerError::OwnerAuth)
     ));
-    let ok = auth(&sk, id, 0, 16, home.now);
+    let ok = env_auth(&sk, id, home.now, home.server_id(), &outer);
     assert!(matches!(
         home.enqueue_from_owner(id, &ok, home.now, outer).unwrap(),
         Enqueue::Local(1)

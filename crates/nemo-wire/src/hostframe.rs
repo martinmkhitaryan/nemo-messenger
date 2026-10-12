@@ -3,6 +3,7 @@
 //! The host MUST NOT parse `mls_commit` inside [`RemoveBundle`].
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use rand::Rng;
 
 use crate::cbor::{self, Value};
 use crate::envelope::TtlBucket;
@@ -57,22 +58,31 @@ pub struct RemoveBundle {
 }
 
 impl RemoveBundle {
-    fn sidecar_payload(credential_id: &[u8; KEY_LEN]) -> Vec<u8> {
+    /// Sidecar binds the named credential to **this** group and **this**
+    /// Commit so a captured sidecar cannot be re-appended with other bytes.
+    fn sidecar_payload(
+        group_id: &[u8; KEY_LEN],
+        credential_id: &[u8; KEY_LEN],
+        mls_commit: &[u8],
+    ) -> Vec<u8> {
         cbor::encode(&Value::Map(vec![
             (0, Value::Bytes(credential_id.to_vec())),
             (1, Value::Text("revoke".into())),
+            (2, Value::Bytes(group_id.to_vec())),
+            (3, Value::Bytes(ids::sha256(mls_commit).to_vec())),
         ]))
     }
 
     pub fn sign(
         appender_sk: &SigningKey,
+        group_id: [u8; KEY_LEN],
         credential_id: [u8; KEY_LEN],
         mls_commit: Vec<u8>,
     ) -> Result<Self> {
         let sidecar_signature = sign::sign(
             appender_sk,
             sign::REMOVE_SIDECAR,
-            &Self::sidecar_payload(&credential_id),
+            &Self::sidecar_payload(&group_id, &credential_id, &mls_commit),
         )?;
         Ok(Self {
             credential_id,
@@ -81,11 +91,11 @@ impl RemoveBundle {
         })
     }
 
-    pub fn verify_sidecar(&self, appender_pk: &VerifyingKey) -> Result<()> {
+    pub fn verify_sidecar(&self, appender_pk: &VerifyingKey, group_id: &[u8; KEY_LEN]) -> Result<()> {
         sign::verify(
             appender_pk,
             sign::REMOVE_SIDECAR,
-            &Self::sidecar_payload(&self.credential_id),
+            &Self::sidecar_payload(group_id, &self.credential_id, &self.mls_commit),
             &self.sidecar_signature,
         )
     }
@@ -201,13 +211,50 @@ impl AttachmentReserve {
     }
 }
 
-/// Owner fetch/ack signature payload (phase 4). `ts` older than 120s MUST be rejected by the server.
+/// What an owner signature authorises: one request, to one server.
+///
+/// `body_hash` is `SHA-256(request body)` when the auth travels in a header,
+/// and all zeros when the auth **is** the body (`/v1/mailbox/fetch`, `/ack`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthScope {
+    pub server_id: ServerId,
+    pub method: String,
+    pub path: String,
+    pub body_hash: [u8; KEY_LEN],
+}
+
+impl AuthScope {
+    pub fn header(server_id: ServerId, method: &str, path: &str, body: &[u8]) -> Self {
+        Self {
+            server_id,
+            method: method.to_owned(),
+            path: path.to_owned(),
+            body_hash: ids::sha256(body),
+        }
+    }
+
+    pub fn body(server_id: ServerId, method: &str, path: &str) -> Self {
+        Self {
+            server_id,
+            method: method.to_owned(),
+            path: path.to_owned(),
+            body_hash: [0; KEY_LEN],
+        }
+    }
+}
+
+/// Owner fetch/ack signature payload (phase 4). `ts` older than 120s MUST be
+/// rejected by the server, and `nonce` MUST be rejected if seen before within
+/// that window. The signature is bound to an [`AuthScope`] so a captured
+/// header cannot be replayed against another route or another server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MailboxOwnerAuth {
     pub mailbox_hint: Vec<u8>,
     pub cursor: u64,
     pub limit: u64,
     pub ts: u64,
+    pub scope: AuthScope,
+    pub nonce: [u8; KEY_LEN],
     pub signature: [u8; SIG_LEN],
 }
 
@@ -220,6 +267,11 @@ impl MailboxOwnerAuth {
             (1, Value::Uint(self.cursor)),
             (2, Value::Uint(self.limit)),
             (3, Value::Uint(self.ts)),
+            (5, Value::Bytes(self.scope.server_id.to_vec())),
+            (6, Value::Text(self.scope.method.clone())),
+            (7, Value::Text(self.scope.path.clone())),
+            (8, Value::Bytes(self.scope.body_hash.to_vec())),
+            (9, Value::Bytes(self.nonce.to_vec())),
         ]))
     }
 
@@ -229,22 +281,31 @@ impl MailboxOwnerAuth {
         cursor: u64,
         limit: u64,
         ts: u64,
+        scope: AuthScope,
     ) -> Result<Self> {
+        let mut nonce = [0u8; KEY_LEN];
+        rand::rng().fill_bytes(&mut nonce);
         let mut auth = Self {
             mailbox_hint,
             cursor,
             limit,
             ts,
+            scope,
+            nonce,
             signature: [0; 64],
         };
         auth.signature = sign::sign(identity_sk, sign::MAILBOX_OWNER, &auth.unsigned_cbor())?;
         Ok(auth)
     }
 
-    pub fn verify(&self, identity_pk: &VerifyingKey, now_unix: u64) -> Result<()> {
+    /// Verify freshness, scope, and signature. Replay (nonce) is the caller's.
+    pub fn verify(&self, identity_pk: &VerifyingKey, now_unix: u64, expect: &AuthScope) -> Result<()> {
         let age = now_unix.saturating_sub(self.ts);
         if age > Self::MAX_AGE_SECS || self.ts > now_unix + Self::MAX_AGE_SECS {
             return Err(WireError::BindingExpired);
+        }
+        if self.scope != *expect {
+            return Err(WireError::Signature);
         }
         sign::verify(
             identity_pk,
@@ -261,6 +322,11 @@ impl MailboxOwnerAuth {
             (2, Value::Uint(self.limit)),
             (3, Value::Uint(self.ts)),
             (4, Value::Bytes(self.signature.to_vec())),
+            (5, Value::Bytes(self.scope.server_id.to_vec())),
+            (6, Value::Text(self.scope.method.clone())),
+            (7, Value::Text(self.scope.path.clone())),
+            (8, Value::Bytes(self.scope.body_hash.to_vec())),
+            (9, Value::Bytes(self.nonce.to_vec())),
         ]))
     }
 
@@ -274,8 +340,54 @@ impl MailboxOwnerAuth {
             limit: cbor::expect_uint(cbor::map_get(&m, 2)?)?,
             ts: cbor::expect_uint(cbor::map_get(&m, 3)?)?,
             signature: copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 4)?)?)?,
+            scope: AuthScope {
+                server_id: copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 5)?)?)?,
+                method: cbor::expect_text(cbor::map_get(&m, 6)?)?.to_owned(),
+                path: cbor::expect_text(cbor::map_get(&m, 7)?)?.to_owned(),
+                body_hash: copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 8)?)?)?,
+            },
+            nonce: copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 9)?)?)?,
         })
     }
+}
+
+/// Home-server signature over one HTTP response, bound to the client's
+/// per-request `nemo-nonce`. Lets the client authenticate the home through
+/// any TLS terminator (ADR-0033: Web PKI is not identity).
+pub const RESPONSE_NONCE_HEADER: &str = "nemo-nonce";
+pub const RESPONSE_SIG_HEADER: &str = "nemo-server-sig";
+
+fn response_payload(nonce: &[u8; KEY_LEN], status: u16, body: &[u8]) -> Vec<u8> {
+    cbor::encode(&Value::Map(vec![
+        (0, Value::Uint(PROTOCOL_VERSION as u64)),
+        (1, Value::Bytes(nonce.to_vec())),
+        (2, Value::Uint(status as u64)),
+        (3, Value::Bytes(ids::sha256(body).to_vec())),
+    ]))
+}
+
+pub fn sign_response(
+    server_sk: &SigningKey,
+    nonce: &[u8; KEY_LEN],
+    status: u16,
+    body: &[u8],
+) -> Result<[u8; SIG_LEN]> {
+    sign::sign(server_sk, sign::SERVER_RESPONSE, &response_payload(nonce, status, body))
+}
+
+pub fn verify_response(
+    server_pk: &VerifyingKey,
+    nonce: &[u8; KEY_LEN],
+    status: u16,
+    body: &[u8],
+    signature: &[u8; SIG_LEN],
+) -> Result<()> {
+    sign::verify(
+        server_pk,
+        sign::SERVER_RESPONSE,
+        &response_payload(nonce, status, body),
+        signature,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -504,13 +616,18 @@ mod tests {
     #[test]
     fn remove_bundle_roundtrip_and_opaque_commit() {
         let sk = SigningKey::generate(&mut rand::rng());
-        let bundle = RemoveBundle::sign(&sk, [0xab; 32], vec![0, 1, 0, 2]).unwrap();
-        bundle.verify_sidecar(&sk.verifying_key()).unwrap();
+        let gid = [0x11; 32];
+        let bundle = RemoveBundle::sign(&sk, gid, [0xab; 32], vec![0, 1, 0, 2]).unwrap();
+        bundle.verify_sidecar(&sk.verifying_key(), &gid).unwrap();
         let body = bundle.encode().unwrap();
         let padded = PaddedMessage::pad(MessageType::RemoveBundle, body).unwrap();
-        let decoded = RemoveBundle::decode(&padded.encode()[2..]).unwrap();
+        let mut decoded = RemoveBundle::decode(&padded.encode()[2..]).unwrap();
         assert_eq!(decoded.mls_commit, vec![0, 1, 0, 2]);
-        decoded.verify_sidecar(&sk.verifying_key()).unwrap();
+        decoded.verify_sidecar(&sk.verifying_key(), &gid).unwrap();
+        // Bound to the group and to the commit bytes.
+        assert!(decoded.verify_sidecar(&sk.verifying_key(), &[0x22; 32]).is_err());
+        decoded.mls_commit = vec![9];
+        assert!(decoded.verify_sidecar(&sk.verifying_key(), &gid).is_err());
     }
 
     #[test]
@@ -587,8 +704,27 @@ mod tests {
     fn mailbox_owner_freshness() {
         let sk = SigningKey::generate(&mut rand::rng());
         let now = 1_700_000_000;
-        let auth = MailboxOwnerAuth::sign(&sk, vec![1, 2, 3], 0, 64, now).unwrap();
-        auth.verify(&sk.verifying_key(), now).unwrap();
-        assert!(auth.verify(&sk.verifying_key(), now + 121).is_err());
+        let scope = AuthScope::body([7; 32], "POST", "/v1/mailbox/fetch");
+        let auth = MailboxOwnerAuth::sign(&sk, vec![1, 2, 3], 0, 64, now, scope.clone()).unwrap();
+        auth.verify(&sk.verifying_key(), now, &scope).unwrap();
+        assert!(auth.verify(&sk.verifying_key(), now + 121, &scope).is_err());
+        // Scope-bound: another route, server, or body does not verify.
+        let other = AuthScope::body([7; 32], "POST", "/v1/mailbox/ack");
+        assert!(auth.verify(&sk.verifying_key(), now, &other).is_err());
+        let other_server = AuthScope::body([8; 32], "POST", "/v1/mailbox/fetch");
+        assert!(auth.verify(&sk.verifying_key(), now, &other_server).is_err());
+        let decoded = MailboxOwnerAuth::decode(&auth.encode()).unwrap();
+        assert_eq!(decoded, auth);
+    }
+
+    #[test]
+    fn response_signature_binds_nonce_status_body() {
+        let sk = SigningKey::generate(&mut rand::rng());
+        let nonce = [3u8; 32];
+        let sig = sign_response(&sk, &nonce, 200, b"body").unwrap();
+        verify_response(&sk.verifying_key(), &nonce, 200, b"body", &sig).unwrap();
+        assert!(verify_response(&sk.verifying_key(), &[4u8; 32], 200, b"body", &sig).is_err());
+        assert!(verify_response(&sk.verifying_key(), &nonce, 403, b"body", &sig).is_err());
+        assert!(verify_response(&sk.verifying_key(), &nonce, 200, b"other", &sig).is_err());
     }
 }

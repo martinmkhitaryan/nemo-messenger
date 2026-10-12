@@ -23,7 +23,15 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        let (mut home, mut groups) = match nemo_server::pg::load_or_init(&pool, &host, s2s_port).await {
+        let ident = std::env::var("NEMO_IDENTITY_FILE")
+            .unwrap_or_else(|_| "server_identity.cbor".into());
+        let (mut home, mut groups) = match nemo_server::pg::load_or_init(
+            &pool,
+            &host,
+            s2s_port,
+            Path::new(&ident),
+        )
+        .await {
             Ok(v) => v,
             Err(e) => {
                 nemo_server::log_ops("nemo-server load", e);
@@ -35,7 +43,7 @@ async fn main() {
             nemo_server::log_ops("nemo-server persist pins", e);
             std::process::exit(1);
         }
-        eprintln!("nemo-server http://{addr} s2s={s2s_addr} host={host} db=postgres");
+        eprintln!("nemo-server http://{addr} s2s={s2s_addr} host={host} db=postgres identity={ident}");
         nemo_server::AppState::from_parts(home, groups).with_db(pool)
     } else {
         let mut home = nemo_server::HomeServer::advertise(host.clone(), s2s_port);

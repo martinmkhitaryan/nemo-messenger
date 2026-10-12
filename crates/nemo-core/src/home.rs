@@ -11,8 +11,9 @@ use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::ids::{self, IdentityId, ServerId, KEY_LEN};
 use nemo_wire::prekey::SignedPrekey;
 use nemo_wire::{
-    ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, HomeServerBinding, RevocationStatement,
-    ServerBundle,
+    AuthScope, ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite, HomeServerBinding,
+    MailboxOwnerAuth, RevocationStatement, ServerBundle, VerifyingKey, RESPONSE_NONCE_HEADER,
+    RESPONSE_SIG_HEADER, verify_response,
 };
 
 use crate::call::TurnConfig;
@@ -23,6 +24,7 @@ use crate::privacy::{
     calls_allowed, cover_interval_ms, dummy_outer, private_send_delay_ms, PrivacyMode,
     MAXIMUM_SLOT_MS,
 };
+use rand::Rng;
 
 pub const FETCH_LIMIT: u64 = 64;
 
@@ -42,6 +44,16 @@ pub struct HttpRequest {
 pub struct HttpResponse {
     pub status: u16,
     pub body: Vec<u8>,
+    pub headers: Vec<(String, String)>,
+}
+
+impl HttpResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 pub trait HomeTransport: Send + Sync {
@@ -80,6 +92,16 @@ pub struct HostAccept {
     pub pending_id: [u8; KEY_LEN],
     pub cred: HostCred,
     pub invitee_binding: Option<[u8; KEY_LEN]>,
+    pub salt: Option<[u8; KEY_LEN]>,
+}
+
+/// Live-member view of a pending join: reserved credential id and any
+/// host-stored bound-invite material. Never includes the credential secret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingLookup {
+    pub credential_id: [u8; KEY_LEN],
+    pub invitee_binding: Option<[u8; KEY_LEN]>,
+    pub salt: Option<[u8; KEY_LEN]>,
 }
 
 impl HostAccept {
@@ -91,6 +113,9 @@ impl HostAccept {
         ];
         if let Some(b) = self.invitee_binding {
             pairs.push((3, Value::Bytes(b.to_vec())));
+        }
+        if let Some(s) = self.salt {
+            pairs.push((4, Value::Bytes(s.to_vec())));
         }
         cbor::encode(&Value::Map(pairs))
     }
@@ -115,6 +140,12 @@ impl HostAccept {
                 )?,
             },
             invitee_binding: match cbor::map_get_opt(&m, 3) {
+                Some(v) => Some(ids::copy_fixed(
+                    cbor::expect_bytes(v).map_err(|_| CoreError::VaultCorrupt)?,
+                )?),
+                None => None,
+            },
+            salt: match cbor::map_get_opt(&m, 4) {
                 Some(v) => Some(ids::copy_fixed(
                     cbor::expect_bytes(v).map_err(|_| CoreError::VaultCorrupt)?,
                 )?),
@@ -349,14 +380,17 @@ impl<T: HomeTransport> HomeSession<T> {
             &bundle.host,
             now_unix.saturating_add(CARD_TTL_SECS),
         )?;
-        let res = transport
-            .call(HttpRequest {
+        let res = signed_call(
+            &transport,
+            &bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/register".into(),
                 headers: vec![],
                 body: card.encode()?,
-            })
-            .await?;
+            },
+        )
+        .await?;
         check_empty(&res)?;
         Ok((
             Self {
@@ -494,7 +528,7 @@ impl<T: HomeTransport> HomeSession<T> {
     async fn call_on(&self, origin: &str, req: HttpRequest) -> Result<HttpResponse> {
         let origin = origin.trim_end_matches('/');
         if origin.is_empty() || origin == self.home_base {
-            return self.transport.call(req).await;
+            return signed_call(&self.transport, &self.bundle, req).await;
         }
         match self.transport.redirect(origin) {
             Some(alt) => alt.call(req).await,
@@ -590,23 +624,45 @@ impl<T: HomeTransport> HomeSession<T> {
             return Ok(session_peer);
         };
 
+        // The identity claim must be signed by that identity over the
+        // libsignal key of the session it arrived on (N-02).
+        self.install
+            .verify_capability_intro(&session_peer, &contact_capability, &intro)?;
         let real = intro.identity_id;
-        if nemo_wire::identity_id(&intro.identity_public_key) != real {
-            return Err(CoreError::IdentityMismatch);
-        }
 
         if session_peer != real {
+            // A different session may not take over an identity we already
+            // hold a session with: that would re-route or inject messages.
+            if let Some(existing) = self.install.peer_session_identity_key(&real) {
+                if existing != intro.session_key {
+                    return Err(CoreError::IdentityMismatch);
+                }
+            }
             self.install.rematerialize_peer(&session_peer, &real);
             if let Some(prev) = self.contacts.remove(&session_peer) {
                 self.contacts.entry(real).or_insert(prev);
             }
         }
 
-        let home_origin = self
-            .contacts
-            .get(&real)
-            .map(|c| c.home_origin.clone())
-            .unwrap_or_default();
+        // An existing pin keeps its revocation key and binding seq unless the
+        // intro moves forward; the identity key must be the pinned one.
+        let (home_origin, revocation_public_key, seq) = match self.contacts.get(&real) {
+            Some(c) => {
+                if c.pin.identity_public_key != intro.identity_public_key {
+                    return Err(CoreError::IdentityMismatch);
+                }
+                (
+                    c.home_origin.clone(),
+                    c.pin.revocation_public_key,
+                    c.pin.seq.max(intro.binding_seq),
+                )
+            }
+            None => (
+                String::new(),
+                intro.revocation_public_key,
+                intro.binding_seq,
+            ),
+        };
 
         self.contacts.insert(
             real,
@@ -614,8 +670,8 @@ impl<T: HomeTransport> HomeSession<T> {
                 pin: ContactPin {
                     identity_id: real,
                     identity_public_key: intro.identity_public_key,
-                    revocation_public_key: intro.revocation_public_key,
-                    seq: intro.binding_seq,
+                    revocation_public_key,
+                    seq,
                 },
                 delivery_capability: contact_capability,
                 dest_hpke: intro.dest_hpke,
@@ -757,16 +813,18 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn issue_turn(&self) -> Result<TurnConfig> {
-        let auth = self.owner_header(0, 1)?;
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let auth = self.owner_header("POST", "/v1/turn", &[])?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/turn".into(),
                 headers: vec![("nemo-owner".into(), auth)],
                 body: vec![],
-            })
-            .await?;
+            },
+        )
+        .await?;
         let m = expect_map(check_body(&res)?)?;
         Ok(TurnConfig {
             url: cbor::expect_text(cbor::map_get(&m, 0)?)?.to_owned(),
@@ -864,6 +922,7 @@ impl<T: HomeTransport> HomeSession<T> {
 
     /// Publish one-time prekeys until the stock is above the restock floor.
     pub async fn restock_publish(&mut self) -> Result<usize> {
+        let _ = self.install.maybe_rotate_signed_prekey(now_unix())?;
         let mut n = 0;
         while self.install.needs_restock() {
             self.publish_prekey().await?;
@@ -876,6 +935,7 @@ impl<T: HomeTransport> HomeSession<T> {
     /// the small synchronous stock on register/unlock; the remainder tops up
     /// in the background (see FFI `spawn_restock`).
     pub async fn restock_publish_upto(&mut self, target: usize) -> Result<usize> {
+        let _ = self.install.maybe_rotate_signed_prekey(now_unix())?;
         let mut n = 0;
         while self.install.unused_one_time_prekeys() < target {
             self.publish_prekey().await?;
@@ -885,15 +945,17 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn submit_revocation(&self, stmt: &RevocationStatement) -> Result<()> {
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/revocation".into(),
                 headers: vec![],
                 body: stmt.encode(),
-            })
-            .await?;
+            },
+        )
+        .await?;
         check_empty(&res)
     }
 
@@ -911,16 +973,19 @@ impl<T: HomeTransport> HomeSession<T> {
 
     pub async fn publish_prekey(&mut self) -> Result<()> {
         let blob = self.install.mint_prekey()?;
-        let auth = self.owner_header(0, 1)?;
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let body = blob.encode();
+        let auth = self.owner_header("POST", "/v1/prekeys", &body)?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/prekeys".into(),
                 headers: vec![("nemo-owner".into(), auth)],
-                body: blob.encode(),
-            })
-            .await?;
+                body,
+            },
+        )
+        .await?;
         check_empty(&res)
     }
 
@@ -967,16 +1032,18 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     async fn mint_token(&self, path: &str) -> Result<[u8; KEY_LEN]> {
-        let auth = self.owner_header(0, 1)?;
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let auth = self.owner_header("POST", path, &[])?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: path.into(),
                 headers: vec![("nemo-owner".into(), auth)],
                 body: vec![],
-            })
-            .await?;
+            },
+        )
+        .await?;
         let m = expect_map(check_body(&res)?)?;
         read_key(&m, 0)
     }
@@ -1026,16 +1093,19 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     async fn post_one_envelope(&self, outer: &OuterEnvelope, cover: bool) -> Result<EnqueueResult> {
-        let auth = self.owner_header(0, 1)?;
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let body = outer.encode();
+        let auth = self.owner_header("POST", "/v1/envelopes", &body)?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/envelopes".into(),
                 headers: vec![("nemo-owner".into(), auth)],
-                body: outer.encode(),
-            })
-            .await?;
+                body,
+            },
+        )
+        .await?;
         if !cover {
             if let Ok(mut last) = self.last_real_ms.lock() {
                 *last = now_ms();
@@ -1085,18 +1155,18 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn fetch_mailbox(&mut self) -> Result<Vec<MailboxRow>> {
-        let auth = self
-            .install
-            .mailbox_owner_auth(self.cursor, FETCH_LIMIT, now_unix())?;
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let auth = self.mailbox_body_auth("/v1/mailbox/fetch", self.cursor, FETCH_LIMIT)?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/mailbox/fetch".into(),
                 headers: vec![],
                 body: auth.encode(),
-            })
-            .await?;
+            },
+        )
+        .await?;
         let Value::Array(items) = cbor::decode(check_body(&res)?)? else {
             return Err(CoreError::Wire(nemo_wire::WireError::Cbor(
                 "fetch must be an array",
@@ -1118,18 +1188,18 @@ impl<T: HomeTransport> HomeSession<T> {
     }
 
     pub async fn ack(&self) -> Result<()> {
-        let auth = self
-            .install
-            .mailbox_owner_auth(self.cursor, 1, now_unix())?;
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let auth = self.mailbox_body_auth("/v1/mailbox/ack", self.cursor, 1)?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/mailbox/ack".into(),
                 headers: vec![],
                 body: auth.encode(),
-            })
-            .await?;
+            },
+        )
+        .await?;
         check_empty(&res)
     }
 
@@ -1143,15 +1213,18 @@ impl<T: HomeTransport> HomeSession<T> {
             (1, Value::Bytes(delivery_capability.to_vec())),
             (2, Value::Bytes(self.hpke_public().to_vec())),
         ]));
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let auth = self.owner_header("POST", "/v1/groups", &body)?;
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: "/v1/groups".into(),
-                headers: vec![],
+                headers: vec![("nemo-owner".into(), auth)],
                 body,
-            })
-            .await?;
+            },
+        )
+        .await?;
         let m = expect_map(check_body(&res)?)?;
         Ok(HostGroup {
             group_id: read_key(&m, 0)?,
@@ -1222,17 +1295,23 @@ impl<T: HomeTransport> HomeSession<T> {
         nonce: [u8; KEY_LEN],
     ) -> Result<HostAccept> {
         let body = cbor::encode(&Value::Map(vec![(0, Value::Bytes(nonce.to_vec()))]));
-        let res = self
-            .transport
-            .call(HttpRequest {
+        let res = signed_call(
+            &self.transport,
+            &self.bundle,
+            HttpRequest {
                 method: "POST",
                 path: format!("/v1/groups/{}/accept", ids::to_hex(&group_id)),
                 headers: vec![],
                 body,
-            })
-            .await?;
+            },
+        )
+        .await?;
         let m = expect_map(check_body(&res)?)?;
         let invitee_binding = match cbor::map_get_opt(&m, 3) {
+            Some(v) => Some(ids::copy_fixed(cbor::expect_bytes(v)?)?),
+            None => None,
+        };
+        let salt = match cbor::map_get_opt(&m, 4) {
             Some(v) => Some(ids::copy_fixed(cbor::expect_bytes(v)?)?),
             None => None,
         };
@@ -1243,6 +1322,45 @@ impl<T: HomeTransport> HomeSession<T> {
                 credential_secret: read_key(&m, 2)?,
             },
             invitee_binding,
+            salt,
+        })
+    }
+
+    /// Host-stored pending join: reserved credential id and bound-invite salt.
+    /// Admitters MUST use this instead of joiner-supplied binding (N-08).
+    pub async fn lookup_pending(
+        &self,
+        group_id: [u8; KEY_LEN],
+        cred: &HostCred,
+        pending_id: [u8; KEY_LEN],
+    ) -> Result<PendingLookup> {
+        let body = cbor::encode(&Value::Map(vec![
+            (0, Value::Bytes(cred.credential_id.to_vec())),
+            (1, Value::Bytes(cred.credential_secret.to_vec())),
+            (2, Value::Bytes(pending_id.to_vec())),
+        ]));
+        let res = self
+            .call_group(
+                group_id,
+                HttpRequest {
+                    method: "POST",
+                    path: format!("/v1/groups/{}/pending-lookup", ids::to_hex(&group_id)),
+                    headers: vec![],
+                    body,
+                },
+            )
+            .await?;
+        let m = expect_map(check_body(&res)?)?;
+        Ok(PendingLookup {
+            credential_id: read_key(&m, 0)?,
+            invitee_binding: match cbor::map_get_opt(&m, 1) {
+                Some(v) => Some(ids::copy_fixed(cbor::expect_bytes(v)?)?),
+                None => None,
+            },
+            salt: match cbor::map_get_opt(&m, 2) {
+                Some(v) => Some(ids::copy_fixed(cbor::expect_bytes(v)?)?),
+                None => None,
+            },
         })
     }
 
@@ -1414,19 +1532,37 @@ impl<T: HomeTransport> HomeSession<T> {
         if let Some(alt) = self.transport.redirect(&origin) {
             alt.call(req).await
         } else {
-            self.transport.call(req).await
+            signed_call(&self.transport, &self.bundle, req).await
         }
     }
 
-    fn owner_header(&self, cursor: u64, limit: u64) -> Result<String> {
-        let auth = self.install.mailbox_owner_auth(cursor, limit, now_unix())?;
+    fn owner_header(&self, method: &str, path: &str, body: &[u8]) -> Result<String> {
+        let scope = AuthScope::header(self.bundle.server_id, method, path, body);
+        let auth = self
+            .install
+            .mailbox_owner_auth(0, 1, now_unix(), scope)?;
         Ok(ids::to_hex(&auth.encode()))
+    }
+
+    fn mailbox_body_auth(
+        &self,
+        path: &str,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<MailboxOwnerAuth> {
+        let scope = AuthScope::body(self.bundle.server_id, "POST", path);
+        self.install
+            .mailbox_owner_auth(cursor, limit, now_unix(), scope)
+    }
+
+    fn wakeup_owner_header(&self) -> Result<String> {
+        self.owner_header("GET", "/v1/wakeup", &[])
     }
 }
 
 impl HomeSession<HttpHome> {
     pub fn wakeup_handle(&self) -> Result<(HttpHome, String)> {
-        Ok((self.transport.clone(), self.owner_header(self.cursor, 1)?))
+        Ok((self.transport.clone(), self.wakeup_owner_header()?))
     }
 
     /// Block until the home sends one wakeup frame. Payload MUST be empty (ADR-0020).
@@ -1437,17 +1573,51 @@ impl HomeSession<HttpHome> {
 }
 
 async fn fetch_bundle<T: HomeTransport>(transport: &T) -> Result<ServerBundle> {
+    let mut nonce = [0u8; KEY_LEN];
+    rand::rng().fill_bytes(&mut nonce);
     let res = transport
         .call(HttpRequest {
             method: "GET",
             path: "/v1/bundle".into(),
-            headers: vec![],
+            headers: vec![(RESPONSE_NONCE_HEADER.into(), ids::to_hex(&nonce))],
             body: vec![],
         })
         .await?;
     let bundle = ServerBundle::decode(check_body(&res)?)?;
     bundle.verify()?;
+    verify_signed_response(&bundle, &nonce, &res)?;
     Ok(bundle)
+}
+
+async fn signed_call<T: HomeTransport>(
+    transport: &T,
+    bundle: &ServerBundle,
+    mut req: HttpRequest,
+) -> Result<HttpResponse> {
+    let mut nonce = [0u8; KEY_LEN];
+    rand::rng().fill_bytes(&mut nonce);
+    req.headers
+        .push((RESPONSE_NONCE_HEADER.into(), ids::to_hex(&nonce)));
+    let res = transport.call(req).await?;
+    verify_signed_response(bundle, &nonce, &res)?;
+    Ok(res)
+}
+
+fn verify_signed_response(
+    bundle: &ServerBundle,
+    nonce: &[u8; KEY_LEN],
+    res: &HttpResponse,
+) -> Result<()> {
+    let Some(sig_hex) = res.header(RESPONSE_SIG_HEADER) else {
+        return Err(CoreError::UnsignedResponse);
+    };
+    let sig = ids::from_hex(sig_hex).map_err(|_| CoreError::UnsignedResponse)?;
+    let sig: [u8; 64] = ids::copy_fixed(&sig).map_err(|_| CoreError::UnsignedResponse)?;
+    let pk = VerifyingKey::from_bytes(&bundle.server_sign_public_key)
+        .map_err(|_| CoreError::UnsignedResponse)?;
+    verify_response(&pk, nonce, res.status, &res.body, &sig)
+        .map_err(|_| CoreError::UnsignedResponse)?;
+    Ok(())
 }
 
 fn now_unix() -> u64 {
@@ -1505,6 +1675,11 @@ pub struct HttpHome {
 impl HttpHome {
     pub fn new(base: impl Into<String>) -> Result<Self> {
         let base = base.into().trim_end_matches('/').to_string();
+        if base.starts_with("http://") && !crate::tor::is_loopback_origin(&base) {
+            return Err(CoreError::Transport(
+                "cleartext HTTP is only allowed on loopback".into(),
+            ));
+        }
         let tls = tls_config_bundle_is_identity()?;
         // Caddy `tls internal` (and any other Web PKI) is transport, not identity
         // (ADR-0033). Clients authenticate the home via ServerBundle HPKE.
@@ -1616,21 +1791,35 @@ pub fn peer_http_origin(
         return over;
     }
     let _ = own_host;
-    let scheme = if own_base.starts_with("http://") {
-        "http"
+    let host = peer_host.trim_end_matches('/');
+    let loopback = crate::tor::is_loopback_origin(&format!("http://{host}"))
+        || crate::tor::is_loopback_origin(&format!("https://{host}"));
+    // Cleartext only for loopback, or in debug when this session is already
+    // on http (in-process tests). Release builds always use https off-loopback.
+    if own_base.starts_with("http://") && (loopback || cfg!(debug_assertions)) {
+        format!("http://{host}")
     } else {
-        "https"
-    };
-    format!("{scheme}://{}", peer_host.trim_end_matches('/'))
+        format!("https://{host}")
+    }
 }
 
+/// Debug-only origin map. Ignored in release. Cleartext URLs are refused
+/// unless they point at loopback.
 fn host_origin_override(host: &str) -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
     let raw = std::env::var("NEMO_HOST_ORIGINS").ok()?;
     for part in raw.split(',') {
         let (h, url) = part.split_once('=')?;
-        if h.trim() == host {
-            return Some(url.trim().trim_end_matches('/').to_string());
+        if h.trim() != host {
+            continue;
         }
+        let url = url.trim().trim_end_matches('/');
+        if url.starts_with("http://") && !crate::tor::is_loopback_origin(url) {
+            continue;
+        }
+        return Some(url.to_string());
     }
     None
 }
@@ -1746,12 +1935,22 @@ impl HomeTransport for HttpHome {
             .await
             .map_err(|e| CoreError::Transport(e.to_string()))?;
         let status = res.status().as_u16();
+        let mut headers = Vec::new();
+        for (k, v) in res.headers() {
+            if let Ok(v) = v.to_str() {
+                headers.push((k.as_str().to_string(), v.to_string()));
+            }
+        }
         let body = res
             .bytes()
             .await
             .map_err(|e| CoreError::Transport(e.to_string()))?
             .to_vec();
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
+        })
     }
 }
 
@@ -1815,7 +2014,11 @@ mod wakeup_url_tests {
         );
         assert_eq!(
             peer_http_origin("home-b", b, "home-a", a, "http://home-a"),
-            "http://home-b"
+            if cfg!(debug_assertions) {
+                "http://home-b"
+            } else {
+                "https://home-b"
+            }
         );
     }
 }

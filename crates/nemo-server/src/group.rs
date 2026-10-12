@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use nemo_wire::envelope::{MessageType, OuterEnvelope, TtlBucket};
 use nemo_wire::hpke::seal_to_server;
-use nemo_wire::ids::KEY_LEN;
+use nemo_wire::ids::{self, KEY_LEN};
 use nemo_wire::{
     AttachmentReserve, GroupAdmit, GroupInvite, RemoveBundle, RevocationStatement,
     SigningKeyReplace, VerifyingKey,
@@ -18,6 +18,8 @@ pub const STREAM_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Live group file blobs (reserved or uploaded, unexpired). Distinct from the stream cap.
 pub const FILE_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const STREAM_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
+/// Groups one mailbox may create on this host.
+pub const GROUPS_PER_OWNER: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GroupId(pub [u8; KEY_LEN]);
@@ -45,6 +47,14 @@ pub struct PendingJoin {
     pub pending_id: [u8; KEY_LEN],
     pub cred: MemberCred,
     pub invitee_binding: Option<[u8; KEY_LEN]>,
+    pub salt: Option<[u8; KEY_LEN]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingLookup {
+    pub credential_id: [u8; KEY_LEN],
+    pub invitee_binding: Option<[u8; KEY_LEN]>,
+    pub salt: Option<[u8; KEY_LEN]>,
 }
 
 #[derive(Clone, Debug)]
@@ -63,11 +73,14 @@ pub(crate) struct CredRecord {
 pub(crate) struct StoredInvite {
     pub expires_at: u64,
     pub invitee_binding: Option<[u8; KEY_LEN]>,
+    pub salt: Option<[u8; KEY_LEN]>,
 }
 
 pub(crate) struct PendingRecord {
     pub cred: MemberCred,
     pub expires_at: u64,
+    pub invitee_binding: Option<[u8; KEY_LEN]>,
+    pub salt: Option<[u8; KEY_LEN]>,
 }
 
 pub(crate) struct FileSlot {
@@ -92,6 +105,7 @@ pub(crate) struct GroupState {
     pub pending: HashMap<[u8; KEY_LEN], PendingRecord>,
     pub bytes: u64,
     pub stream: Vec<StreamRow>,
+    pub creator: Option<[u8; KEY_LEN]>,
 }
 
 pub struct GroupHost {
@@ -157,16 +171,36 @@ impl GroupHost {
         signing_pk: [u8; KEY_LEN],
         fanout: FanoutTarget,
     ) -> Result<CreatedGroup> {
+        self.create_group_for(signing_pk, fanout, None)
+    }
+
+    pub fn create_group_for(
+        &mut self,
+        signing_pk: [u8; KEY_LEN],
+        fanout: FanoutTarget,
+        creator: Option<[u8; KEY_LEN]>,
+    ) -> Result<CreatedGroup> {
+        if let Some(owner) = creator {
+            let n = self
+                .groups
+                .values()
+                .filter(|g| g.creator.as_ref() == Some(&owner))
+                .count();
+            if n >= GROUPS_PER_OWNER {
+                return Err(ServerError::Denied);
+            }
+        }
         let group_id = GroupId(random_token());
+        let plaintext = random_token();
         let cred = MemberCred {
             credential_id: random_token(),
-            credential_secret: random_token(),
+            credential_secret: plaintext,
         };
         let mut creds = HashMap::new();
         creds.insert(
             cred.credential_id,
             CredRecord {
-                secret: cred.credential_secret,
+                secret: hash_secret(&plaintext),
                 live: true,
                 signing_pk: Some(signing_pk),
                 fanout: Some(fanout),
@@ -181,6 +215,7 @@ impl GroupHost {
                 pending: HashMap::new(),
                 bytes: 0,
                 stream: Vec::new(),
+                creator,
             },
         );
         self.dirty.groups.insert(group_id);
@@ -210,6 +245,7 @@ impl GroupHost {
             StoredInvite {
                 expires_at: self.now.saturating_add(invite.ttl_secs),
                 invitee_binding: invite.invitee_binding,
+                salt: invite.salt,
             },
         );
         self.dirty.invites.insert(group_id);
@@ -222,14 +258,15 @@ impl GroupHost {
         if self.now >= stored.expires_at {
             return Err(ServerError::Denied);
         }
+        let plaintext = random_token();
         let cred = MemberCred {
             credential_id: random_token(),
-            credential_secret: random_token(),
+            credential_secret: plaintext,
         };
         g.creds.insert(
             cred.credential_id,
             CredRecord {
-                secret: cred.credential_secret,
+                secret: hash_secret(&plaintext),
                 live: false,
                 signing_pk: None,
                 fanout: None,
@@ -239,8 +276,13 @@ impl GroupHost {
         g.pending.insert(
             pending_id,
             PendingRecord {
-                cred: cred.clone(),
+                cred: MemberCred {
+                    credential_id: cred.credential_id,
+                    credential_secret: hash_secret(&plaintext),
+                },
                 expires_at: stored.expires_at,
+                invitee_binding: stored.invitee_binding,
+                salt: stored.salt,
             },
         );
         self.dirty.invites.insert(group_id);
@@ -250,6 +292,26 @@ impl GroupHost {
             pending_id,
             cred,
             invitee_binding: stored.invitee_binding,
+            salt: stored.salt,
+        })
+    }
+
+    pub fn lookup_pending(
+        &self,
+        group_id: GroupId,
+        cred: &MemberCred,
+        pending_id: [u8; KEY_LEN],
+    ) -> Result<PendingLookup> {
+        self.authorize_live(group_id, cred)?;
+        let g = self.groups.get(&group_id).ok_or(ServerError::Denied)?;
+        let p = g.pending.get(&pending_id).ok_or(ServerError::Denied)?;
+        if self.now >= p.expires_at {
+            return Err(ServerError::Denied);
+        }
+        Ok(PendingLookup {
+            credential_id: p.cred.credential_id,
+            invitee_binding: p.invitee_binding,
+            salt: p.salt,
         })
     }
 
@@ -402,7 +464,7 @@ impl GroupHost {
             .signing_pk(group_id, cred.credential_id)
             .ok_or(ServerError::Denied)?;
         let pk = VerifyingKey::from_bytes(&appender_pk).map_err(|_| ServerError::Denied)?;
-        bundle.verify_sidecar(&pk)?;
+        bundle.verify_sidecar(&pk, &group_id.0)?;
         let named = bundle.credential_id;
         // Fan-out to the pre-revoke set, including the named credential.
         let out = self.fanout_copy(group_id, MessageType::RemoveBundle, body)?;
@@ -534,7 +596,9 @@ impl GroupHost {
             return Err(ServerError::Denied);
         };
         match g.creds.get(&cred.credential_id) {
-            Some(rec) if rec.live && bool::from(rec.secret.ct_eq(&cred.credential_secret)) => {
+            Some(rec)
+                if rec.live && bool::from(rec.secret.ct_eq(&hash_secret(&cred.credential_secret))) =>
+            {
                 Ok(())
             }
             _ => {
@@ -561,4 +625,8 @@ impl Default for GroupHost {
 
 fn dummy_scan() {
     let _ = 0u8;
+}
+
+fn hash_secret(secret: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
+    ids::sha256(secret)
 }

@@ -9,8 +9,8 @@ use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, PaddedMessa
 use nemo_wire::hpke::seal_to_server;
 use nemo_wire::ids::{self, identity_id, KEY_LEN};
 use nemo_wire::{
-    AttachmentReserve, AttachmentSizeBucket, ContactCard, DiscoveryRecord, GroupAdmit, GroupInvite,
-    HomeServerBinding, MailboxOwnerAuth, ServerBundle, SigningKey, INTRO_TTL_30_MIN,
+    AttachmentReserve, AttachmentSizeBucket, AuthScope, ContactCard, DiscoveryRecord, GroupAdmit,
+    GroupInvite, HomeServerBinding, MailboxOwnerAuth, ServerBundle, SigningKey, INTRO_TTL_30_MIN,
 };
 use rand::Rng;
 use tower::ServiceExt;
@@ -49,8 +49,42 @@ fn signed_card(server_id: [u8; KEY_LEN], hpke: [u8; KEY_LEN], sk: &SigningKey) -
     }
 }
 
-fn owner_auth(sk: &SigningKey, id: [u8; KEY_LEN], cursor: u64, limit: u64) -> MailboxOwnerAuth {
-    MailboxOwnerAuth::sign(sk, id.to_vec(), cursor, limit, unix_now()).unwrap()
+fn header_auth(
+    sk: &SigningKey,
+    id: [u8; KEY_LEN],
+    server_id: [u8; KEY_LEN],
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        0,
+        1,
+        unix_now(),
+        AuthScope::header(server_id, method, path, body),
+    )
+    .unwrap()
+}
+
+fn mailbox_auth(
+    sk: &SigningKey,
+    id: [u8; KEY_LEN],
+    cursor: u64,
+    limit: u64,
+    server_id: [u8; KEY_LEN],
+    path: &str,
+) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        cursor,
+        limit,
+        unix_now(),
+        AuthScope::body(server_id, "POST", path),
+    )
+    .unwrap()
 }
 
 fn owner_header(auth: &MailboxOwnerAuth) -> String {
@@ -115,7 +149,8 @@ async fn register_discovery_prekey_mailbox_and_group() {
     let state = AppState::new();
     let home = state.home.lock().await;
     let sk = SigningKey::generate(&mut rand::rng());
-    let card = signed_card(home.server_id(), home.hpke_public(), &sk);
+    let server_id = home.server_id();
+    let card = signed_card(server_id, home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     let hpke = home.hpke_public();
     drop(home);
@@ -168,14 +203,15 @@ async fn register_discovery_prekey_mailbox_and_group() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(body.is_empty());
 
-    let upload_auth = owner_auth(&sk, id, 0, 1);
+    let prekey_body = b"prekey-blob".to_vec();
+    let upload_auth = header_auth(&sk, id, server_id, "POST", "/v1/prekeys", &prekey_body);
     let (status, _, _) = call(
         app.clone(),
         Request::builder()
             .method("POST")
             .uri("/v1/prekeys")
             .header("nemo-owner", owner_header(&upload_auth))
-            .body(Body::from(b"prekey-blob".to_vec()))
+            .body(Body::from(prekey_body))
             .unwrap(),
     )
     .await;
@@ -197,7 +233,7 @@ async fn register_discovery_prekey_mailbox_and_group() {
     );
     assert_eq!(body, b"prekey-blob");
 
-    let cap_auth = owner_auth(&sk, id, 0, 1);
+    let cap_auth = header_auth(&sk, id, server_id, "POST", "/v1/tokens/contact", &[]);
     let (status, _, body) = call(
         app.clone(),
         Request::builder()
@@ -214,8 +250,15 @@ async fn register_discovery_prekey_mailbox_and_group() {
     };
     let cap = ids::copy_fixed(cbor::expect_bytes(cbor::map_get(&m, 0).unwrap()).unwrap()).unwrap();
 
-    let env_auth = owner_auth(&sk, id, 0, 1);
     let outer = wrap(&hpke, cap);
+    let env_auth = header_auth(
+        &sk,
+        id,
+        server_id,
+        "POST",
+        "/v1/envelopes",
+        &outer.encode(),
+    );
     let (status, _, body) = call(
         app.clone(),
         Request::builder()
@@ -236,7 +279,7 @@ async fn register_discovery_prekey_mailbox_and_group() {
     );
     assert_eq!(cbor::expect_uint(cbor::map_get(&m, 1).unwrap()).unwrap(), 1);
 
-    let fetch_auth = owner_auth(&sk, id, 0, 16);
+    let fetch_auth = mailbox_auth(&sk, id, 0, 16, server_id, "/v1/mailbox/fetch");
     let (status, _, body) = call(
         app.clone(),
         Request::builder()
@@ -259,7 +302,7 @@ async fn register_discovery_prekey_mailbox_and_group() {
         1
     );
 
-    let ack_auth = owner_auth(&sk, id, 1, 1);
+    let ack_auth = mailbox_auth(&sk, id, 1, 1, server_id, "/v1/mailbox/ack");
     let (status, _, _) = call(
         app.clone(),
         Request::builder()
@@ -276,11 +319,13 @@ async fn register_discovery_prekey_mailbox_and_group() {
         (1, Value::Bytes(cap.to_vec())),
         (2, Value::Bytes(hpke.to_vec())),
     ]));
+    let group_auth = header_auth(&sk, id, server_id, "POST", "/v1/groups", &create);
     let (status, _, body) = call(
         app.clone(),
         Request::builder()
             .method("POST")
             .uri("/v1/groups")
+            .header("nemo-owner", owner_header(&group_auth))
             .body(Body::from(create))
             .unwrap(),
     )
@@ -337,6 +382,28 @@ async fn owner_auth_rejected_without_header() {
 }
 
 #[tokio::test]
+async fn group_create_requires_owner() {
+    let state = AppState::new();
+    let hpke = state.home.lock().await.hpke_public();
+    let app = router(state);
+    let create = cbor::encode(&Value::Map(vec![
+        (0, Value::Bytes([1u8; KEY_LEN].to_vec())),
+        (1, Value::Bytes([2u8; KEY_LEN].to_vec())),
+        (2, Value::Bytes(hpke.to_vec())),
+    ]));
+    let (status, _, _) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/groups")
+            .body(Body::from(create))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn owner_auth_rejected_when_older_than_120s() {
     let state = AppState::new();
     let (server_id, hpke) = {
@@ -349,7 +416,15 @@ async fn owner_auth_rejected_when_older_than_120s() {
     let app = router(state);
     let (sk, id, _, _) = register_and_contact(app.clone(), server_id, hpke).await;
     let stale =
-        MailboxOwnerAuth::sign(&sk, id.to_vec(), 0, 16, unix_now().saturating_sub(121)).unwrap();
+        MailboxOwnerAuth::sign(
+            &sk,
+            id.to_vec(),
+            0,
+            16,
+            unix_now().saturating_sub(121),
+            AuthScope::body(server_id, "POST", "/v1/mailbox/fetch"),
+        )
+        .unwrap();
     let (status, _, _) = call(
         app,
         Request::builder()
@@ -396,7 +471,7 @@ async fn register_and_contact(
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let auth = owner_auth(&sk, id, 0, 1);
+    let auth = header_auth(&sk, id, server_id, "POST", "/v1/tokens/contact", &[]);
     let (status, _, body) = call(
         app,
         Request::builder()
@@ -420,17 +495,22 @@ async fn create_group_http(
     signing_pk: [u8; KEY_LEN],
     cap: [u8; KEY_LEN],
     hpke: [u8; KEY_LEN],
+    owner_sk: &SigningKey,
+    owner_id: [u8; KEY_LEN],
+    server_id: [u8; KEY_LEN],
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let create = cbor::encode(&Value::Map(vec![
         (0, Value::Bytes(signing_pk.to_vec())),
         (1, Value::Bytes(cap.to_vec())),
         (2, Value::Bytes(hpke.to_vec())),
     ]));
+    let auth = header_auth(owner_sk, owner_id, server_id, "POST", "/v1/groups", &create);
     let (status, _, body) = call(
         app,
         Request::builder()
             .method("POST")
             .uri("/v1/groups")
+            .header("nemo-owner", owner_header(&auth))
             .body(Body::from(create))
             .unwrap(),
     )
@@ -460,7 +540,8 @@ async fn group_invite_accept_admit_and_fanout() {
         (home.server_id(), home.hpke_public())
     };
     let app = router(state.clone());
-    let (alice_sk, _, alice_cap, hpke) = register_and_contact(app.clone(), server_id, hpke).await;
+    let (alice_sk, alice_id, alice_cap, hpke) =
+        register_and_contact(app.clone(), server_id, hpke).await;
     let (bob_sk, _, bob_cap, _) = register_and_contact(app.clone(), server_id, hpke).await;
 
     let alice_group_sk = SigningKey::generate(&mut rand::rng());
@@ -470,6 +551,9 @@ async fn group_invite_accept_admit_and_fanout() {
         alice_group_sk.verifying_key().to_bytes(),
         alice_cap,
         hpke,
+        &alice_sk,
+        alice_id,
+        server_id,
     )
     .await;
 
@@ -577,11 +661,19 @@ async fn group_file_upload_and_fetch() {
         (home.server_id(), home.hpke_public())
     };
     let app = router(state.clone());
-    let (sk, _, cap, hpke) = register_and_contact(app.clone(), server_id, hpke).await;
+    let (sk, id, cap, hpke) = register_and_contact(app.clone(), server_id, hpke).await;
 
     let group_sk = SigningKey::generate(&mut rand::rng());
-    let (gid, cred_id, cred_secret) =
-        create_group_http(app.clone(), group_sk.verifying_key().to_bytes(), cap, hpke).await;
+    let (gid, cred_id, cred_secret) = create_group_http(
+        app.clone(),
+        group_sk.verifying_key().to_bytes(),
+        cap,
+        hpke,
+        &sk,
+        id,
+        server_id,
+    )
+    .await;
 
     let token = [0x44u8; KEY_LEN];
     let reserve = AttachmentReserve {
@@ -661,7 +753,8 @@ async fn wakeup_sends_empty_binary_on_ingest() {
     let state = AppState::new();
     let home = state.home.lock().await;
     let sk = SigningKey::generate(&mut rand::rng());
-    let card = signed_card(home.server_id(), home.hpke_public(), &sk);
+    let server_id = home.server_id();
+    let card = signed_card(server_id, home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     let hpke = home.hpke_public();
     drop(home);
@@ -680,7 +773,7 @@ async fn wakeup_sends_empty_binary_on_ingest() {
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::NO_CONTENT);
 
-    let share_auth = owner_auth(&sk, id, 0, 1);
+    let share_auth = header_auth(&sk, id, server_id, "POST", "/v1/tokens/share", &[]);
     let res = client
         .post(format!("{base}/v1/tokens/share"))
         .header("nemo-owner", owner_header(&share_auth))
@@ -697,17 +790,18 @@ async fn wakeup_sends_empty_binary_on_ingest() {
     let mut ws_req = format!("ws://{addr}/v1/wakeup")
         .into_client_request()
         .unwrap();
-    let wake_auth = owner_auth(&sk, id, 0, 1);
+    let wake_auth = header_auth(&sk, id, server_id, "GET", "/v1/wakeup", &[]);
     ws_req
         .headers_mut()
         .insert("nemo-owner", owner_header(&wake_auth).parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
 
-    let env_auth = owner_auth(&sk, id, 0, 1);
+    let outer = wrap(&hpke, token);
+    let env_auth = header_auth(&sk, id, server_id, "POST", "/v1/envelopes", &outer.encode());
     let res = client
         .post(format!("{base}/v1/envelopes"))
         .header("nemo-owner", owner_header(&env_auth))
-        .body(wrap(&hpke, token).encode())
+        .body(outer.encode())
         .send()
         .await
         .unwrap();
@@ -727,7 +821,8 @@ async fn turn_creds_are_ephemeral_and_not_identity() {
     let state = AppState::new();
     let home = state.home.lock().await;
     let sk = SigningKey::generate(&mut rand::rng());
-    let card = signed_card(home.server_id(), home.hpke_public(), &sk);
+    let server_id = home.server_id();
+    let card = signed_card(server_id, home.hpke_public(), &sk);
     let id = identity_id(&sk.verifying_key().to_bytes());
     drop(home);
     let app = router(state);
@@ -741,7 +836,7 @@ async fn turn_creds_are_ephemeral_and_not_identity() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let auth = owner_auth(&sk, id, 0, 1);
+    let auth = header_auth(&sk, id, server_id, "POST", "/v1/turn", &[]);
     let (status, _, body) = call(
         app.clone(),
         Request::builder()
@@ -761,7 +856,7 @@ async fn turn_creds_are_ephemeral_and_not_identity() {
     assert!(!user.contains(&ids::to_hex(&id)));
     assert!(user.contains(':'));
     assert!(!pass.is_empty());
-    let auth2 = owner_auth(&sk, id, 0, 1);
+    let auth2 = header_auth(&sk, id, server_id, "POST", "/v1/turn", &[]);
     let (status, _, body2) = call(
         app,
         Request::builder()

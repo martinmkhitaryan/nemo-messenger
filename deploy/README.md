@@ -1,6 +1,6 @@
 # Reference deploy
 
-MIT. Caddy terminates TLS; `nemo-server` listens on `0.0.0.0:8787` by default (`NEMO_LISTEN`). PostgreSQL is started with the frozen DDL ([ADR-0033](../docs/decisions/0033-local-http-api-and-postgres-schema.md)). With `DATABASE_URL` set, the process loads that schema on start and write-throughs after successful mutating requests. Unset `DATABASE_URL` to keep the in-memory engine.
+MIT. Caddy terminates TLS; `nemo-server` listens on `0.0.0.0:8787` by default (`NEMO_LISTEN`). PostgreSQL is started with the frozen DDL ([ADR-0033](../docs/decisions/0033-local-http-api-and-postgres-schema.md)). With `DATABASE_URL` set, the process loads that schema on start and write-throughs after successful mutating requests. Unset `DATABASE_URL` to keep the in-memory engine. Long-term HPKE and signing secrets are a 0600 file (`NEMO_IDENTITY_FILE`, default `server_identity.cbor` in the process cwd; compose uses `/var/lib/nemo/identity.cbor`). Postgres stores only public bundle fields. Back up that file with the TLS material. A first start that still has secrets in Postgres copies them into the file once.
 
 There is no cloud vendor API. Operators run this compose file (or an equivalent Caddy + Postgres + `nemo-server` layout) on their own machines.
 

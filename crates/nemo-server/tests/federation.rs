@@ -31,8 +31,16 @@ fn register(home: &mut HomeServer) -> (SigningKey, [u8; KEY_LEN]) {
     (sk, id)
 }
 
-fn auth(sk: &SigningKey, id: [u8; KEY_LEN], ts: u64) -> MailboxOwnerAuth {
-    MailboxOwnerAuth::sign(sk, id.to_vec(), 0, 16, ts).unwrap()
+fn auth(sk: &SigningKey, id: [u8; KEY_LEN], ts: u64, server_id: [u8; KEY_LEN]) -> MailboxOwnerAuth {
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        0,
+        16,
+        ts,
+        nemo_wire::AuthScope::body(server_id, "POST", "/v1/mailbox/fetch"),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -42,7 +50,7 @@ fn same_server_enqueue_ingests() {
     let cap = home.mint_contact_capability(id).unwrap();
     let outer = wrap(&home.hpke_public(), cap, vec![1]);
     assert!(matches!(home.enqueue(outer).unwrap(), Enqueue::Local(1)));
-    let rows = home.fetch(id, &auth(&sk, id, home.now), home.now).unwrap();
+    let rows = home.fetch(id, &auth(&sk, id, home.now, home.server_id()), home.now).unwrap();
     assert_eq!(rows.len(), 1);
 }
 
@@ -58,7 +66,7 @@ fn a_forwards_to_b() {
     let stats = pump(&mut a, &mut b).unwrap();
     assert_eq!(stats.delivered, 1);
     assert_eq!(a.outbound_len(), 0);
-    let rows = b.fetch(bob, &auth(&bob_sk, bob, b.now), b.now).unwrap();
+    let rows = b.fetch(bob, &auth(&bob_sk, bob, b.now, b.server_id()), b.now).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(&rows[0].inner.padded_message.body[..2], &[9, 9]);
 }
@@ -115,7 +123,7 @@ fn hpke_replay_does_not_double_append() {
     pump(&mut a, &mut b).unwrap();
     a.enqueue(outer).unwrap();
     pump(&mut a, &mut b).unwrap();
-    let rows = b.fetch(bob, &auth(&bob_sk, bob, b.now), b.now).unwrap();
+    let rows = b.fetch(bob, &auth(&bob_sk, bob, b.now, b.server_id()), b.now).unwrap();
     assert_eq!(rows.len(), 1);
 }
 
@@ -162,7 +170,7 @@ fn bogus_capability_is_failed_not_delivered() {
     assert_eq!(stats.delivered, 0);
     assert_eq!(a.outbound_len(), 0);
     let rows = b
-        .fetch(bob, &auth(&_sk, bob, b.now), b.now)
+        .fetch(bob, &auth(&_sk, bob, b.now, b.server_id()), b.now)
         .unwrap_or_default();
     assert!(rows.is_empty());
 }
@@ -202,7 +210,7 @@ fn pump_only_delivers_to_named_peer() {
     assert_eq!(stats.delivered, 1);
     assert_eq!(a.outbound_len(), 1);
     assert_eq!(
-        b.fetch(bob, &auth(&bob_sk, bob, b.now), b.now)
+        b.fetch(bob, &auth(&bob_sk, bob, b.now, b.server_id()), b.now)
             .unwrap()
             .len(),
         1
@@ -211,7 +219,7 @@ fn pump_only_delivers_to_named_peer() {
     assert_eq!(stats.delivered, 1);
     assert_eq!(a.outbound_len(), 0);
     assert_eq!(
-        c.fetch(cara, &auth(&cara_sk, cara, c.now), c.now)
+        c.fetch(cara, &auth(&cara_sk, cara, c.now, c.server_id()), c.now)
             .unwrap()
             .len(),
         1

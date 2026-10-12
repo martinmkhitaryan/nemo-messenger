@@ -28,6 +28,8 @@ pub enum CoreError {
     Call(String),
     #[error("mls: {0}")]
     Mls(String),
+    #[error("MLS message epoch does not match the local group")]
+    MlsWrongEpoch,
     #[error("own MLS Update is older than 72 hours; Update first")]
     StaleMlsUpdate,
     #[error("unframed MLS Remove is forbidden; use RemoveBundle")]
@@ -40,6 +42,20 @@ pub enum CoreError {
     WrongCiphersuite,
     #[error("RemoveBundle does not remove exactly the named credential_id")]
     BadRemoveBundle,
+    #[error("an own MLS Commit is still waiting for the host to echo it")]
+    PendingCommit,
+    #[error("MLS leaf extension 0xF001/0xF002 missing, malformed, or changed")]
+    LeafExtensionViolation,
+    #[error("MLS leaf signature key changed without a SigningKeyReplace")]
+    UnannouncedSignerChange,
+    #[error("KeyPackage credential_id does not equal the host-reserved id")]
+    CredentialIdMismatch,
+    #[error("contact intro is unsigned or does not match the session key")]
+    BadIntro,
+    #[error("home response is unsigned or its signature does not verify")]
+    UnsignedResponse,
+    #[error("home server identity changed since it was pinned")]
+    ServerPinMismatch,
     #[error("mailbox inner type is not what this path decrypts")]
     WrongMailboxType,
     #[error("Maximum privacy mode is not shipped")]
@@ -80,6 +96,27 @@ pub enum CoreError {
     VaultIo(String),
     #[error("no vault is attached")]
     VaultDetached,
+}
+
+impl CoreError {
+    /// Failures that must not be transport-acked: the ciphertext is for a
+    /// live group we cannot apply yet (N-09). Terminal 1:1 AEAD / unknown
+    /// session are not retryable.
+    pub fn mls_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::MlsWrongEpoch
+                | Self::PendingCommit
+                | Self::UnframedRemove
+                | Self::BadRemoveBundle
+                | Self::ExternalMlsJoin
+                | Self::MlsReinit
+                | Self::LeafExtensionViolation
+                | Self::CredentialIdMismatch
+                | Self::WrongCiphersuite
+                | Self::UnannouncedSignerChange
+        )
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

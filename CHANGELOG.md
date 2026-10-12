@@ -8,6 +8,27 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.4.7] - 2026-10-12
+
+### Security
+
+- MLS groups: own Commits stay staged until the host sequences them;
+  leaf `0xF001`/`0xF002` are enforced on Updates; Welcome joiners rebuild
+  credential ids from the ratchet tree; admit checks the host-reserved id.
+- Client→home HTTP is signed under the stored ServerBundle; owner auth is
+  scoped, nonced, and replay-checked; cleartext is loopback-only.
+- CapabilityIntro is signed to the libsignal session key. Bound invites
+  use the host-stored salt. Group create requires owner auth. Credential
+  secrets are hashed at rest.
+- Mailbox ack stops at retryable MLS failures (wrong epoch / policy)
+  instead of deleting them. Server HPKE and signing secrets live in a
+  0600 identity file (`NEMO_IDENTITY_FILE`), not Postgres.
+
+### Added
+
+- Signed prekey rotation every 48h. Client-side `SigningKeyReplace`.
+- Security-review playbook in `docs/security-review.md`.
+
 ## [0.4.6] - 2026-10-03
 
 ### Fixed

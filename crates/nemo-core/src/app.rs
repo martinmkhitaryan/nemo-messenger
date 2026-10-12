@@ -17,6 +17,11 @@ pub const CALL_ID_LEN: usize = 16;
 pub const CONTACT_CAP_LEN: usize = KEY_LEN;
 
 /// Sender self-description inside a contact-capability message so the peer can reply.
+///
+/// `signature` is an identity-key signature (context `capability-intro`) over
+/// the recipient, the sender's libsignal session identity key, and every other
+/// field, so the Ed25519 identity is cryptographically bound to the Double
+/// Ratchet session the intro arrived on. Unsigned intros are rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapabilityIntro {
     pub identity_id: IdentityId,
@@ -24,6 +29,49 @@ pub struct CapabilityIntro {
     pub revocation_public_key: [u8; KEY_LEN],
     pub dest_hpke: [u8; KEY_LEN],
     pub binding_seq: u64,
+    /// Serialized libsignal `IdentityKey` of the sender's session.
+    pub session_key: Vec<u8>,
+    /// Recipient `identity_id`; prevents re-targeting a captured intro.
+    pub recipient: IdentityId,
+    pub signature: [u8; 64],
+}
+
+impl CapabilityIntro {
+    pub fn signed_payload(&self, contact_capability: &[u8; CONTACT_CAP_LEN]) -> Vec<u8> {
+        cbor::encode(&Value::Map(vec![
+            (0, Value::Uint(PROTOCOL_VERSION as u64)),
+            (1, Value::Bytes(self.recipient.to_vec())),
+            (2, Value::Bytes(self.session_key.clone())),
+            (3, Value::Bytes(contact_capability.to_vec())),
+            (4, Value::Bytes(self.identity_public_key.to_vec())),
+            (5, Value::Bytes(self.revocation_public_key.to_vec())),
+            (6, Value::Bytes(self.dest_hpke.to_vec())),
+            (7, Value::Uint(self.binding_seq)),
+        ]))
+    }
+
+    /// Verify the identity-key signature and that the intro names `recipient`.
+    pub fn verify(
+        &self,
+        contact_capability: &[u8; CONTACT_CAP_LEN],
+        recipient: &IdentityId,
+    ) -> Result<()> {
+        if self.recipient != *recipient {
+            return Err(CoreError::BadIntro);
+        }
+        if nemo_wire::identity_id(&self.identity_public_key) != self.identity_id {
+            return Err(CoreError::BadIntro);
+        }
+        let pk = nemo_wire::VerifyingKey::from_bytes(&self.identity_public_key)
+            .map_err(|_| CoreError::BadIntro)?;
+        nemo_wire::sign::verify(
+            &pk,
+            nemo_wire::sign::CAPABILITY_INTRO,
+            &self.signed_payload(contact_capability),
+            &self.signature,
+        )
+        .map_err(|_| CoreError::BadIntro)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,6 +309,9 @@ fn extra_fields(body: &AppBody, pairs: &mut Vec<(u64, Value)>) {
                 pairs.push((8, Value::Bytes(intro.revocation_public_key.to_vec())));
                 pairs.push((9, Value::Bytes(intro.dest_hpke.to_vec())));
                 pairs.push((10, Value::Uint(intro.binding_seq)));
+                pairs.push((11, Value::Bytes(intro.session_key.clone())));
+                pairs.push((12, Value::Bytes(intro.recipient.to_vec())));
+                pairs.push((13, Value::Bytes(intro.signature.to_vec())));
             }
         }
         AppBody::BindingGossip {
@@ -348,6 +399,18 @@ fn parse_body(msg_type: &str, m: &[(u64, Value)]) -> Result<AppBody> {
                     revocation_public_key: fixed(cbor::expect_bytes(cbor::map_get(m, 8)?)?)?,
                     dest_hpke: fixed(cbor::expect_bytes(cbor::map_get(m, 9)?)?)?,
                     binding_seq: cbor::expect_uint(cbor::map_get(m, 10)?)?,
+                    // Pre-signature intros (no fields 11–13) are rejected:
+                    // an unsigned identity claim must never be trusted.
+                    session_key: cbor::expect_bytes(
+                        cbor::map_get(m, 11).map_err(|_| CoreError::BadIntro)?,
+                    )?
+                    .to_vec(),
+                    recipient: fixed(cbor::expect_bytes(
+                        cbor::map_get(m, 12).map_err(|_| CoreError::BadIntro)?,
+                    )?)?,
+                    signature: fixed(cbor::expect_bytes(
+                        cbor::map_get(m, 13).map_err(|_| CoreError::BadIntro)?,
+                    )?)?,
                 }),
                 None => None,
             };
@@ -654,6 +717,9 @@ mod tests {
             revocation_public_key: [6u8; KEY_LEN],
             dest_hpke: [7u8; KEY_LEN],
             binding_seq: 2,
+            session_key: vec![5u8; 33],
+            recipient: [8u8; KEY_LEN],
+            signature: [9u8; 64],
         };
         assert_eq!(
             roundtrip(AppBody::Capability {

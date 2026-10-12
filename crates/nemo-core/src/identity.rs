@@ -30,6 +30,8 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 
 pub const PREKEY_STOCK_TARGET: usize = 100;
 pub const PREKEY_RESTOCK_BELOW: usize = 25;
+/// libsignal signed prekey lifetime before a fresh one is minted.
+pub const SIGNED_PREKEY_ROTATE_SECS: u64 = 48 * 3600;
 const DEVICE_NAME_HEX_LEN: usize = KEY_LEN * 2;
 
 /// Shown once at identity creation. Never written to the vault.
@@ -47,6 +49,8 @@ pub struct Installation {
     next_pre_key_id: u32,
     next_kyber_id: u32,
     signed_pre_key_id: SignedPreKeyId,
+    /// Unix seconds when the current signed prekey was minted.
+    signed_pre_key_at: u64,
     binding_seq: u64,
     pub(crate) mls_provider: OpenMlsRustCrypto,
 }
@@ -80,11 +84,82 @@ impl Installation {
             next_pre_key_id: 1,
             next_kyber_id: 1,
             signed_pre_key_id: SignedPreKeyId::from(1u32),
+            signed_pre_key_at: 0,
             binding_seq: 0,
             mls_provider: OpenMlsRustCrypto::default(),
         };
         installation.rotate_signed_prekey()?;
         Ok((installation, export))
+    }
+
+    /// Mint a new signed prekey if the current one is older than
+    /// [`SIGNED_PREKEY_ROTATE_SECS`]. Old records stay so in-flight PQXDH
+    /// handshakes still complete. Returns true if rotated.
+    pub fn maybe_rotate_signed_prekey(&mut self, now_unix: u64) -> Result<bool> {
+        if now_unix.saturating_sub(self.signed_pre_key_at) < SIGNED_PREKEY_ROTATE_SECS {
+            return Ok(false);
+        }
+        self.signed_pre_key_id = SignedPreKeyId::from(u32::from(self.signed_pre_key_id).saturating_add(1));
+        self.rotate_signed_prekey()?;
+        Ok(true)
+    }
+
+    /// Serialized libsignal `IdentityKey` of this installation (33 bytes).
+    pub fn session_identity_key(&self) -> Result<Vec<u8>> {
+        Ok(ready(self.store.get_identity_key_pair())?
+            .identity_key()
+            .serialize()
+            .to_vec())
+    }
+
+    /// Remote libsignal `IdentityKey` pinned for `peer`'s session, if any.
+    pub fn peer_session_identity_key(&self, peer: &IdentityId) -> Option<Vec<u8>> {
+        ready(self.store.get_identity(&address_for(peer)))
+            .ok()
+            .flatten()
+            .map(|k| k.serialize().to_vec())
+    }
+
+    /// Build the signed self-introduction sent inside a 1:1 session (README
+    /// §20). Binds this identity to the session key and the offered capability.
+    pub fn sign_capability_intro(
+        &self,
+        recipient: IdentityId,
+        contact_capability: [u8; KEY_LEN],
+        dest_hpke: [u8; KEY_LEN],
+    ) -> Result<crate::CapabilityIntro> {
+        let mut intro = crate::CapabilityIntro {
+            identity_id: self.identity_id(),
+            identity_public_key: self.identity_public_key(),
+            revocation_public_key: self.revocation_public_key,
+            dest_hpke,
+            binding_seq: self.binding_seq,
+            session_key: self.session_identity_key()?,
+            recipient,
+            signature: [0; 64],
+        };
+        intro.signature = nemo_wire::sign::sign(
+            &self.identity,
+            nemo_wire::sign::CAPABILITY_INTRO,
+            &intro.signed_payload(&contact_capability),
+        )?;
+        Ok(intro)
+    }
+
+    /// Verify an intro that arrived on `session_peer`'s Double Ratchet
+    /// session: signature under the claimed identity, addressed to us, and
+    /// naming exactly the libsignal key that session is pinned to.
+    pub fn verify_capability_intro(
+        &self,
+        session_peer: &IdentityId,
+        contact_capability: &[u8; KEY_LEN],
+        intro: &crate::CapabilityIntro,
+    ) -> Result<()> {
+        intro.verify(contact_capability, &self.identity_id())?;
+        match self.peer_session_identity_key(session_peer) {
+            Some(k) if k == intro.session_key => Ok(()),
+            _ => Err(CoreError::BadIntro),
+        }
     }
 
     pub fn identity_public_key(&self) -> [u8; KEY_LEN] {
@@ -124,6 +199,7 @@ impl Installation {
         cursor: u64,
         limit: u64,
         now_unix: u64,
+        scope: nemo_wire::AuthScope,
     ) -> Result<MailboxOwnerAuth> {
         Ok(MailboxOwnerAuth::sign(
             &self.identity,
@@ -131,6 +207,7 @@ impl Installation {
             cursor,
             limit,
             now_unix,
+            scope,
         )?)
     }
 
@@ -428,6 +505,7 @@ impl Installation {
             self.store
                 .save_signed_pre_key(self.signed_pre_key_id, &record),
         )?;
+        self.signed_pre_key_at = (now / 1000) as u64;
         Ok(())
     }
 
@@ -441,6 +519,7 @@ impl Installation {
             (5, Value::Uint(self.next_kyber_id as u64)),
             (6, Value::Uint(u32::from(self.signed_pre_key_id) as u64)),
             (7, Value::Uint(self.binding_seq)),
+            (8, Value::Uint(self.signed_pre_key_at)),
         ])))
     }
 
@@ -485,6 +564,11 @@ impl Installation {
         let binding_seq =
             cbor::expect_uint(cbor::map_get(&m, 7).map_err(|_| CoreError::VaultCorrupt)?)
                 .map_err(|_| CoreError::VaultCorrupt)?;
+        // Older snapshots have no field 8: treat the signed prekey as due.
+        let signed_pre_key_at = match cbor::map_get_opt(&m, 8) {
+            Some(v) => cbor::expect_uint(v).map_err(|_| CoreError::VaultCorrupt)?,
+            None => 0,
+        };
         let id = identity_id(&identity.verifying_key().to_bytes());
         let address = ProtocolAddress::new(hex_bytes(&id), bundle::device_id());
         Ok(Self {
@@ -495,6 +579,7 @@ impl Installation {
             next_pre_key_id,
             next_kyber_id,
             signed_pre_key_id,
+            signed_pre_key_at,
             binding_seq,
             mls_provider: OpenMlsRustCrypto::default(),
         })

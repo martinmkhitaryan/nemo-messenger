@@ -200,9 +200,16 @@ fn parse_http_response(raw: &[u8]) -> Result<HttpResponse> {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| CoreError::Transport("Tor HTTP status".into()))?;
+    let mut headers = Vec::new();
+    for line in head.lines().skip(1) {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
     Ok(HttpResponse {
         status,
         body: raw[sep + 4..].to_vec(),
+        headers,
     })
 }
 

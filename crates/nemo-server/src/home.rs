@@ -6,8 +6,8 @@ use nemo_wire::envelope::{InnerEnvelope, OuterEnvelope, TtlBucket};
 use nemo_wire::hpke::{self, open_outer, HpkeKeypair};
 use nemo_wire::ids::{self, IdentityId, ServerId, KEY_LEN};
 use nemo_wire::{
-    allowed_intro_ttl, ContactCard, HomeServerBinding, MailboxOwnerAuth, RevocationStatement,
-    ServerBundle, SigningKey, VerifyingKey, INTRO_TTL_30_MIN,
+    allowed_intro_ttl, AuthScope, ContactCard, HomeServerBinding, MailboxOwnerAuth,
+    RevocationStatement, ServerBundle, SigningKey, VerifyingKey, INTRO_TTL_30_MIN,
 };
 
 use crate::group::GroupId;
@@ -120,6 +120,9 @@ pub struct HomeServer {
     /// `pg::persist` drains it and writes only those rows. Empty means the
     /// database already matches memory, so persist is a no-op.
     pub(crate) dirty: HomeDirty,
+    /// Owner-auth nonces seen within [`MailboxOwnerAuth::MAX_AGE_SECS`].
+    /// In-memory only: a restart is a new 120s window.
+    owner_nonces: HashMap<[u8; KEY_LEN], u64>,
 }
 
 /// What changed in [`HomeServer`] since the last successful [`crate::pg::persist`].
@@ -248,6 +251,7 @@ impl HomeServer {
             outbound: Vec::new(),
             last_token_sweep: 0,
             dirty: HomeDirty::default(),
+            owner_nonces: HashMap::new(),
         }
     }
 
@@ -314,7 +318,13 @@ impl HomeServer {
             outbound: Vec::new(),
             last_token_sweep: 0,
             dirty: HomeDirty::default(),
+            owner_nonces: HashMap::new(),
         }
+    }
+
+    /// HPKE + signing secrets for the identity file (N-16). Not persisted in Postgres.
+    pub fn identity_keys(&self) -> (nemo_wire::hpke::HpkeKeypair, SigningKey) {
+        (self.hpke.clone(), self.sign.clone())
     }
 
     pub fn hpke_public(&self) -> [u8; KEY_LEN] {
@@ -386,7 +396,8 @@ impl HomeServer {
         now_unix: u64,
         outer: OuterEnvelope,
     ) -> Result<Enqueue> {
-        self.check_owner(owner, auth, now_unix)?;
+        let scope = AuthScope::header(self.server_id(), "POST", "/v1/envelopes", &outer.encode());
+        self.check_owner(owner, auth, now_unix, &scope)?;
         self.require_mailbox(owner)?;
         self.enqueue(outer)
     }
@@ -757,7 +768,8 @@ impl HomeServer {
         auth: &MailboxOwnerAuth,
         now_unix: u64,
     ) -> Result<Vec<StoredEnvelope>> {
-        self.check_owner(owner, auth, now_unix)?;
+        let scope = AuthScope::body(self.server_id(), "POST", "/v1/mailbox/fetch");
+        self.check_owner(owner, auth, now_unix, &scope)?;
         if auth.limit == 0 || auth.limit > FETCH_LIMIT_MAX {
             return Err(ServerError::FetchLimit);
         }
@@ -773,7 +785,8 @@ impl HomeServer {
     }
 
     pub fn ack(&mut self, owner: IdentityId, auth: &MailboxOwnerAuth, now_unix: u64) -> Result<()> {
-        self.check_owner(owner, auth, now_unix)?;
+        let scope = AuthScope::body(self.server_id(), "POST", "/v1/mailbox/ack");
+        self.check_owner(owner, auth, now_unix, &scope)?;
         let box_ = self
             .mailboxes
             .get_mut(&owner)
@@ -799,10 +812,11 @@ impl HomeServer {
     }
 
     pub(crate) fn check_owner(
-        &self,
+        &mut self,
         owner: IdentityId,
         auth: &MailboxOwnerAuth,
         now_unix: u64,
+        expect: &AuthScope,
     ) -> Result<()> {
         let box_ = self.mailboxes.get(&owner).ok_or(ServerError::OwnerAuth)?;
         if box_.disabled {
@@ -812,8 +826,33 @@ impl HomeServer {
             return Err(ServerError::OwnerAuth);
         }
         let pk = VerifyingKey::from_bytes(&box_.owner_pk).map_err(|_| ServerError::OwnerAuth)?;
-        auth.verify(&pk, now_unix)
-            .map_err(|_| ServerError::OwnerAuth)
+        auth.verify(&pk, now_unix, expect)
+            .map_err(|_| ServerError::OwnerAuth)?;
+        self.gc_owner_nonces(now_unix);
+        if self.owner_nonces.contains_key(&auth.nonce) {
+            return Err(ServerError::OwnerAuth);
+        }
+        self.owner_nonces.insert(auth.nonce, auth.ts);
+        Ok(())
+    }
+
+    fn gc_owner_nonces(&mut self, now_unix: u64) {
+        self.owner_nonces
+            .retain(|_, ts| now_unix.saturating_sub(*ts) <= MailboxOwnerAuth::MAX_AGE_SECS);
+    }
+
+    pub fn capability_mailbox(&self, token: &[u8; KEY_LEN]) -> Option<IdentityId> {
+        match self.token(token)? {
+            TokenKind::Share { mailbox, .. } | TokenKind::Contact { mailbox, .. } => Some(*mailbox),
+        }
+    }
+
+    pub fn fanout_hpke_allowed(&self, hpke: &[u8; KEY_LEN]) -> bool {
+        bool::from(self.hpke.public.ct_eq(hpke))
+            || self
+                .peers
+                .values()
+                .any(|p| bool::from(p.bundle.server_hpke_public_key.ct_eq(hpke)))
     }
 
     fn disable_mailbox(&mut self, owner: IdentityId) {

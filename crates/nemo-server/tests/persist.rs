@@ -19,6 +19,19 @@ use rand::Rng;
 
 const NOW: u64 = 1_700_000_100;
 
+async fn reload(
+    pool: &sqlx::PgPool,
+    home: &mut HomeServer,
+    groups: &mut GroupHost,
+) -> (HomeServer, GroupHost) {
+    let keys = home.identity_keys();
+    pg::persist(pool, home, groups).await.expect("persist");
+    pg::load_keys(pool, Some(keys))
+        .await
+        .expect("load")
+        .expect("identity row")
+}
+
 fn env_url() -> Option<String> {
     std::env::var("NEMO_TEST_DATABASE_URL").ok()
 }
@@ -35,8 +48,27 @@ fn seal_for(home: &HomeServer, cap: [u8; KEY_LEN], body: Vec<u8>) -> OuterEnvelo
     seal_to_server(&home.hpke_public(), &inner).unwrap()
 }
 
-fn owner_auth(sk: &SigningKey, id: &[u8; KEY_LEN], cursor: u64) -> MailboxOwnerAuth {
-    MailboxOwnerAuth::sign(sk, id.to_vec(), cursor, 64, NOW).unwrap()
+fn owner_auth(
+    sk: &SigningKey,
+    id: &[u8; KEY_LEN],
+    cursor: u64,
+    server_id: [u8; KEY_LEN],
+    ack: bool,
+) -> MailboxOwnerAuth {
+    let path = if ack {
+        "/v1/mailbox/ack"
+    } else {
+        "/v1/mailbox/fetch"
+    };
+    MailboxOwnerAuth::sign(
+        sk,
+        id.to_vec(),
+        cursor,
+        64,
+        NOW,
+        nemo_wire::AuthScope::body(server_id, "POST", path),
+    )
+    .unwrap()
 }
 
 fn register_card(
@@ -94,8 +126,7 @@ async fn flow_survives_reload(pool: &sqlx::PgPool) {
         )
         .unwrap();
 
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist");
-    let (mut loaded, mut loaded_groups) = pg::load(&pool).await.expect("load").expect("identity row");
+    let (mut loaded, mut loaded_groups) = reload(&pool, &mut home, &mut groups).await;
     assert_eq!(loaded.server_id(), home.server_id());
     assert_eq!(loaded.bundle().host, "pg-test");
     assert_eq!(loaded.hpke_public(), home.hpke_public());
@@ -179,8 +210,7 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
     nemo_server::pin_each_other(&mut home, &mut home2).unwrap();
     nemo_server::refuse(&mut home, home2.server_id());
 
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist r1");
-    let (mut home, mut groups) = pg::load(&pool).await.expect("load r1").expect("state r1");
+    let (mut home, mut groups) = reload(&pool, &mut home, &mut groups).await;
 
     assert_eq!(home.mailbox_head(id), 2);
     assert!(home.bundle_pin(home2.server_id()).is_some());
@@ -200,7 +230,7 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
     assert_eq!(appended2.seq, 2);
 
     // Round 2: ack the first rows, reserve + upload a file, then persist.
-    home.ack(id, &owner_auth(&sk, &id, 2), NOW).unwrap();
+    home.ack(id, &owner_auth(&sk, &id, 2, home.server_id(), true), NOW).unwrap();
     assert_eq!(home.mailbox_head(id), 3);
     let reserve = AttachmentReserve {
         fetch_token: {
@@ -223,13 +253,12 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
     groups
         .upload_file(created.group_id, &created.cred, token, vec![5u8; 262_144])
         .unwrap();
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist r2");
-    let (mut home, mut groups) = pg::load(&pool).await.expect("load r2").expect("state r2");
+    let (mut home, mut groups) = reload(&pool, &mut home, &mut groups).await;
 
     // Acked rows are gone, the live row and stream/file state remain.
     assert_eq!(home.mailbox_head(id), 3);
     let rows = home
-        .fetch(id, &owner_auth(&sk, &id, 2), NOW)
+        .fetch(id, &owner_auth(&sk, &id, 2, home.server_id(), false), NOW)
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].seq, 3);
@@ -246,10 +275,9 @@ async fn flow_incremental_rounds(pool: &sqlx::PgPool) {
     let removed = home.ingest_revocation(&stmt).unwrap();
     assert_eq!(removed, vec![created.group_id]);
     assert!(home.mailbox_disabled(id));
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist r3");
-    let (mut home, _) = pg::load(&pool).await.expect("load r3").expect("state r3");
+    let (mut home, _) = reload(&pool, &mut home, &mut groups).await;
     assert!(home.mailbox_disabled(id));
-    assert!(home.fetch(id, &owner_auth(&sk, &id, 3), NOW).is_err());
+    assert!(home.fetch(id, &owner_auth(&sk, &id, 3, home.server_id(), false), NOW).is_err());
     assert!(home.fetch_prekey(card.share_token).is_err());
 }
 
@@ -257,8 +285,12 @@ async fn flow_clean_persist_is_noop(pool: &sqlx::PgPool) {
     let mut home = HomeServer::advertise("pg-test-clean".to_string(), 8443);
     let mut groups = GroupHost::new();
     // Fresh advertise only dirties server_identity: one row, then clean.
+    let keys = home.identity_keys();
     pg::persist(&pool, &mut home, &mut groups).await.expect("persist");
-    let before = pg::load(&pool).await.expect("load").expect("state");
+    let before = pg::load_keys(&pool, Some(keys))
+        .await
+        .expect("load")
+        .expect("state");
     assert_eq!(before.0.bundle().host, "pg-test-clean");
     // Second persist with no changes must succeed trivially.
     pg::persist(&pool, &mut home, &mut groups).await.expect("noop persist");
@@ -280,8 +312,7 @@ async fn flow_queues_and_windows(pool: &sqlx::PgPool) {
     let s2 = home.mint_share_token(id, None).unwrap();
     let s3 = home.mint_share_token(id, None).unwrap();
     let contact = home.mint_contact_capability(id).unwrap();
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist q1");
-    let (mut home, mut groups) = pg::load(&pool).await.expect("load q1").expect("state q1");
+    let (mut home, mut groups) = reload(&pool, &mut home, &mut groups).await;
     assert_eq!(home.fetch_prekey(s1).unwrap(), vec![10]);
     assert_eq!(home.fetch_prekey(s2).unwrap(), vec![20]);
     assert_eq!(home.fetch_prekey(s3).unwrap(), vec![30]);
@@ -310,8 +341,7 @@ async fn flow_queues_and_windows(pool: &sqlx::PgPool) {
         nemo_server::federation::Enqueue::Queued
     ));
     assert_eq!(home.outbound_len(), outbound_before + 1);
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist q2");
-    let (mut home, mut groups) = pg::load(&pool).await.expect("load q2").expect("state q2");
+    let (mut home, mut groups) = reload(&pool, &mut home, &mut groups).await;
     assert_eq!(home.outbound_len(), outbound_before + 1);
 
     // Fill the HPKE dedup window past its 1024-entry wrap, then reload.
@@ -325,8 +355,7 @@ async fn flow_queues_and_windows(pool: &sqlx::PgPool) {
         home.ingest(&outer).unwrap();
     }
     assert_eq!(home.mailbox_head(id), 1030);
-    pg::persist(&pool, &mut home, &mut groups).await.expect("persist q3");
-    let (home, _) = pg::load(&pool).await.expect("load q3").expect("state q3");
+    let (home, _) = reload(&pool, &mut home, &mut groups).await;
     assert_eq!(home.mailbox_head(id), 1030);
 }
 
@@ -376,11 +405,14 @@ async fn flow_token_gc(pool: &sqlx::PgPool) {
     let swept = home.sweep_dead_tokens();
     assert!(swept >= 4, "expected share+contact sweep, got {swept}");
 
+    let keys = home.identity_keys();
     pg::persist(pool, &mut home, &mut groups)
         .await
         .expect("persist gc r2");
-    let (mut loaded, mut loaded_groups) =
-        pg::load(pool).await.expect("load gc").expect("state gc");
+    let (mut loaded, mut loaded_groups) = pg::load_keys(pool, Some(keys))
+        .await
+        .expect("load gc")
+        .expect("state gc");
     let count_r2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tokens")
         .fetch_one(pool)
         .await

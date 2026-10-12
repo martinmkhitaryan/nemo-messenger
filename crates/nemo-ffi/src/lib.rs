@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nemo_core::{
     classify_binding_gossip, decode, encode, invite_ttl_bucket, mailbox,
     messages_lost, open_group_file, seal_group_file, AppBody, AppHeader, AppMessage,
-    BindingGossipCheck, Call, CapabilityIntro, CoreError, FileMeta, Group, HomeSession,
-    HostAccept, HostGroup, HttpHome, InboxRow, Installation, LocalSignal, PendingJoin,
+    BindingGossipCheck, Call, CoreError, FileMeta, Group,
+    HomeSession, HostAccept, HostGroup, HttpHome, InboxRow, Installation, LocalSignal, PendingJoin,
     PrivacyMode, TurnConfig, Vault, DISCOVERY_REFRESH_SECS,
 };
 use nemo_wire::cbor::{self, Value};
@@ -19,7 +19,7 @@ use nemo_wire::envelope::{MessageType, TtlBucket};
 use nemo_wire::hostframe::AttachmentReserve;
 use nemo_wire::ids::{self, KEY_LEN};
 use nemo_wire::{
-    parse_identity_id, verify_bound_invite, ContactCard, GroupInvite, InviteeProof, VerifyingKey,
+    invitee_binding, parse_identity_id, ContactCard, GroupInvite, InviteeProof, VerifyingKey,
 };
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -157,6 +157,9 @@ struct Inner {
     /// Deliberately not persisted: after a restart each peer gets one extra
     /// gossip on next contact (self-healing).
     gossip_sent: HashMap<ids::IdentityId, (u64, ids::ServerId)>,
+    /// Fetch attempts of a mailbox seq that failed as retryable MLS.
+    /// In-memory only; a restart resets the budget.
+    mailbox_retries: HashMap<u64, u8>,
 }
 
 /// One installation. The shell must not persist ratchet or MLS keys.
@@ -416,13 +419,11 @@ fn send_own_contact_capability(
         },
         body: AppBody::Capability {
             contact_capability: cap,
-            intro: Some(CapabilityIntro {
-                identity_id: session.identity_id(),
-                identity_public_key: session.install.identity_public_key(),
-                revocation_public_key: session.install.revocation_public_key(),
-                dest_hpke: session.hpke_public(),
-                binding_seq: session.install.binding_seq(),
-            }),
+            intro: Some(session.install.sign_capability_intro(
+                peer,
+                cap,
+                session.hpke_public(),
+            )?),
         },
     })?;
     block_on(session.send_to(&peer, TtlBucket::DEFAULT, &ptext, now))?;
@@ -705,6 +706,7 @@ fn empty_inner(
         group_discovery_at: HashMap::new(),
         intro_sent: std::collections::HashSet::new(),
         gossip_sent: HashMap::new(),
+        mailbox_retries: HashMap::new(),
     }
 }
 
@@ -776,10 +778,309 @@ fn mint_invite(
     ))
 }
 
+const MAILBOX_MLS_RETRIES: u8 = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MlsRowFate {
+    Done,
+    Retry,
+}
+
+fn apply_group_mailbox_row(
+    session: &mut HomeSession<HttpHome>,
+    groups: &mut Vec<LiveGroup>,
+    pending: &mut HashMap<[u8; KEY_LEN], PendingEntry>,
+    pending_names: &mut HashMap<[u8; KEY_LEN], String>,
+    inbox: &mut Vec<DisplayRow>,
+    next_seq: &mut HashMap<String, u64>,
+    nicknames: &HashMap<String, String>,
+    disappear: &mut HashMap<String, u64>,
+    new_rows: &mut Vec<DisplayRow>,
+    row: &nemo_core::MailboxRow,
+) -> MlsRowFate {
+    let ty = row.inner.padded_message.type_;
+    if ty == MessageType::MlsHandshake {
+        if let Ok(body) = mailbox::expect_type(&row.inner, MessageType::MlsHandshake) {
+            if PendingJoin::is_welcome(body) {
+                let keys: Vec<_> = pending.keys().copied().collect();
+                for gid in keys {
+                    let matches = pending.get(&gid).is_some_and(|e| {
+                        e.pending
+                            .welcome_matches(session.install.mls_provider(), body)
+                    });
+                    if !matches {
+                        continue;
+                    }
+                    let Some(entry) = pending.remove(&gid) else {
+                        continue;
+                    };
+                    let backup = entry.pending.encode().ok();
+                    match entry.pending.join(session.install.mls_provider(), body) {
+                        Ok(mls) => {
+                            let live = HostGroup {
+                                group_id: gid,
+                                cred: entry.host.cred,
+                                host_base: session.home_base.clone(),
+                            };
+                            session.remember_group(live.clone());
+                            let nickname = pending_names.remove(&gid).unwrap_or_default();
+                            groups.push(LiveGroup {
+                                host: live,
+                                mls,
+                                nickname,
+                            });
+                            return MlsRowFate::Done;
+                        }
+                        Err(_) => {
+                            if let Some(bytes) = backup {
+                                if let Ok(restored) =
+                                    PendingJoin::decode(session.install.mls_provider(), &bytes)
+                                {
+                                    pending.insert(
+                                        gid,
+                                        PendingEntry {
+                                            pending: restored,
+                                            host: entry.host,
+                                        },
+                                    );
+                                }
+                            }
+                            return MlsRowFate::Retry;
+                        }
+                    }
+                }
+                return MlsRowFate::Done;
+            }
+        }
+        let mut retry = false;
+        for g in groups.iter_mut() {
+            match g
+                .mls
+                .apply_handshake_from_mailbox(session.install.mls_provider(), &row.inner)
+            {
+                Ok(_) => return MlsRowFate::Done,
+                Err(e) if e.mls_retryable() => retry = true,
+                Err(_) => {}
+            }
+        }
+        return if retry {
+            MlsRowFate::Retry
+        } else {
+            MlsRowFate::Done
+        };
+    }
+    if ty == MessageType::SigningKeyReplace {
+        if let Ok(body) = mailbox::expect_type(&row.inner, MessageType::SigningKeyReplace) {
+            for g in groups.iter_mut() {
+                let _ = g.mls.apply_signing_key_replace(body);
+            }
+        }
+        return MlsRowFate::Done;
+    }
+    if ty == MessageType::MlsApp {
+        let mut retry = false;
+        let mut opened = None;
+        for g in groups.iter_mut() {
+            match g.mls.decrypt_from_mailbox_with_sender(
+                session.install.mls_provider(),
+                &row.inner,
+            ) {
+                Ok((plaintext, sender)) => {
+                    opened = Some((g.host.clone(), plaintext, sender));
+                    break;
+                }
+                Err(e) if e.mls_retryable() => retry = true,
+                Err(_) => {}
+            }
+        }
+        if opened.is_none() {
+            return if retry {
+                MlsRowFate::Retry
+            } else {
+                MlsRowFate::Done
+            };
+        }
+        let Some((host, plaintext, sender)) = opened else {
+            return MlsRowFate::Done;
+        };
+        let sender_hex = ids::to_hex(&sender);
+        let sender_name = nicknames.get(&sender_hex).cloned().unwrap_or_default();
+        match decode(&plaintext) {
+            Ok(AppMessage {
+                header,
+                body: AppBody::Text { text },
+            }) => {
+                let mut out = push_text(
+                    inbox,
+                    next_seq,
+                    ids::to_hex(&host.group_id),
+                    header.conv_seq,
+                    text,
+                    header.sent_at,
+                    header.reply_to.unwrap_or(0),
+                    false,
+                );
+                out.sender_id = sender_hex;
+                out.sender_name = sender_name;
+                new_rows.push(out);
+            }
+            Ok(AppMessage {
+                header,
+                body:
+                    AppBody::Attachment {
+                        enc_file,
+                        meta,
+                        fetch_token: Some(token),
+                    },
+            }) => {
+                if let Ok(blob) = block_on(session.fetch_file(host.group_id, &host.cred, token)) {
+                    if let Ok(bytes) = open_group_file(&enc_file, &blob) {
+                        let mut out = push_file(
+                            inbox,
+                            next_seq,
+                            ids::to_hex(&host.group_id),
+                            header.conv_seq,
+                            header.sent_at,
+                            meta,
+                            bytes,
+                            ids::to_hex(&token),
+                            header.reply_to.unwrap_or(0),
+                            false,
+                        );
+                        out.sender_id = sender_hex;
+                        out.sender_name = sender_name;
+                        new_rows.push(out);
+                    }
+                }
+            }
+            Ok(AppMessage {
+                header,
+                body: AppBody::Reaction { target, emoji },
+            }) => {
+                let conv = ids::to_hex(&host.group_id);
+                if take_matching_reaction(inbox, &conv, target, &emoji, false, &sender_hex) {
+                    let seq = *next_seq.get(&conv).unwrap_or(&0);
+                    if header.conv_seq > seq {
+                        next_seq.insert(conv.clone(), header.conv_seq);
+                    }
+                    new_rows.push(reaction_removed_marker(
+                        conv,
+                        target,
+                        emoji,
+                        header.sent_at,
+                        false,
+                    ));
+                } else {
+                    let mut out = push_control(
+                        inbox,
+                        next_seq,
+                        conv,
+                        header.conv_seq,
+                        header.sent_at,
+                        "reaction",
+                        emoji.clone(),
+                        target,
+                        false,
+                    );
+                    out.sender_id = sender_hex.clone();
+                    out.sender_name = sender_name.clone();
+                    if let Some(stored) = inbox.iter_mut().find(|r| {
+                        r.conv_id == out.conv_id
+                            && r.conv_seq == out.conv_seq
+                            && r.kind == "reaction"
+                    }) {
+                        stored.sender_id = out.sender_id.clone();
+                        stored.sender_name = out.sender_name.clone();
+                    }
+                    new_rows.push(out);
+                }
+            }
+            Ok(AppMessage {
+                header,
+                body: AppBody::Delete { target },
+            }) => {
+                let conv = ids::to_hex(&host.group_id);
+                remove_target(inbox, &conv, target);
+                let seq = *next_seq.get(&conv).unwrap_or(&0);
+                if header.conv_seq > seq {
+                    next_seq.insert(conv.clone(), header.conv_seq);
+                }
+                new_rows.push(removed_marker(conv, target, header.sent_at, false));
+            }
+            Ok(AppMessage {
+                header,
+                body: AppBody::Disappear { seconds },
+            }) => {
+                let conv = ids::to_hex(&host.group_id);
+                disappear.insert(conv.clone(), seconds);
+                new_rows.push(push_control(
+                    inbox,
+                    next_seq,
+                    conv,
+                    header.conv_seq,
+                    header.sent_at,
+                    "disappear",
+                    seconds.to_string(),
+                    0,
+                    false,
+                ));
+            }
+            Ok(AppMessage {
+                header,
+                body:
+                    AppBody::BindingGossip {
+                        identity_id,
+                        seq,
+                        server_id,
+                    },
+            }) => {
+                if let Some(out) = apply_binding_gossip(
+                    session,
+                    inbox,
+                    next_seq,
+                    host.group_id,
+                    identity_id,
+                    seq,
+                    server_id,
+                    header.conv_seq,
+                    header.sent_at,
+                ) {
+                    new_rows.push(out);
+                }
+            }
+            _ => {}
+        }
+        return MlsRowFate::Done;
+    }
+    if ty == MessageType::RemoveBundle {
+        let mut retry = false;
+        for g in groups.iter_mut() {
+            match g.mls.apply_remove_from_mailbox(
+                session.install.mls_provider(),
+                &g.host.group_id,
+                &row.inner,
+            ) {
+                Ok(_) => return MlsRowFate::Done,
+                Err(e) if e.mls_retryable() => retry = true,
+                Err(_) => {}
+            }
+        }
+        return if retry {
+            MlsRowFate::Retry
+        } else {
+            MlsRowFate::Done
+        };
+    }
+    MlsRowFate::Done
+}
+
 fn flush_mls_update(
     session: &mut HomeSession<HttpHome>,
     g: &mut LiveGroup,
 ) -> Result<(), FfiError> {
+    if g.mls.has_pending_commit() {
+        return Ok(());
+    }
     if let Some(hs) = g
         .mls
         .maybe_self_update(session.install.mls_provider(), SystemTime::now())?
@@ -788,8 +1089,10 @@ fn flush_mls_update(
             g.host.group_id,
             &g.host.cred,
             MessageType::MlsHandshake,
-            hs,
+            hs.clone(),
         ))?;
+        g.mls
+            .apply_handshake(session.install.mls_provider(), &hs)?;
     }
     Ok(())
 }
@@ -846,13 +1149,26 @@ fn idle_maintenance(
             if cred == g.mls.credential_id() {
                 continue;
             }
-            if let Ok(bundle) = g.mls.remove(session.install.mls_provider(), cred) {
-                let _ = block_on(session.group_append(
+            if let Ok(bundle) = g
+                .mls
+                .remove(session.install.mls_provider(), g.host.group_id, cred)
+            {
+                if block_on(session.group_append(
                     g.host.group_id,
                     &g.host.cred,
                     MessageType::RemoveBundle,
                     bundle.encode()?,
-                ));
+                ))
+                .is_ok()
+                {
+                    let _ = g.mls.apply_remove_bundle(
+                        session.install.mls_provider(),
+                        &g.host.group_id,
+                        &bundle,
+                    );
+                } else {
+                    let _ = g.mls.discard_pending(session.install.mls_provider());
+                }
             }
         }
     }
@@ -1376,6 +1692,7 @@ impl NemoClient {
                 group_discovery_at,
                 gossip_sent,
                 pending_names,
+                mailbox_retries,
                 ..
             } = &mut *inner;
             let session = match state {
@@ -1405,9 +1722,54 @@ impl NemoClient {
                         ));
                     }
                 }
+                let mut ack_upto = last_acked;
+                for row in &rows {
+                    match apply_group_mailbox_row(
+                        session,
+                        groups,
+                        pending,
+                        pending_names,
+                        inbox,
+                        next_seq,
+                        nicknames,
+                        disappear,
+                        &mut new_rows,
+                        row,
+                    ) {
+                        MlsRowFate::Done => {
+                            mailbox_retries.remove(&row.seq);
+                            ack_upto = row.seq;
+                        }
+                        MlsRowFate::Retry => {
+                            let n = mailbox_retries.entry(row.seq).or_insert(0);
+                            *n = n.saturating_add(1);
+                            if *n >= MAILBOX_MLS_RETRIES {
+                                mailbox_retries.remove(&row.seq);
+                                new_rows.push(push_control(
+                                    inbox,
+                                    next_seq,
+                                    "system".into(),
+                                    0,
+                                    now_unix(),
+                                    "lost",
+                                    String::new(),
+                                    0,
+                                    false,
+                                ));
+                                ack_upto = row.seq;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                session.cursor = ack_upto;
                 let mut gossip = Vec::new();
                 let mut acks: HashMap<[u8; KEY_LEN], u64> = HashMap::new();
                 for row in &rows {
+                    if row.seq > ack_upto {
+                        continue;
+                    }
                     match block_on(session.install.decrypt_incoming(&row.inner, &contacts)) {
                         Ok((peer, plaintext)) => match decode(&plaintext) {
                             Ok(AppMessage {
@@ -1817,246 +2179,9 @@ impl NemoClient {
                     }
                 }
 
-                let mut joined = Vec::new();
-                for row in &rows {
-                    let Ok(body) = mailbox::expect_type(&row.inner, MessageType::MlsHandshake)
-                    else {
-                        continue;
-                    };
-                    if !PendingJoin::is_welcome(body) {
-                        continue;
-                    }
-                    let keys: Vec<_> = pending.keys().copied().collect();
-                    for gid in keys {
-                        let Some(entry) = pending.remove(&gid) else {
-                            continue;
-                        };
-                        match entry.pending.join(session.install.mls_provider(), body) {
-                            Ok(mls) => {
-                                joined.push((gid, mls, entry.host));
-                                break;
-                            }
-                            Err(_) => {}
-                        }
-                    }
+                if ack_upto > last_acked {
+                    block_on(session.ack())?;
                 }
-                for (gid, mls, host) in joined {
-                    let live = HostGroup {
-                        group_id: gid,
-                        cred: host.cred,
-                        host_base: session.home_base.clone(),
-                    };
-                    session.remember_group(live.clone());
-                    let nickname = pending_names.remove(&gid).unwrap_or_default();
-                    groups.push(LiveGroup {
-                        host: live,
-                        mls,
-                        nickname,
-                    });
-                }
-
-                for row in &rows {
-                    match row.inner.padded_message.type_ {
-                        MessageType::MlsHandshake => {
-                            for g in groups.iter_mut() {
-                                let _ = g.mls.apply_handshake_from_mailbox(
-                                    session.install.mls_provider(),
-                                    &row.inner,
-                                );
-                            }
-                        }
-                        MessageType::MlsApp => {
-                            let mut opened = None;
-                            for g in groups.iter_mut() {
-                                if let Ok((plaintext, sender)) = g.mls
-                                    .decrypt_from_mailbox_with_sender(
-                                        session.install.mls_provider(),
-                                        &row.inner,
-                                    )
-                                {
-                                    opened = Some((g.host.clone(), plaintext, sender));
-                                    break;
-                                }
-                            }
-                            if let Some((host, plaintext, sender)) = opened {
-                                let sender_hex = ids::to_hex(&sender);
-                                let sender_name =
-                                    nicknames.get(&sender_hex).cloned().unwrap_or_default();
-                                match decode(&plaintext) {
-                                    Ok(AppMessage {
-                                        header,
-                                        body: AppBody::Text { text },
-                                    }) => {
-                                        let mut out = push_text(
-                                            inbox,
-                                            next_seq,
-                                            ids::to_hex(&host.group_id),
-                                            header.conv_seq,
-                                            text,
-                                            header.sent_at,
-                                            header.reply_to.unwrap_or(0),
-                                            false
-                                        );
-                                        out.sender_id = sender_hex;
-                                        out.sender_name = sender_name;
-                                        new_rows.push(out);
-                                    }
-                                    Ok(AppMessage {
-                                        header,
-                                        body:
-                                            AppBody::Attachment {
-                                                enc_file,
-                                                meta,
-                                                fetch_token: Some(token),
-                                            },
-                                    }) => {
-                                        if let Ok(blob) = block_on(session.fetch_file(
-                                            host.group_id,
-                                            &host.cred,
-                                            token,
-                                        )) {
-                                            if let Ok(bytes) = open_group_file(&enc_file, &blob) {
-                                                let mut out = push_file(
-                                                    inbox,
-                                                    next_seq,
-                                                    ids::to_hex(&host.group_id),
-                                                    header.conv_seq,
-                                                    header.sent_at,
-                                                    meta,
-                                                    bytes,
-                                                    ids::to_hex(&token),
-                                                    header.reply_to.unwrap_or(0),
-                                                    false
-                                                );
-                                                out.sender_id = sender_hex.clone();
-                                                out.sender_name = sender_name.clone();
-                                                new_rows.push(out);
-                                            }
-                                        }
-                                    }
-                                    Ok(AppMessage {
-                                        header,
-                                        body: AppBody::Reaction { target, emoji },
-                                    }) => {
-                                        let conv = ids::to_hex(&host.group_id);
-                                        if take_matching_reaction(
-                                            inbox,
-                                            &conv,
-                                            target,
-                                            &emoji,
-                                            false,
-                                            &sender_hex,
-                                        ) {
-                                            let seq = *next_seq.get(&conv).unwrap_or(&0);
-                                            if header.conv_seq > seq {
-                                                next_seq.insert(conv.clone(), header.conv_seq);
-                                            }
-                                            new_rows.push(reaction_removed_marker(
-                                                conv,
-                                                target,
-                                                emoji,
-                                                header.sent_at,
-                                                false,
-                                            ));
-                                        } else {
-                                            let mut out = push_control(
-                                                inbox,
-                                                next_seq,
-                                                conv,
-                                                header.conv_seq,
-                                                header.sent_at,
-                                                "reaction",
-                                                emoji.clone(),
-                                                target,
-                                                false,
-                                            );
-                                            out.sender_id = sender_hex.clone();
-                                            out.sender_name = sender_name.clone();
-                                            if let Some(stored) = inbox.iter_mut().find(|r| {
-                                                r.conv_id == out.conv_id
-                                                    && r.conv_seq == out.conv_seq
-                                                    && r.kind == "reaction"
-                                            }) {
-                                                stored.sender_id = out.sender_id.clone();
-                                                stored.sender_name = out.sender_name.clone();
-                                            }
-                                            new_rows.push(out);
-                                        }
-                                    }
-                                    Ok(AppMessage {
-                                        header,
-                                        body: AppBody::Delete { target },
-                                    }) => {
-                                        let conv = ids::to_hex(&host.group_id);
-                                        remove_target(inbox, &conv, target);
-                                        let seq = *next_seq.get(&conv).unwrap_or(&0);
-                                        if header.conv_seq > seq {
-                                            next_seq.insert(conv.clone(), header.conv_seq);
-                                        }
-                                        new_rows.push(removed_marker(
-                                            conv,
-                                            target,
-                                            header.sent_at,
-                                            false,
-                                        ));
-                                    }
-                                    Ok(AppMessage {
-                                        header,
-                                        body: AppBody::Disappear { seconds },
-                                    }) => {
-                                        let conv = ids::to_hex(&host.group_id);
-                                        disappear.insert(conv.clone(), seconds);
-                                        new_rows.push(push_control(
-                                            inbox,
-                                            next_seq,
-                                            conv,
-                                            header.conv_seq,
-                                            header.sent_at,
-                                            "disappear",
-                                            seconds.to_string(),
-                                            0, false
-                                        ));
-                                    }
-                                    Ok(AppMessage {
-                                        header,
-                                        body:
-                                            AppBody::BindingGossip {
-                                                identity_id,
-                                                seq,
-                                                server_id,
-                                            },
-                                    }) => {
-                                        if let Some(row) = apply_binding_gossip(
-                                            session,
-                                            inbox,
-                                            next_seq,
-                                            host.group_id,
-                                            identity_id,
-                                            seq,
-                                            server_id,
-                                            header.conv_seq,
-                                            header.sent_at,
-                                        ) {
-                                            new_rows.push(row);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        MessageType::RemoveBundle => {
-                            for g in groups.iter_mut() {
-                                let _ = g.mls.apply_remove_from_mailbox(
-                                    session.install.mls_provider(),
-                                    &row.inner,
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                block_on(session.ack())?;
                 let now = now_unix();
                 for (peer, upto) in acks {
                     if !session.contacts.contains_key(&peer) {
@@ -2209,29 +2334,46 @@ impl NemoClient {
                 Group::key_package_identity_pk(session.install.mls_provider(), &req.key_package)?;
             let invitee_id = nemo_wire::identity_id(&invitee_pk);
             block_on(session.check_discovery_not_revoked(invitee_id, now_unix()))?;
-            let bound = req.invitee_binding.is_some()
-                || minted
-                    .get(&req.nonce)
-                    .is_some_and(|i| i.invitee_binding.is_some());
-            if bound {
-                let invite = minted.get(&req.nonce).ok_or(CoreError::BoundInvite)?;
+            let host_cred = groups
+                .iter()
+                .find(|g| g.host.group_id == req.group_id)
+                .ok_or_else(|| FfiError::Core("unknown group".into()))?
+                .host
+                .cred;
+            let looked = block_on(session.lookup_pending(
+                req.group_id,
+                &host_cred,
+                req.pending_id,
+            ))?;
+            if looked.credential_id != req.credential_id {
+                return Err(CoreError::CredentialIdMismatch.into());
+            }
+            if looked.invitee_binding.is_some() {
                 let proof = req.proof.as_ref().ok_or(CoreError::BoundInvite)?;
                 if proof.pending_id != req.pending_id {
                     return Err(CoreError::BoundInvite.into());
                 }
+                let salt = looked.salt.ok_or(CoreError::BoundInvite)?;
+                let want = looked.invitee_binding.ok_or(CoreError::BoundInvite)?;
+                if invitee_binding(&invitee_pk, &salt) != want {
+                    return Err(CoreError::BoundInvite.into());
+                }
                 let vk = VerifyingKey::from_bytes(&invitee_pk)
                     .map_err(|_| FfiError::Core("invitee key".into()))?;
-                verify_bound_invite(invite, proof, &vk)?;
+                proof.verify(&vk)?;
             }
+            let _ = (minted, req.nonce, req.invitee_binding);
             let g = groups
                 .iter_mut()
                 .find(|g| g.host.group_id == req.group_id)
                 .ok_or_else(|| FfiError::Core("unknown group".into()))?;
             flush_mls_update(session, g)?;
             let admit = g.mls.sign_admit(req.group_id, req.pending_id)?;
-            let (commit, welcome) = g
-                .mls
-                .admit(session.install.mls_provider(), &req.key_package)?;
+            let (commit, welcome) = g.mls.admit(
+                session.install.mls_provider(),
+                &req.key_package,
+                looked.credential_id,
+            )?;
             block_on(session.admit(
                 req.group_id,
                 &g.host.cred,
@@ -2244,8 +2386,10 @@ impl NemoClient {
                 req.group_id,
                 &g.host.cred,
                 MessageType::MlsHandshake,
-                commit,
+                commit.clone(),
             ))?;
+            g.mls
+                .apply_handshake(session.install.mls_provider(), &commit)?;
             let outer = Group::wrap_handshake(&req.hpke, req.cap, TtlBucket::DEFAULT, welcome)?;
             block_on(session.post_envelope(&outer))?;
             // Sync the group display name to the joiner over 1:1
@@ -2363,13 +2507,20 @@ impl NemoClient {
                 None => return Err(FfiError::Core("busy".into())),
             };
             let g = find_group_mut(groups, &group_id_hex)?;
-            let bundle = g.mls.remove(session.install.mls_provider(), cred)?;
+            let bundle = g
+                .mls
+                .remove(session.install.mls_provider(), g.host.group_id, cred)?;
             block_on(session.group_append(
                 g.host.group_id,
                 &g.host.cred,
                 MessageType::RemoveBundle,
                 bundle.encode()?,
             ))?;
+            g.mls.apply_remove_bundle(
+                session.install.mls_provider(),
+                &g.host.group_id,
+                &bundle,
+            )?;
         }
         persist(&inner)?;
         Ok(())
@@ -3842,9 +3993,24 @@ mod tests {
         let _ = carol.fetch_now().unwrap();
         let invite = alice.mint_bound_group_invite(gid.clone(), bob_id).unwrap();
         let join = bob.accept_group_invite(invite).unwrap();
-        let denied = carol.admit_join(join.clone()).unwrap_err();
+        // Host-stored salt is the source of truth: any live member with a
+        // valid proof can admit. A join without a proof still fails.
+        let req = parse_join_request(&join).unwrap();
+        let stripped = join_request_uri(
+            req.group_id,
+            req.pending_id,
+            &req.key_package,
+            req.signing_pk,
+            req.cap,
+            req.hpke,
+            req.credential_id,
+            req.nonce,
+            None,
+            req.invitee_binding,
+        );
+        let denied = carol.admit_join(stripped).unwrap_err();
         assert!(denied.to_string().to_lowercase().contains("bound"));
-        alice.admit_join(join).unwrap();
+        carol.admit_join(join).unwrap();
         let _ = bob.fetch_now().unwrap();
         assert_eq!(bob.list_groups().unwrap().len(), 1);
         drop(alice);

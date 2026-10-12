@@ -137,7 +137,7 @@ Normative DDL: [`crates/nemo-server/migrations/0001_init.sql`](../../crates/nemo
 
 | Table | Why it exists |
 | --- | --- |
-| `server_identity` | This host's HPKE + signing keys (phase 5) |
+| `server_identity` | This host's public HPKE + signing keys and host/s2s (phase 5). Secrets live in `NEMO_IDENTITY_FILE`, not in this row. |
 | `identities` | Discovery public keys, binding, optional revocation, mailbox cursor (phases 1–2, 4) |
 | `mailbox_rows` | Padded inners, seq, internal expiry, idempotency (phases 3–4) |
 | `tokens` | Share and contact capabilities (phase 4) |

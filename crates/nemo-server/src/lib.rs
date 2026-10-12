@@ -7,6 +7,7 @@ pub mod federation;
 pub mod group;
 pub mod home;
 pub mod http;
+pub mod identity;
 pub mod pg;
 pub mod s2s;
 mod tls;
@@ -34,6 +35,8 @@ pub fn log_ops(prefix: &str, err: impl std::fmt::Display) {
         || lower.contains("passphrase")
         || lower.contains("pragma key")
         || lower.contains("credential_secret")
+        || lower.contains("hpke_secret")
+        || lower.contains("sign_secret")
     {
         eprintln!("{prefix}: (details omitted)");
     } else {

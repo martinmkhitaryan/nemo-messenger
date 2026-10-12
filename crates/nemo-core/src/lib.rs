@@ -31,16 +31,17 @@ pub use discovery::{
 };
 pub use error::{CoreError, Result};
 pub use group::{
-    Group, PendingJoin, CIPHERSUITE, CREDENTIAL_ID_EXT, GROUP_SIGNING_EXT, UPDATE_BEFORE_SEND,
-    UPDATE_INTERVAL, UPDATE_ON_ONLINE,
+    Group, HandshakeOutcome, PendingJoin, CIPHERSUITE, CREDENTIAL_ID_EXT, GROUP_SIGNING_EXT,
+    UPDATE_BEFORE_SEND, UPDATE_INTERVAL, UPDATE_ON_ONLINE,
 };
 pub use home::{
     peer_http_origin, EnqueueResult, HomeSession, HomeState, HomeTransport, HostAccept, HostCred,
-    HostGroup, HttpHome, HttpRequest, HttpResponse, MailboxRow, StoredContact, FETCH_LIMIT,
+    HostGroup, HttpHome, HttpRequest, HttpResponse, MailboxRow, PendingLookup, StoredContact,
+    FETCH_LIMIT,
 };
 pub use identity::{
     revocation_from_mnemonic, Installation, RevocationExport, PREKEY_RESTOCK_BELOW,
-    PREKEY_STOCK_TARGET,
+    PREKEY_STOCK_TARGET, SIGNED_PREKEY_ROTATE_SECS,
 };
 pub use mailbox::messages_lost;
 pub use privacy::{

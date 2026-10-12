@@ -23,8 +23,9 @@ pub use envelope::{
 pub use error::WireError;
 pub use hostframe::{
     fail_payload, hello_payload, ok_payload, parse_hello, parse_payload, AttachmentReserve,
-    AttachmentSizeBucket, MailboxOwnerAuth, RemoveBundle, S2sFrame, S2sPayload, ServerBundle,
-    ServerSignRotate, SigningKeyReplace,
+    AttachmentSizeBucket, AuthScope, MailboxOwnerAuth, RemoveBundle, S2sFrame, S2sPayload,
+    ServerBundle, ServerSignRotate, SigningKeyReplace, RESPONSE_NONCE_HEADER, RESPONSE_SIG_HEADER,
+    sign_response, verify_response,
 };
 pub use hpke::{encap_key, open_outer, seal_inner, seal_to_server, HpkeKeypair};
 pub use ids::{

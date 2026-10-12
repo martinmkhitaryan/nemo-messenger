@@ -1,8 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use nemo_core::group::{Group, UPDATE_BEFORE_SEND, UPDATE_ON_ONLINE};
-use nemo_core::CoreError;
-use nemo_core::{decode_text, encode_text, Installation, Vault};
+use nemo_core::{decode_text, encode_text, CoreError, HandshakeOutcome, Installation, Vault};
 use rand::Rng;
 
 fn random_credential_id() -> [u8; 32] {
@@ -11,14 +10,19 @@ fn random_credential_id() -> [u8; 32] {
     id
 }
 
+const HOST_GROUP: [u8; 32] = [0x11; 32];
+
 fn two_member_group() -> (Installation, Installation, Group, Group) {
     let (alice, _) = Installation::create().unwrap();
     let (bob, _) = Installation::create().unwrap();
     let mut alice_group = alice.create_group().unwrap();
     let reserved = random_credential_id();
     let pending = bob.prepare_join(reserved).unwrap();
-    let (_commit, welcome) = alice_group
-        .admit(alice.mls_provider(), &pending.key_package)
+    let (commit, welcome) = alice_group
+        .admit(alice.mls_provider(), &pending.key_package, reserved)
+        .unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &commit)
         .unwrap();
     let bob_group = pending.join(bob.mls_provider(), &welcome).unwrap();
     assert_eq!(alice_group.member_count(), 2);
@@ -58,7 +62,10 @@ fn refuse_send_if_update_older_than_72h() {
         .encrypt(alice.mls_provider(), b"late")
         .unwrap_err();
     assert!(matches!(err, CoreError::StaleMlsUpdate));
-    let _ = alice_group.self_update(alice.mls_provider()).unwrap();
+    let hs = alice_group.self_update(alice.mls_provider()).unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &hs)
+        .unwrap();
     alice_group.encrypt(alice.mls_provider(), b"ok").unwrap();
 }
 
@@ -72,6 +79,9 @@ fn seven_day_stale_commits_update_before_app() {
         .maybe_self_update(alice.mls_provider(), SystemTime::now())
         .unwrap();
     assert!(handshake.is_some());
+    alice_group
+        .apply_handshake(alice.mls_provider(), handshake.as_ref().unwrap())
+        .unwrap();
     alice_group
         .encrypt(alice.mls_provider(), b"after weekly update")
         .unwrap();
@@ -93,19 +103,40 @@ fn online_after_a_day_commits_update() {
 fn remove_bundle_ejects_named_credential() {
     let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
     let bob_id = bob_group.credential_id();
-    let bundle = alice_group.remove(alice.mls_provider(), bob_id).unwrap();
+    let bundle = alice_group
+        .remove(alice.mls_provider(), HOST_GROUP, bob_id)
+        .unwrap();
     bob_group
-        .apply_remove_bundle(bob.mls_provider(), &bundle)
+        .apply_remove_bundle(bob.mls_provider(), &HOST_GROUP, &bundle)
+        .unwrap();
+    alice_group
+        .apply_remove_bundle(alice.mls_provider(), &HOST_GROUP, &bundle)
         .unwrap();
     assert_eq!(alice_group.member_count(), 1);
     assert_eq!(bob_group.member_count(), 1);
 }
 
 #[test]
+fn admit_rejects_key_package_id_mismatch() {
+    let (alice, bob, mut alice_group, _bob_group) = two_member_group();
+    let (cara, _) = Installation::create().unwrap();
+    let reserved = random_credential_id();
+    let pending = cara.prepare_join(reserved).unwrap();
+    let other = random_credential_id();
+    let err = alice_group
+        .admit(alice.mls_provider(), &pending.key_package, other)
+        .unwrap_err();
+    assert!(matches!(err, CoreError::CredentialIdMismatch));
+    let _ = (bob, pending);
+}
+
+#[test]
 fn unframed_remove_is_rejected() {
     let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
     let bob_id = bob_group.credential_id();
-    let bundle = alice_group.remove(alice.mls_provider(), bob_id).unwrap();
+    let bundle = alice_group
+        .remove(alice.mls_provider(), HOST_GROUP, bob_id)
+        .unwrap();
     let err = bob_group
         .apply_handshake(bob.mls_provider(), &bundle.mls_commit)
         .unwrap_err();
@@ -144,4 +175,90 @@ fn vault_reopen_keeps_mls_epoch() {
     let ping_pt = bob_group.decrypt(bob.mls_provider(), &ping_ct).unwrap();
     assert_eq!(decode_text(&ping_pt).unwrap(), (3, "from restored".into()));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn late_joiner_applies_remove_of_earlier_member() {
+    let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
+    let (carol, _) = Installation::create().unwrap();
+    let reserved = random_credential_id();
+    let pending = carol.prepare_join(reserved).unwrap();
+    let (commit, welcome) = alice_group
+        .admit(alice.mls_provider(), &pending.key_package, reserved)
+        .unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &commit)
+        .unwrap();
+    bob_group
+        .apply_handshake(bob.mls_provider(), &commit)
+        .unwrap();
+    let mut carol_group = pending.join(carol.mls_provider(), &welcome).unwrap();
+    assert_eq!(alice_group.member_count(), 3);
+    assert_eq!(bob_group.member_count(), 3);
+    assert_eq!(carol_group.member_count(), 3);
+
+    let bob_id = bob_group.credential_id();
+    let bundle = alice_group
+        .remove(alice.mls_provider(), HOST_GROUP, bob_id)
+        .unwrap();
+    alice_group
+        .apply_remove_bundle(alice.mls_provider(), &HOST_GROUP, &bundle)
+        .unwrap();
+    carol_group
+        .apply_remove_bundle(carol.mls_provider(), &HOST_GROUP, &bundle)
+        .unwrap();
+    bob_group
+        .apply_remove_bundle(bob.mls_provider(), &HOST_GROUP, &bundle)
+        .unwrap();
+    assert_eq!(alice_group.member_count(), 2);
+    assert_eq!(carol_group.member_count(), 2);
+    assert_eq!(bob_group.member_count(), 2);
+}
+
+#[test]
+fn concurrent_self_update_supersedes_pending() {
+    let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
+    let alice_hs = alice_group.self_update(alice.mls_provider()).unwrap();
+    let bob_hs = bob_group.self_update(bob.mls_provider()).unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &alice_hs)
+        .unwrap();
+    let outcome = bob_group
+        .apply_handshake(bob.mls_provider(), &alice_hs)
+        .unwrap();
+    assert!(matches!(outcome, HandshakeOutcome::OwnCommitSuperseded));
+    assert!(!bob_group.has_pending_commit());
+    assert!(bob_group
+        .apply_handshake(bob.mls_provider(), &bob_hs)
+        .is_err());
+    let bob_hs2 = bob_group.self_update(bob.mls_provider()).unwrap();
+    bob_group
+        .apply_handshake(bob.mls_provider(), &bob_hs2)
+        .unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &bob_hs2)
+        .unwrap();
+    let ptext = encode_text(3, 1_700_000_002, "after race").unwrap();
+    let ctext = alice_group.encrypt(alice.mls_provider(), &ptext).unwrap();
+    let opened = bob_group.decrypt(bob.mls_provider(), &ctext).unwrap();
+    assert_eq!(decode_text(&opened).unwrap(), (3, "after race".into()));
+}
+
+#[test]
+fn future_epoch_decrypt_is_retryable() {
+    let (alice, bob, mut alice_group, mut bob_group) = two_member_group();
+    let hs = alice_group.self_update(alice.mls_provider()).unwrap();
+    alice_group
+        .apply_handshake(alice.mls_provider(), &hs)
+        .unwrap();
+    let ptext = encode_text(3, 1_700_000_002, "next epoch").unwrap();
+    let ctext = alice_group.encrypt(alice.mls_provider(), &ptext).unwrap();
+    let err = bob_group.decrypt(bob.mls_provider(), &ctext).unwrap_err();
+    assert!(matches!(err, CoreError::MlsWrongEpoch));
+    assert!(err.mls_retryable());
+    bob_group
+        .apply_handshake(bob.mls_provider(), &hs)
+        .unwrap();
+    let opened = bob_group.decrypt(bob.mls_provider(), &ctext).unwrap();
+    assert_eq!(decode_text(&opened).unwrap(), (3, "next epoch".into()));
 }

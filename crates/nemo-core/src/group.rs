@@ -6,13 +6,21 @@
 //!
 //! The per-group signing key (leaf extension `0xF002`) is the MLS leaf
 //! signature key, so invite/admit/sidecar and MLS Commits use one key.
+//!
+//! Sequencing (ADR-0017): an own Commit is **staged** here and merged only
+//! when the host echoes it back on the group stream. If another member's
+//! Commit for the same epoch arrives first, ours is discarded and the caller
+//! re-issues it ([`HandshakeOutcome::OwnCommitSuperseded`]).
+//!
+//! Host metadata (`0xF001` credential ids) is always re-derived from the
+//! ratchet tree, so a member who joined via Welcome knows every leaf's id.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use nemo_wire::cbor::{self, Value};
 use nemo_wire::envelope::{InnerEnvelope, MessageType, OuterEnvelope, TtlBucket};
-use nemo_wire::hostframe::RemoveBundle;
+use nemo_wire::hostframe::{RemoveBundle, SigningKeyReplace};
 use nemo_wire::ids::{copy_fixed, IdentityId, KEY_LEN};
 use nemo_wire::{identity_id, GroupAdmit, GroupInvite, SigningKey, INTRO_TTL_30_MIN};
 use openmls::prelude::*;
@@ -44,14 +52,44 @@ pub struct PendingJoin {
     pub key_package: Vec<u8>,
 }
 
+/// What kind of own Commit is waiting for the host echo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingKind {
+    Update,
+    Add,
+    Remove,
+    SigningKeyRotate,
+}
+
+struct PendingOwn {
+    kind: PendingKind,
+    /// Set for `SigningKeyRotate`: becomes the leaf signer once merged.
+    new_signer: Option<SigningKey>,
+}
+
+/// Result of applying a handshake object from the group stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeOutcome {
+    /// Another member's Commit was validated and merged.
+    Applied,
+    /// The host echoed our staged Commit; it is merged now.
+    OwnCommitMerged,
+    /// Another member's Commit won this epoch. Our staged Commit was
+    /// discarded; the caller re-issues the operation if still wanted.
+    OwnCommitSuperseded,
+}
+
 pub struct Group {
     mls: MlsGroup,
     mls_signer: SignatureKeyPair,
     group_signing: SigningKey,
     credential_id: [u8; KEY_LEN],
-    /// MLS leaf signature key → host `credential_id` (`0xF001`).
-    credential_ids: HashMap<Vec<u8>, [u8; KEY_LEN]>,
+    /// Leaf index → host `credential_id` (`0xF001`), rebuilt from the tree.
+    credential_ids: HashMap<LeafNodeIndex, [u8; KEY_LEN]>,
     last_own_update: SystemTime,
+    pending: Option<PendingOwn>,
+    /// `SigningKeyReplace` seen on the stream: old leaf signature key → new.
+    announced_keys: HashMap<Vec<u8>, [u8; KEY_LEN]>,
 }
 
 impl Group {
@@ -69,6 +107,23 @@ impl Group {
 
     pub fn member_count(&self) -> usize {
         self.mls.members().count()
+    }
+
+    pub fn has_pending_commit(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn pending_kind(&self) -> Option<PendingKind> {
+        self.pending.as_ref().map(|p| p.kind)
+    }
+
+    /// Drop a staged own Commit (e.g. the host refused the append).
+    pub fn discard_pending(&mut self, provider: &MlsProvider) -> Result<()> {
+        self.mls
+            .clear_pending_commit(provider.storage())
+            .map_err(mls_err)?;
+        self.pending = None;
+        Ok(())
     }
 
     pub fn member_credential_ids(&self) -> Vec<[u8; KEY_LEN]> {
@@ -96,20 +151,40 @@ impl Group {
         provider: &MlsProvider,
         key_package_bytes: &[u8],
     ) -> Result<[u8; KEY_LEN]> {
-        let kp = KeyPackageIn::tls_deserialize_exact(key_package_bytes)
-            .map_err(mls_err)?
-            .validate(provider.crypto(), ProtocolVersion::Mls10)
-            .map_err(mls_err)?;
+        let kp = validate_key_package(provider, key_package_bytes)?;
         identity_pk_from_credential(kp.leaf_node().credential())
     }
 
+    /// `0xF001` carried by a KeyPackage. The admitter sends this to the host
+    /// as the expected reserved id (ADR-0018).
+    pub fn key_package_credential_id(
+        provider: &MlsProvider,
+        key_package_bytes: &[u8],
+    ) -> Result<[u8; KEY_LEN]> {
+        let kp = validate_key_package(provider, key_package_bytes)?;
+        check_new_leaf(kp.leaf_node())
+    }
+
+    /// Leaf signature key (= group signing key, `0xF002`) of a KeyPackage.
+    pub fn key_package_signing_pk(
+        provider: &MlsProvider,
+        key_package_bytes: &[u8],
+    ) -> Result<[u8; KEY_LEN]> {
+        let kp = validate_key_package(provider, key_package_bytes)?;
+        copy_fixed(kp.leaf_node().signature_key().as_slice())
+            .map_err(|_| CoreError::LeafExtensionViolation)
+    }
+
     /// Commit an Update when the last own Update is at least 7 days old, or 24 h
-    /// while the client is online (ADR-0005).
+    /// while the client is online (ADR-0005). Never while a Commit is pending.
     pub fn maybe_self_update(
         &mut self,
         provider: &MlsProvider,
         now: SystemTime,
     ) -> Result<Option<Vec<u8>>> {
+        if self.pending.is_some() {
+            return Ok(None);
+        }
         if self.needs_scheduled_update(now) || self.needs_online_update(now) {
             Ok(Some(self.self_update(provider)?))
         } else {
@@ -122,7 +197,7 @@ impl Group {
         self.mls.members().find_map(|m| {
             let pk = identity_pk_from_credential(&m.credential).ok()?;
             if identity_id(&pk) == *identity {
-                self.credential_ids.get(&m.signature_key).copied()
+                self.credential_ids.get(&m.index).copied()
             } else {
                 None
             }
@@ -134,28 +209,36 @@ impl Group {
     }
 
     pub fn encode_sidecar(&self) -> Result<Vec<u8>> {
-        let mut creds = Vec::new();
-        let mut keys: Vec<_> = self.credential_ids.iter().collect();
-        keys.sort_by(|a, b| a.0.cmp(b.0));
-        for (leaf, id) in keys {
-            creds.push(Value::Array(vec![
-                Value::Bytes(leaf.clone()),
-                Value::Bytes(id.to_vec()),
-            ]));
-        }
         let updated = self
             .last_own_update
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        Ok(cbor::encode(&Value::Map(vec![
+        let mut announced: Vec<_> = self.announced_keys.iter().collect();
+        announced.sort_by(|a, b| a.0.cmp(b.0));
+        let announced = announced
+            .into_iter()
+            .map(|(old, new)| {
+                Value::Array(vec![Value::Bytes(old.clone()), Value::Bytes(new.to_vec())])
+            })
+            .collect();
+        let mut pairs = vec![
             (0, Value::Uint(1)),
             (1, Value::Bytes(self.mls_group_id())),
             (2, Value::Bytes(self.group_signing.to_bytes().to_vec())),
             (3, Value::Bytes(self.credential_id.to_vec())),
-            (4, Value::Array(creds)),
+            // Field 4 used to persist the credential map; it is derived from
+            // the ratchet tree now. Kept empty for older readers.
+            (4, Value::Array(Vec::new())),
             (5, Value::Uint(updated)),
-        ])))
+            (6, Value::Uint(pending_kind_code(self.pending.as_ref().map(|p| p.kind)))),
+            (8, Value::Array(announced)),
+        ];
+        if let Some(seed) = self.pending.as_ref().and_then(|p| p.new_signer.as_ref()) {
+            pairs.push((7, Value::Bytes(seed.to_bytes().to_vec())));
+        }
+        pairs.sort_by_key(|(k, _)| *k);
+        Ok(cbor::encode(&Value::Map(pairs)))
     }
 
     pub fn load_sidecar(provider: &MlsProvider, bytes: &[u8]) -> Result<Self> {
@@ -171,39 +254,45 @@ impl Group {
             .map_err(|_| CoreError::VaultCorrupt)?;
         let sk = cbor::expect_bytes(cbor::map_get(&m, 2).map_err(|_| CoreError::VaultCorrupt)?)
             .map_err(|_| CoreError::VaultCorrupt)?;
-        if sk.len() != KEY_LEN {
-            return Err(CoreError::VaultCorrupt);
-        }
-        let mut seed = [0u8; KEY_LEN];
-        seed.copy_from_slice(sk);
+        let seed = copy_fixed(sk).map_err(|_| CoreError::VaultCorrupt)?;
         let group_signing = SigningKey::from_bytes(&seed);
-        let cid = cbor::expect_bytes(cbor::map_get(&m, 3).map_err(|_| CoreError::VaultCorrupt)?)
-            .map_err(|_| CoreError::VaultCorrupt)?;
-        if cid.len() != KEY_LEN {
-            return Err(CoreError::VaultCorrupt);
-        }
-        let mut credential_id = [0u8; KEY_LEN];
-        credential_id.copy_from_slice(cid);
-        let mut credential_ids = HashMap::new();
-        for item in cbor::expect_array(cbor::map_get(&m, 4).map_err(|_| CoreError::VaultCorrupt)?)
-            .map_err(|_| CoreError::VaultCorrupt)?
-        {
-            let Value::Array(row) = item else {
-                return Err(CoreError::VaultCorrupt);
-            };
-            if row.len() != 2 {
-                return Err(CoreError::VaultCorrupt);
-            }
-            let leaf = cbor::expect_bytes(&row[0])
-                .map_err(|_| CoreError::VaultCorrupt)?
-                .to_vec();
-            let id = copy_fixed(cbor::expect_bytes(&row[1]).map_err(|_| CoreError::VaultCorrupt)?)
-                .map_err(|_| CoreError::VaultCorrupt)?;
-            credential_ids.insert(leaf, id);
-        }
+        let credential_id = copy_fixed(
+            cbor::expect_bytes(cbor::map_get(&m, 3).map_err(|_| CoreError::VaultCorrupt)?)
+                .map_err(|_| CoreError::VaultCorrupt)?,
+        )
+        .map_err(|_| CoreError::VaultCorrupt)?;
         let updated = cbor::expect_uint(cbor::map_get(&m, 5).map_err(|_| CoreError::VaultCorrupt)?)
             .map_err(|_| CoreError::VaultCorrupt)?;
         let last_own_update = std::time::UNIX_EPOCH + Duration::from_millis(updated);
+        let pending_code = match cbor::map_get_opt(&m, 6) {
+            Some(v) => cbor::expect_uint(v).map_err(|_| CoreError::VaultCorrupt)?,
+            None => 0,
+        };
+        let new_signer = match cbor::map_get_opt(&m, 7) {
+            Some(v) => {
+                let s = copy_fixed(cbor::expect_bytes(v).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?;
+                Some(SigningKey::from_bytes(&s))
+            }
+            None => None,
+        };
+        let mut announced_keys = HashMap::new();
+        if let Some(v) = cbor::map_get_opt(&m, 8) {
+            for item in cbor::expect_array(v).map_err(|_| CoreError::VaultCorrupt)? {
+                let Value::Array(row) = item else {
+                    return Err(CoreError::VaultCorrupt);
+                };
+                if row.len() != 2 {
+                    return Err(CoreError::VaultCorrupt);
+                }
+                let old = cbor::expect_bytes(&row[0])
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_vec();
+                let new = copy_fixed(cbor::expect_bytes(&row[1]).map_err(|_| CoreError::VaultCorrupt)?)
+                    .map_err(|_| CoreError::VaultCorrupt)?;
+                announced_keys.insert(old, new);
+            }
+        }
         let mls_signer = SignatureKeyPair::from_raw(
             CIPHERSUITE.signature_algorithm(),
             group_signing.to_bytes().to_vec(),
@@ -216,14 +305,28 @@ impl Group {
         if mls.ciphersuite() != CIPHERSUITE {
             return Err(CoreError::WrongCiphersuite);
         }
-        Ok(Self {
+        let pending = match (pending_kind_from_code(pending_code), mls.pending_commit().is_some()) {
+            (Some(kind), true) => Some(PendingOwn { kind, new_signer }),
+            _ => None,
+        };
+        let mut g = Self {
             mls,
             mls_signer,
             group_signing,
             credential_id,
-            credential_ids,
+            credential_ids: HashMap::new(),
             last_own_update,
-        })
+            pending,
+            announced_keys,
+        };
+        if g.pending.is_none() && g.mls.pending_commit().is_some() {
+            // Metadata lost: the staged commit cannot be finished correctly.
+            g.mls
+                .clear_pending_commit(provider.storage())
+                .map_err(mls_err)?;
+        }
+        g.sync_credential_ids();
+        Ok(g)
     }
 
     pub fn needs_scheduled_update(&self, now: SystemTime) -> bool {
@@ -368,7 +471,7 @@ impl Group {
         &mut self,
         provider: &MlsProvider,
         inner: &InnerEnvelope,
-    ) -> Result<()> {
+    ) -> Result<HandshakeOutcome> {
         let body = mailbox::expect_type(inner, MessageType::MlsHandshake)?;
         self.apply_handshake(provider, body)
     }
@@ -391,17 +494,51 @@ impl Group {
     pub fn apply_remove_from_mailbox(
         &mut self,
         provider: &MlsProvider,
+        host_group_id: &[u8; KEY_LEN],
         inner: &InnerEnvelope,
-    ) -> Result<()> {
+    ) -> Result<HandshakeOutcome> {
         let body = mailbox::expect_type(inner, MessageType::RemoveBundle)?;
         let bundle = RemoveBundle::decode(body)?;
-        self.apply_remove_bundle(provider, &bundle)
+        self.apply_remove_bundle(provider, host_group_id, &bundle)
     }
 
-    /// Apply a non-Remove handshake (Add, Update).
-    pub fn apply_handshake(&mut self, provider: &MlsProvider, message: &[u8]) -> Result<()> {
+    /// Record a host-framed `SigningKeyReplace` from the stream. The member is
+    /// whoever's **current** leaf key verifies it (ADR-0018). A later leaf
+    /// update may then move that leaf to the new key, and only to that key.
+    pub fn apply_signing_key_replace(&mut self, body: &[u8]) -> Result<()> {
+        let replace = SigningKeyReplace::decode(body)?;
+        for m in self.mls.members() {
+            let Ok(arr) = <[u8; KEY_LEN]>::try_from(m.signature_key.as_slice()) else {
+                continue;
+            };
+            let Ok(pk) = nemo_wire::VerifyingKey::from_bytes(&arr) else {
+                continue;
+            };
+            if replace.verify(&pk).is_ok() {
+                self.announced_keys
+                    .insert(m.signature_key.clone(), replace.new_public_key);
+                return Ok(());
+            }
+        }
+        Err(CoreError::UnannouncedSignerChange)
+    }
+
+    /// Apply a non-Remove handshake (Add, Update, or the echo of an own Commit).
+    pub fn apply_handshake(
+        &mut self,
+        provider: &MlsProvider,
+        message: &[u8],
+    ) -> Result<HandshakeOutcome> {
         let processed = self.process(provider, message)?;
+        let sender = processed.sender().clone();
         match processed.into_content() {
+            ProcessedMessageContent::OwnPendingCommit => self.finish_own_commit(provider),
+            // Some OpenMLS 0.9 paths report an own Commit as a private
+            // message rather than OwnPendingCommit. If we staged one, this
+            // is the host echo.
+            ProcessedMessageContent::OwnPrivateMessage if self.pending.is_some() => {
+                self.finish_own_commit(provider)
+            }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 if is_external_commit(&commit) {
                     return Err(CoreError::ExternalMlsJoin);
@@ -409,11 +546,8 @@ impl Group {
                 if staged_remove_count(&commit) > 0 {
                     return Err(CoreError::UnframedRemove);
                 }
-                self.note_adds(&commit);
-                self.mls
-                    .merge_staged_commit(provider, *commit)
-                    .map_err(mls_err)?;
-                Ok(())
+                self.validate_commit(&commit, &sender)?;
+                self.merge_foreign(provider, *commit)
             }
             ProcessedMessageContent::ExternalJoinProposalMessage(_) => {
                 Err(CoreError::ExternalMlsJoin)
@@ -429,14 +563,15 @@ impl Group {
             ProcessedMessageContent::ApplicationMessage(_) => Err(CoreError::Mls(
                 "handshake path got an application message".into(),
             )),
-            ProcessedMessageContent::OwnPendingCommit
-            | ProcessedMessageContent::OwnPrivateMessage => Err(CoreError::Mls(
-                "own pending commit/private message in handshake path".into(),
+            ProcessedMessageContent::OwnPrivateMessage => Err(CoreError::Mls(
+                "own private message in handshake path".into(),
             )),
         }
     }
 
+    /// Stage an Update. Returns the Commit to append; merged on echo.
     pub fn self_update(&mut self, provider: &MlsProvider) -> Result<Vec<u8>> {
+        self.ensure_no_pending()?;
         let params = LeafNodeParameters::builder()
             .with_capabilities(nemo_capabilities())
             .with_extensions(self.own_leaf_extensions()?)
@@ -445,39 +580,90 @@ impl Group {
             .mls
             .self_update(provider, &self.mls_signer, params)
             .map_err(mls_err)?;
-        let msg = bundle.into_commit();
-        self.mls.merge_pending_commit(provider).map_err(mls_err)?;
+        self.pending = Some(PendingOwn {
+            kind: PendingKind::Update,
+            new_signer: None,
+        });
+        // Issued an Update: sending at the current epoch is allowed while
+        // the host echo is in flight.
         self.last_own_update = SystemTime::now();
-        serialize_msg(&msg)
+        serialize_msg(&bundle.into_commit())
     }
 
+    /// Rotate the per-group signing key (02 §7.4). Append the returned
+    /// `SigningKeyReplace` **before** the Commit so members accept the new
+    /// leaf key. Both are host-framed stream objects.
+    pub fn rotate_signing_key(
+        &mut self,
+        provider: &MlsProvider,
+    ) -> Result<(SigningKeyReplace, Vec<u8>)> {
+        self.ensure_no_pending()?;
+        let (new_mls, new_signing) = new_group_keys(provider)?;
+        let new_pk = new_signing.verifying_key().to_bytes();
+        let replace = SigningKeyReplace::sign(&self.group_signing, new_pk)?;
+        let params = LeafNodeParameters::builder()
+            .with_capabilities(nemo_capabilities())
+            .with_extensions(leaf_extensions(self.credential_id, new_pk)?)
+            .build();
+        let cwk = credential_with_key(self.own_identity_pk()?, &new_mls);
+        let bundle = self
+            .mls
+            .self_update_with_new_signer(
+                provider,
+                &self.mls_signer,
+                NewSignerBundle {
+                    signer: &new_mls,
+                    credential_with_key: cwk,
+                },
+                params,
+            )
+            .map_err(mls_err)?;
+        self.pending = Some(PendingOwn {
+            kind: PendingKind::SigningKeyRotate,
+            new_signer: Some(new_signing),
+        });
+        Ok((replace, serialize_msg(&bundle.into_commit())?))
+    }
+
+    /// Stage an Add. `expected_credential_id` is the host-reserved id for this
+    /// pending join; the KeyPackage leaf MUST carry exactly it (ADR-0018).
     pub fn admit(
         &mut self,
         provider: &MlsProvider,
         key_package_bytes: &[u8],
+        expected_credential_id: [u8; KEY_LEN],
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let kp = KeyPackageIn::tls_deserialize_exact(key_package_bytes)
-            .map_err(mls_err)?
-            .validate(provider.crypto(), ProtocolVersion::Mls10)
-            .map_err(mls_err)?;
+        self.ensure_no_pending()?;
+        let kp = validate_key_package(provider, key_package_bytes)?;
         if kp.ciphersuite() != CIPHERSUITE {
             return Err(CoreError::WrongCiphersuite);
         }
-        self.note_leaf(kp.leaf_node())?;
+        let cid = check_new_leaf(kp.leaf_node())?;
+        if cid != expected_credential_id {
+            return Err(CoreError::CredentialIdMismatch);
+        }
+        if self.credential_ids.values().any(|c| *c == cid) {
+            return Err(CoreError::CredentialIdMismatch);
+        }
         let (commit, welcome, _info) = self
             .mls
             .add_members(provider, &self.mls_signer, core::slice::from_ref(&kp))
             .map_err(mls_err)?;
-        self.mls.merge_pending_commit(provider).map_err(mls_err)?;
-        self.last_own_update = SystemTime::now();
+        self.pending = Some(PendingOwn {
+            kind: PendingKind::Add,
+            new_signer: None,
+        });
         Ok((serialize_msg(&commit)?, serialize_msg(&welcome)?))
     }
 
+    /// Stage a Remove as a `RemoveBundle` bound to `host_group_id`.
     pub fn remove(
         &mut self,
         provider: &MlsProvider,
+        host_group_id: [u8; KEY_LEN],
         credential_id: [u8; KEY_LEN],
     ) -> Result<RemoveBundle> {
+        self.ensure_no_pending()?;
         let index = self
             .leaf_index_for(credential_id)
             .ok_or(CoreError::BadRemoveBundle)?;
@@ -485,10 +671,13 @@ impl Group {
             .mls
             .remove_members(provider, &self.mls_signer, &[index])
             .map_err(mls_err)?;
-        self.mls.merge_pending_commit(provider).map_err(mls_err)?;
-        self.last_own_update = SystemTime::now();
+        self.pending = Some(PendingOwn {
+            kind: PendingKind::Remove,
+            new_signer: None,
+        });
         Ok(RemoveBundle::sign(
             &self.group_signing,
+            host_group_id,
             credential_id,
             serialize_msg(&commit)?,
         )?)
@@ -497,16 +686,26 @@ impl Group {
     pub fn apply_remove_bundle(
         &mut self,
         provider: &MlsProvider,
+        host_group_id: &[u8; KEY_LEN],
         bundle: &RemoveBundle,
-    ) -> Result<()> {
+    ) -> Result<HandshakeOutcome> {
         let processed = self.process(provider, &bundle.mls_commit)?;
-        let sender_pk = match processed.sender() {
+        let sender = processed.sender().clone();
+        if matches!(
+            processed.content(),
+            ProcessedMessageContent::OwnPendingCommit
+                | ProcessedMessageContent::OwnPrivateMessage
+        ) && self.pending.is_some()
+        {
+            return self.finish_own_commit(provider);
+        }
+        let sender_pk = match &sender {
             Sender::Member(index) => self
                 .group_signing_at(*index)
                 .ok_or(CoreError::BadRemoveBundle)?,
             _ => return Err(CoreError::ExternalMlsJoin),
         };
-        bundle.verify_sidecar(&sender_pk)?;
+        bundle.verify_sidecar(&sender_pk, host_group_id)?;
         match processed.into_content() {
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 if is_external_commit(&commit) {
@@ -518,10 +717,8 @@ impl Group {
                 if !self.staged_remove_matches(&commit, &bundle.credential_id) {
                     return Err(CoreError::BadRemoveBundle);
                 }
-                self.mls
-                    .merge_staged_commit(provider, *commit)
-                    .map_err(mls_err)?;
-                Ok(())
+                self.validate_commit(&commit, &sender)?;
+                self.merge_foreign(provider, *commit)
             }
             _ => Err(CoreError::Mls("RemoveBundle body is not a Commit".into())),
         }
@@ -530,9 +727,124 @@ impl Group {
     fn process(&mut self, provider: &MlsProvider, bytes: &[u8]) -> Result<ProcessedMessage> {
         let msg = decode_mls(bytes)?;
         let protocol = msg.try_into_protocol_message().map_err(mls_err)?;
+        self.mls.process_message(provider, protocol).map_err(|e| {
+            if matches!(
+                e,
+                ProcessMessageError::ValidationError(ValidationError::WrongEpoch)
+            ) {
+                CoreError::MlsWrongEpoch
+            } else {
+                mls_err(e)
+            }
+        })
+    }
+
+    fn ensure_no_pending(&self) -> Result<()> {
+        if self.pending.is_some() {
+            return Err(CoreError::PendingCommit);
+        }
+        Ok(())
+    }
+
+    fn finish_own_commit(&mut self, provider: &MlsProvider) -> Result<HandshakeOutcome> {
+        self.mls.merge_pending_commit(provider).map_err(mls_err)?;
+        if let Some(p) = self.pending.take() {
+            if let Some(new_signing) = p.new_signer {
+                self.mls_signer = SignatureKeyPair::from_raw(
+                    CIPHERSUITE.signature_algorithm(),
+                    new_signing.to_bytes().to_vec(),
+                    new_signing.verifying_key().to_bytes().to_vec(),
+                );
+                self.group_signing = new_signing;
+            }
+        }
+        self.last_own_update = SystemTime::now();
+        self.sync_credential_ids();
+        Ok(HandshakeOutcome::OwnCommitMerged)
+    }
+
+    fn merge_foreign(
+        &mut self,
+        provider: &MlsProvider,
+        commit: StagedCommit,
+    ) -> Result<HandshakeOutcome> {
+        let had_pending = self.pending.is_some();
         self.mls
-            .process_message(provider, protocol)
-            .map_err(mls_err)
+            .merge_staged_commit(provider, commit)
+            .map_err(mls_err)?;
+        // merge_staged_commit clears any pending own commit.
+        self.pending = None;
+        self.sync_credential_ids();
+        Ok(if had_pending {
+            HandshakeOutcome::OwnCommitSuperseded
+        } else {
+            HandshakeOutcome::Applied
+        })
+    }
+
+    /// 02 §7.1 / ADR-0018: `0xF001` is immutable, `0xF002` equals the leaf
+    /// signature key, and a leaf signature key only changes after a
+    /// `SigningKeyReplace` naming exactly that new key.
+    fn validate_commit(&self, commit: &StagedCommit, sender: &Sender) -> Result<()> {
+        for up in commit.update_proposals() {
+            let Sender::Member(idx) = up.sender() else {
+                return Err(CoreError::ExternalMlsJoin);
+            };
+            self.check_leaf_update(*idx, up.update_proposal().leaf_node())?;
+        }
+        if let Some(leaf) = commit.update_path_leaf_node() {
+            let Sender::Member(idx) = sender else {
+                return Err(CoreError::ExternalMlsJoin);
+            };
+            self.check_leaf_update(*idx, leaf)?;
+        }
+        for add in commit.add_proposals() {
+            let cid = check_new_leaf(add.add_proposal().key_package().leaf_node())?;
+            if self.credential_ids.values().any(|c| *c == cid) {
+                return Err(CoreError::LeafExtensionViolation);
+            }
+        }
+        Ok(())
+    }
+
+    fn check_leaf_update(&self, index: LeafNodeIndex, leaf: &LeafNode) -> Result<()> {
+        let cid = check_new_leaf(leaf)?;
+        if let Some(prev) = self.credential_ids.get(&index) {
+            if *prev != cid {
+                return Err(CoreError::LeafExtensionViolation);
+            }
+        }
+        let Some(member) = self.mls.members().find(|m| m.index == index) else {
+            return Err(CoreError::LeafExtensionViolation);
+        };
+        if member.signature_key.as_slice() != leaf.signature_key().as_slice() {
+            let new: [u8; KEY_LEN] = copy_fixed(leaf.signature_key().as_slice())
+                .map_err(|_| CoreError::LeafExtensionViolation)?;
+            if self.announced_keys.get(&member.signature_key) != Some(&new) {
+                return Err(CoreError::UnannouncedSignerChange);
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_credential_ids(&mut self) {
+        let tree = self.mls.export_ratchet_tree();
+        let by_sig: HashMap<Vec<u8>, [u8; KEY_LEN]> = tree
+            .leaves()
+            .filter_map(|leaf| {
+                let cid = extension_bytes(leaf.extensions(), CREDENTIAL_ID_EXT)?;
+                let cid = copy_fixed(&cid).ok()?;
+                Some((leaf.signature_key().as_slice().to_vec(), cid))
+            })
+            .collect();
+        self.credential_ids = self
+            .mls
+            .members()
+            .filter_map(|m| by_sig.get(&m.signature_key).map(|c| (m.index, *c)))
+            .collect();
+        // Announcements for keys that are no longer in the tree are stale.
+        let live: Vec<Vec<u8>> = self.mls.members().map(|m| m.signature_key).collect();
+        self.announced_keys.retain(|old, _| live.contains(old));
     }
 
     fn ensure_fresh_update(&self, now: SystemTime) -> Result<()> {
@@ -545,6 +857,14 @@ impl Group {
         Ok(())
     }
 
+    fn own_identity_pk(&self) -> Result<[u8; KEY_LEN]> {
+        let own = self
+            .mls
+            .own_leaf()
+            .ok_or(CoreError::Mls("own leaf missing".into()))?;
+        identity_pk_from_credential(own.credential())
+    }
+
     fn own_leaf_extensions(&self) -> Result<Extensions<LeafNode>> {
         leaf_extensions(
             self.credential_id,
@@ -552,39 +872,15 @@ impl Group {
         )
     }
 
-    fn note_leaf(&mut self, leaf: &LeafNode) -> Result<()> {
-        let cid = extension_bytes(leaf.extensions(), CREDENTIAL_ID_EXT)
-            .ok_or(CoreError::Mls("missing 0xF001".into()))?;
-        let cid = copy_fixed(&cid).map_err(|_| CoreError::Mls("0xF001 must be 32 bytes".into()))?;
-        let sig = leaf.signature_key().as_slice().to_vec();
-        if let Some(prev) = self.credential_ids.get(&sig) {
-            if *prev != cid {
-                return Err(CoreError::Mls("0xF001 is immutable".into()));
-            }
-        }
-        self.credential_ids.insert(sig, cid);
-        Ok(())
-    }
-
-    fn note_adds(&mut self, commit: &StagedCommit) {
-        for add in commit.add_proposals() {
-            let _ = self.note_leaf(add.add_proposal().key_package().leaf_node());
-        }
-    }
-
     fn leaf_index_for(&self, credential_id: [u8; KEY_LEN]) -> Option<LeafNodeIndex> {
-        self.mls.members().find_map(|m| {
-            if self.credential_ids.get(&m.signature_key).copied() == Some(credential_id) {
-                Some(m.index)
-            } else {
-                None
-            }
-        })
+        self.credential_ids
+            .iter()
+            .find(|(_, c)| **c == credential_id)
+            .map(|(i, _)| *i)
     }
 
     fn credential_id_at(&self, index: LeafNodeIndex) -> Option<[u8; KEY_LEN]> {
-        let member = self.mls.members().find(|m| m.index == index)?;
-        self.credential_ids.get(&member.signature_key).copied()
+        self.credential_ids.get(&index).copied()
     }
 
     fn group_signing_at(&self, index: LeafNodeIndex) -> Option<nemo_wire::VerifyingKey> {
@@ -679,16 +975,18 @@ impl Installation {
         if mls.ciphersuite() != CIPHERSUITE {
             return Err(CoreError::WrongCiphersuite);
         }
-        let mut credential_ids = HashMap::new();
-        credential_ids.insert(mls_signer.public().to_vec(), credential_id);
-        Ok(Group {
+        let mut g = Group {
             mls,
             mls_signer,
             group_signing,
             credential_id,
-            credential_ids,
+            credential_ids: HashMap::new(),
             last_own_update: SystemTime::now(),
-        })
+            pending: None,
+            announced_keys: HashMap::new(),
+        };
+        g.sync_credential_ids();
+        Ok(g)
     }
 
     /// Accept: build a KeyPackage that carries the reserved `credential_id`.
@@ -776,6 +1074,27 @@ impl PendingJoin {
         )
     }
 
+    /// Does this Welcome address our KeyPackage? Cheap pre-check so a stray
+    /// Welcome never consumes a pending join.
+    pub fn welcome_matches(&self, provider: &MlsProvider, welcome_bytes: &[u8]) -> bool {
+        let Ok(kp) = KeyPackageIn::tls_deserialize_exact(&self.key_package) else {
+            return false;
+        };
+        let Ok(kp) = kp.validate(provider.crypto(), ProtocolVersion::Mls10) else {
+            return false;
+        };
+        let Ok(kp_ref) = kp.hash_ref(provider.crypto()) else {
+            return false;
+        };
+        match decode_mls(welcome_bytes).map(|m| m.extract()) {
+            Ok(MlsMessageBodyIn::Welcome(w)) => w
+                .secrets()
+                .iter()
+                .any(|s| s.new_member() == kp_ref),
+            _ => false,
+        }
+    }
+
     pub fn join(self, provider: &MlsProvider, welcome_bytes: &[u8]) -> Result<Group> {
         let welcome = match decode_mls(welcome_bytes)?.extract() {
             MlsMessageBodyIn::Welcome(w) => w,
@@ -792,23 +1111,32 @@ impl PendingJoin {
         if mls.ciphersuite() != CIPHERSUITE {
             return Err(CoreError::WrongCiphersuite);
         }
-        let mut credential_ids = HashMap::new();
-        credential_ids.insert(self.mls_signer.public().to_vec(), self.credential_id);
-        if let Some(own) = mls.own_leaf() {
-            if let Some(cid) = extension_bytes(own.extensions(), CREDENTIAL_ID_EXT) {
-                if let Ok(id) = copy_fixed(&cid) {
-                    credential_ids.insert(own.signature_key().as_slice().to_vec(), id);
-                }
-            }
-        }
-        Ok(Group {
+        let mut g = Group {
             mls,
             mls_signer: self.mls_signer,
             group_signing: self.group_signing,
             credential_id: self.credential_id,
-            credential_ids,
+            credential_ids: HashMap::new(),
             last_own_update: SystemTime::now(),
-        })
+            pending: None,
+            announced_keys: HashMap::new(),
+        };
+        g.sync_credential_ids();
+        // Our own leaf must carry the id we reserved, and every leaf in the
+        // tree must be well-formed under the v1 profile.
+        let own_ok = g
+            .mls
+            .own_leaf()
+            .map(|own| check_new_leaf(own).ok() == Some(g.credential_id))
+            .unwrap_or(false);
+        if !own_ok {
+            return Err(CoreError::CredentialIdMismatch);
+        }
+        let tree = g.mls.export_ratchet_tree();
+        for leaf in tree.leaves() {
+            check_new_leaf(leaf)?;
+        }
+        Ok(g)
     }
 }
 
@@ -850,6 +1178,29 @@ fn leaf_extensions(
     .map_err(mls_err)
 }
 
+/// A leaf is valid under the v1 profile iff it has a 32-byte `0xF001` and a
+/// `0xF002` equal to its own signature key. Returns the credential id.
+fn check_new_leaf(leaf: &LeafNode) -> Result<[u8; KEY_LEN]> {
+    let cid = extension_bytes(leaf.extensions(), CREDENTIAL_ID_EXT)
+        .ok_or(CoreError::LeafExtensionViolation)?;
+    let cid = copy_fixed(&cid).map_err(|_| CoreError::LeafExtensionViolation)?;
+    let gsk = extension_bytes(leaf.extensions(), GROUP_SIGNING_EXT)
+        .ok_or(CoreError::LeafExtensionViolation)?;
+    if gsk.as_slice() != leaf.signature_key().as_slice() {
+        return Err(CoreError::LeafExtensionViolation);
+    }
+    // Credential type and identity shape (02 §7.1).
+    identity_pk_from_credential(leaf.credential())?;
+    Ok(cid)
+}
+
+fn validate_key_package(provider: &MlsProvider, bytes: &[u8]) -> Result<KeyPackage> {
+    KeyPackageIn::tls_deserialize_exact(bytes)
+        .map_err(mls_err)?
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(mls_err)
+}
+
 fn identity_pk_from_credential(cred: &Credential) -> Result<[u8; KEY_LEN]> {
     let basic = BasicCredential::try_from(cred.clone())
         .map_err(|_| CoreError::Mls("basic credential".into()))?;
@@ -879,6 +1230,26 @@ fn random_id() -> [u8; KEY_LEN] {
     let mut id = [0u8; KEY_LEN];
     rand::rng().fill_bytes(&mut id);
     id
+}
+
+fn pending_kind_code(kind: Option<PendingKind>) -> u64 {
+    match kind {
+        None => 0,
+        Some(PendingKind::Update) => 1,
+        Some(PendingKind::Add) => 2,
+        Some(PendingKind::Remove) => 3,
+        Some(PendingKind::SigningKeyRotate) => 4,
+    }
+}
+
+fn pending_kind_from_code(code: u64) -> Option<PendingKind> {
+    match code {
+        1 => Some(PendingKind::Update),
+        2 => Some(PendingKind::Add),
+        3 => Some(PendingKind::Remove),
+        4 => Some(PendingKind::SigningKeyRotate),
+        _ => None,
+    }
 }
 
 fn serialize_msg(msg: &MlsMessageOut) -> Result<Vec<u8>> {
