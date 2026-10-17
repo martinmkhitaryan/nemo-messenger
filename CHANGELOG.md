@@ -22,6 +22,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A group's own already-merged Commit echo (a past MLS epoch) no longer
   stalls the mailbox, so later rows, including group read marks, are applied.
+- `rustls` 0.23.46, so the key-share prediction advisory no longer fails
+  the dependency check.
 
 ## [0.4.7] - 2026-10-12
 
