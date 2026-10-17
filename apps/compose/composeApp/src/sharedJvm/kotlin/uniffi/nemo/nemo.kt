@@ -707,6 +707,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids(
     ): Int
+    external fun uniffi_nemo_ffi_checksum_method_nemoclient_group_view(
+    ): Int
     external fun uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex(
     ): Int
     external fun uniffi_nemo_ffi_checksum_method_nemoclient_inbox(
@@ -844,6 +846,8 @@ internal object UniffiLib {
     external fun uniffi_nemo_ffi_fn_method_nemoclient_fingerprint(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_nemo_ffi_fn_method_nemoclient_group_member_ids(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_nemo_ffi_fn_method_nemoclient_group_view(`ptr`: Long,`groupIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_nemo_ffi_fn_method_nemoclient_identity_id_hex(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -1082,6 +1086,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_group_member_ids() and 0xFFFF) != 59161) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_group_view() and 0xFFFF) != 56681) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_identity_id_hex() and 0xFFFF) != 46282) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1094,7 +1101,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_list_groups() and 0xFFFF) != 40598) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mark_read() and 0xFFFF) != 42354) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mark_read() and 0xFFFF) != 3685) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_mint_bound_group_invite() and 0xFFFF) != 29837) {
@@ -1121,7 +1128,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_react() and 0xFFFF) != 26674) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_read_upto() and 0xFFFF) != 56314) {
+    if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_read_upto() and 0xFFFF) != 24524) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_nemo_ffi_checksum_method_nemoclient_received_rtp() and 0xFFFF) != 39699) {
@@ -1666,6 +1673,12 @@ public interface NemoClientInterface {
     
     fun `groupMemberIds`(`groupIdHex`: kotlin.String): List<kotlin.String>
     
+    /**
+     * Other members' viewed watermarks for a group. Excludes this
+     * installation and anyone who has left.
+     */
+    fun `groupView`(`groupIdHex`: kotlin.String): GroupView
+    
     fun `identityIdHex`(): kotlin.String
     
     fun `inbox`(): List<DisplayRow>
@@ -1675,10 +1688,11 @@ public interface NemoClientInterface {
     fun `listGroups`(): List<GroupRow>
     
     /**
-     * Tell the peer we viewed everything up to `upto` in a 1:1
-     * conversation. The shell calls this (gated by the read-receipts
-     * setting) when the chat is open and messages are visible — never from
-     * background fetch. 1:1 only; groups have no read receipts yet.
+     * Tell the peer we viewed everything up to `upto`. The shell calls this
+     * (gated by the read-receipts setting) when the chat is open and
+     * messages are visible — never from background fetch. 1:1 goes to that
+     * peer; a group sends one MLS `read` to the other members. A group with
+     * no messages yet is a no-op.
      */
     fun `markRead`(`convId`: kotlin.String, `upto`: kotlin.ULong)
     
@@ -1702,8 +1716,9 @@ public interface NemoClientInterface {
     fun `react`(`convId`: kotlin.String, `target`: kotlin.ULong, `emoji`: kotlin.String): DisplayRow
     
     /**
-     * Highest `conv_seq` the peer confirmed *viewing* in this conversation
-     * (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
+     * Highest `conv_seq` the peer confirmed *viewing* in this 1:1
+     * conversation (inbound `read`), or 0 if none. Full-emphasis ✓✓.
+     * Groups use [`NemoClient::group_view`] instead.
      */
     fun `readUpto`(`convId`: kotlin.String): kotlin.ULong
     
@@ -2122,6 +2137,25 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
     
 
     
+    /**
+     * Other members' viewed watermarks for a group. Excludes this
+     * installation and anyone who has left.
+     */
+    @Throws(FfiException::class)override fun `groupView`(`groupIdHex`: kotlin.String): GroupView {
+            return FfiConverterTypeGroupView.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.uniffi_nemo_ffi_fn_method_nemoclient_group_view(
+        it,
+        
+        FfiConverterString.lower(`groupIdHex`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(FfiException::class)override fun `identityIdHex`(): kotlin.String {
             return FfiConverterString.lift(
     callWithHandle {
@@ -2179,10 +2213,11 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
 
     
     /**
-     * Tell the peer we viewed everything up to `upto` in a 1:1
-     * conversation. The shell calls this (gated by the read-receipts
-     * setting) when the chat is open and messages are visible — never from
-     * background fetch. 1:1 only; groups have no read receipts yet.
+     * Tell the peer we viewed everything up to `upto`. The shell calls this
+     * (gated by the read-receipts setting) when the chat is open and
+     * messages are visible — never from background fetch. 1:1 goes to that
+     * peer; a group sends one MLS `read` to the other members. A group with
+     * no messages yet is a no-op.
      */
     @Throws(FfiException::class)override fun `markRead`(`convId`: kotlin.String, `upto`: kotlin.ULong)
         = 
@@ -2325,8 +2360,9 @@ open class NemoClient: Disposable, AutoCloseable, NemoClientInterface
 
     
     /**
-     * Highest `conv_seq` the peer confirmed *viewing* in this conversation
-     * (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
+     * Highest `conv_seq` the peer confirmed *viewing* in this 1:1
+     * conversation (inbound `read`), or 0 if none. Full-emphasis ✓✓.
+     * Groups use [`NemoClient::group_view`] instead.
      */
     @Throws(FfiException::class)override fun `readUpto`(`convId`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
@@ -3027,6 +3063,95 @@ public object FfiConverterTypeGroupRow: FfiConverterRustBuffer<GroupRow> {
 
 
 
+/**
+ * Who has viewed a group, excluding this installation.
+ * `others` counts the other current members. A message is seen by everyone
+ * when each of them has `upto` at or above that message's `conv_seq`.
+ */
+data class GroupView (
+    var `others`: kotlin.ULong
+    , 
+    var `viewers`: List<GroupViewer>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeGroupView: FfiConverterRustBuffer<GroupView> {
+    override fun read(buf: ByteBuffer): GroupView {
+        return GroupView(
+            FfiConverterULong.read(buf),
+            FfiConverterSequenceTypeGroupViewer.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: GroupView) = (
+            FfiConverterULong.allocationSize(value.`others`) +
+            FfiConverterSequenceTypeGroupViewer.allocationSize(value.`viewers`)
+    )
+
+    override fun write(value: GroupView, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`others`, buf)
+            FfiConverterSequenceTypeGroupViewer.write(value.`viewers`, buf)
+    }
+}
+
+
+
+/**
+ * One other member's viewed watermark. `name` is the local nickname, or empty.
+ */
+data class GroupViewer (
+    var `identityId`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `upto`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeGroupViewer: FfiConverterRustBuffer<GroupViewer> {
+    override fun read(buf: ByteBuffer): GroupViewer {
+        return GroupViewer(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: GroupViewer) = (
+            FfiConverterString.allocationSize(value.`identityId`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterULong.allocationSize(value.`upto`)
+    )
+
+    override fun write(value: GroupViewer, buf: ByteBuffer) {
+            FfiConverterString.write(value.`identityId`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterULong.write(value.`upto`, buf)
+    }
+}
+
+
+
 
 
 sealed class FfiException(message: String): kotlin.Exception(message) {
@@ -3267,6 +3392,34 @@ public object FfiConverterSequenceTypeGroupRow: FfiConverterRustBuffer<List<Grou
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeGroupRow.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeGroupViewer: FfiConverterRustBuffer<List<GroupViewer>> {
+    override fun read(buf: ByteBuffer): List<GroupViewer> {
+        val len = buf.getInt()
+        return List<GroupViewer>(len) {
+            FfiConverterTypeGroupViewer.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<GroupViewer>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeGroupViewer.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<GroupViewer>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeGroupViewer.write(it, buf)
         }
     }
 }

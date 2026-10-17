@@ -29,9 +29,9 @@ transport_ack   client -> its own server: "delete up to seq N". Means: ciphertex
 protocol_ack    inside the encrypted channel, recipient -> sender. Means: decrypted and processed. Optional.
 user_receipt    the `read` message: recipient -> sender with the highest viewed conv_seq. Means: a human
                 viewed it. Sent only when the chat is open and in the foreground (never from background
-                fetch), 1:1 chats only; group read receipts are future work (groups are not manually
-                tested yet). Never visible to any server. Users can disable read receipts per device;
-                disabling hides both sending and display.
+                fetch). 1:1 is one watermark. Groups carry the same mark inside MLS, one per member,
+                with no bubble; the sender can show who has viewed each message. Never visible to any
+                server. Users can disable read receipts per device; disabling hides both sending and display.
 ```
 
 - Servers know only transport acks. A transport ack must never be interpreted or displayed as "read".
@@ -72,3 +72,4 @@ Rejected: correlate traffic across mailboxes and servers (ADR-0012).
 ## History
 
 - 2026-09-19 — Accepted. Mailbox as a bounded opaque log; three kinds of acknowledgement.
+- 2026-10-17 — Group `read` marks are in scope: one MLS watermark per member, shown as who viewed.

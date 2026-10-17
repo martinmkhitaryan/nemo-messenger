@@ -476,6 +476,16 @@ impl Group {
         self.apply_handshake(provider, body)
     }
 
+    /// Epoch carried by a handshake ciphertext. Compared with [`Group::epoch`]
+    /// when OpenMLS reports `WrongEpoch`: a lower epoch is an echo of a
+    /// commit this member already merged.
+    pub fn handshake_message_epoch(inner: &InnerEnvelope) -> Result<u64> {
+        let body = mailbox::expect_type(inner, MessageType::MlsHandshake)?;
+        let msg = decode_mls(body)?;
+        let protocol = msg.try_into_protocol_message().map_err(mls_err)?;
+        Ok(protocol.epoch().as_u64())
+    }
+
     pub fn wrap_remove(
         dest_hpke_public: &[u8; KEY_LEN],
         delivery_capability: [u8; KEY_LEN],

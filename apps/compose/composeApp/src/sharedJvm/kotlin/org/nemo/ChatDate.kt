@@ -542,6 +542,8 @@ internal fun DatedMessageItem(
     contacts: Map<String, String> = emptyMap(),
     onCopy: (DisplayRow) -> Unit = {},
     onQuickReact: (DisplayRow, String) -> Unit = { _, _ -> },
+    readReceiptsEnabled: Boolean = true,
+    onSeenBy: (DisplayRow) -> Unit = {},
 ) {
     val key = outgoingMapKey(row)
     val mine = row.outgoing || outgoing[key] == true
@@ -621,6 +623,11 @@ internal fun DatedMessageItem(
             inviteAccepted = acceptedInvites.contains(messageListKey(row)),
             joinAdmitted = admittedJoins.contains(messageListKey(row)),
             showSenderNames = showSenderNames,
+            onSeenBy = if (mine && showSenderNames && readReceiptsEnabled) {
+                { onSeenBy(row) }
+            } else {
+                null
+            },
             // No animateItem: with reverseLayout, a new message shifts every
             // visible index and placement animation makes the thread shake.
             modifier = Modifier.padding(top = gap),

@@ -170,6 +170,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
+import uniffi.nemo.GroupView
 import uniffi.nemo.NemoClient
 import java.io.File
 import java.util.Locale
@@ -402,6 +403,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
     }
     val contacts = remember { mutableStateMapOf<String, String>() }
     val groups = remember { mutableStateMapOf<String, String>() }
+    val groupViews = remember { mutableStateMapOf<String, GroupView>() }
     val lastRead = remember { mutableStateMapOf<String, ULong>() }
 
     fun runIo(block: suspend () -> Unit) {
@@ -479,6 +481,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
         outgoingStatus = outgoingStatus,
         selectedId = selected?.id,
         readReceiptsEnabled = readReceipts,
+        groupViews = groupViews,
     )
 
     // Foreground flag for peer read-mark flushing (backgrounding flushes the
@@ -1102,6 +1105,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                             admittedJoins = admittedJoins,
                                                             onAcceptFallback = ::acceptFallback,
                                                             contacts = contacts,
+                                                            groupViews = groupViews,
                                                         )
                                                     }
                                                 }
@@ -1193,6 +1197,7 @@ internal fun SessionPane(label: String, vaultDir: File, modifier: Modifier = Mod
                                                     admittedJoins = admittedJoins,
                                                     onAcceptFallback = ::acceptFallback,
                                                     contacts = contacts,
+                                                    groupViews = groupViews,
                                                 )
                                             }
                                         }
@@ -1921,6 +1926,8 @@ private fun ChatThread(
     contacts: Map<String, String> = emptyMap(),
     onCopy: (DisplayRow) -> Unit = {},
     onQuickReact: (DisplayRow, String) -> Unit = { _, _ -> },
+    readReceiptsEnabled: Boolean = true,
+    onSeenBy: (DisplayRow) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -2511,6 +2518,8 @@ private fun ChatThread(
                                 acceptedInvites = acceptedInvites,
                                 admittedJoins = admittedJoins,
                                 showSenderNames = showSenderNames,
+                                readReceiptsEnabled = readReceiptsEnabled,
+                                onSeenBy = onSeenBy,
                             )
                         }
                     }
@@ -2606,6 +2615,7 @@ private fun ActiveChatThread(
     acceptedInvites: MutableSet<String> = mutableSetOf(),
     admittedJoins: MutableSet<String> = mutableSetOf(),
     contacts: Map<String, String> = emptyMap(),
+    groupViews: Map<String, GroupView> = emptyMap(),
 ) {
     val pickFile = rememberPickFile { path ->
         attachFilePath(
@@ -2625,13 +2635,14 @@ private fun ActiveChatThread(
     var deleteTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
     var reactTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
     var authorsTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
+    var seenTarget by remember(target.id) { mutableStateOf<DisplayRow?>(null) }
     // Peer read receipts: highest viewed seq this visit. Flushed (not streamed)
     // on leave, on background, and as soon as the newest message is visible —
-    // never from background fetch. 1:1 only, gated by the setting.
+    // never from background fetch. 1:1 and groups, gated by the setting.
     var maxViewedRead by remember(target.id) { mutableStateOf(0UL) }
     var lastSentRead by remember(target.id) { mutableStateOf(0UL) }
     fun flushReadMark() {
-        if (!readReceiptsEnabled || target.isGroup) return
+        if (!readReceiptsEnabled) return
         val upto = maxViewedRead
         if (upto == 0UL || upto <= lastSentRead) return
         lastSentRead = upto
@@ -2821,6 +2832,8 @@ private fun ActiveChatThread(
         acceptedInvites = acceptedInvites,
         admittedJoins = admittedJoins,
         showSenderNames = target.isGroup,
+        readReceiptsEnabled = readReceiptsEnabled,
+        onSeenBy = { seenTarget = it },
     )
     if (deleteTarget != null) {
         val row = deleteTarget!!
@@ -2923,6 +2936,28 @@ private fun ActiveChatThread(
             },
         )
     }
+    if (seenTarget != null) {
+        val row = seenTarget!!
+        val names = seenNames(seenMarks(groupViews[row.convId]), row.convSeq, contacts)
+        AlertDialog(
+            onDismissRequest = { seenTarget = null },
+            title = { Text("Seen by") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (names.isEmpty()) {
+                        Text("No one yet.")
+                    } else {
+                        for (name in names) {
+                            Text(name)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { seenTarget = null }) { Text("Close") }
+            },
+        )
+    }
 }
 
 private fun messageSendAnimationFor(
@@ -2951,7 +2986,7 @@ private fun messageSendAnimationFor(
 }
 
 @Composable
-private fun ChatWallpaper(modifier: Modifier = Modifier) {
+internal fun ChatWallpaper(modifier: Modifier = Modifier) {
     val palette = LocalNemoPalette.current
     val base = palette.chat
     val dot = palette.patternDot
@@ -2998,6 +3033,7 @@ internal fun MessageBubble(
     onCopy: () -> Unit = {},
     onQuickReact: (String) -> Unit = {},
     contacts: Map<String, String> = emptyMap(),
+    onSeenBy: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     val dark = nemoDarkTheme()
@@ -3119,7 +3155,8 @@ internal fun MessageBubble(
                         row = row,
                         mine = mine,
                         status = if (mine) status else null,
-                        onOpenMenu = { menu = true },
+                        onClick = { menu = true },
+                        onLongClick = { menu = true },
                     )
                     if (pills.isNotEmpty()) {
                         Spacer(Modifier.height(4.dp))
@@ -3287,7 +3324,10 @@ internal fun MessageBubble(
                 // bubble edge so it never centers on screen.
                 val canCopy = row.text.isNotBlank() || row.fileName.isNotBlank()
                 val canSave = canSaveAttachment(row)
-                val actionCount = 2 + (if (canCopy) 1 else 0) + (if (canSave) 1 else 0)
+                val actionCount = 2 +
+                    (if (onSeenBy != null) 1 else 0) +
+                    (if (canCopy) 1 else 0) +
+                    (if (canSave) 1 else 0)
                 val menuHeightPx = with(density) { (72.dp + 8.dp).toPx() } +
                     actionCount * with(density) { 50.dp.toPx() } +
                     with(density) { 12.dp.toPx() }
@@ -3358,6 +3398,12 @@ internal fun MessageBubble(
                                 menu = false
                                 onDelete()
                             },
+                            onSeenBy = onSeenBy?.let { open ->
+                                {
+                                    menu = false
+                                    open()
+                                }
+                            },
                         )
                     }
                 }
@@ -3367,14 +3413,14 @@ internal fun MessageBubble(
 }
 
 @Composable
-private fun BigEmojiMessage(row: DisplayRow, mine: Boolean, status: OutgoingStatus?, onOpenMenu: () -> Unit) {
+private fun BigEmojiMessage(row: DisplayRow, mine: Boolean, status: OutgoingStatus?, onClick: () -> Unit, onLongClick: () -> Unit) {
     Column(
         horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
         modifier = Modifier.combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = LocalIndication.current,
-            onClick = onOpenMenu,
-            onLongClick = onOpenMenu,
+            onClick = onClick,
+            onLongClick = onLongClick,
         ),
     ) {
         Text(
@@ -3988,6 +4034,10 @@ internal fun applyIncoming(
     ackedUpTo: (String) -> ULong = { _ -> 0UL },
     /** Peer-viewed seq per conversation (FFI `readUpto`). Zero disables. */
     readUpTo: (String) -> ULong = { _ -> 0UL },
+    /** Group messages every other member has viewed. */
+    groupFullySeen: (String, ULong) -> Boolean = { _, _ -> false },
+    /** Groups stay on one check until [groupFullySeen]. */
+    isGroup: (String) -> Boolean = { _ -> false },
 ) {
     for (row in rows) {
         if (row.kind == "call_end" || row.kind == "call_reject" || row.kind == "call_cancel") {
@@ -4090,13 +4140,15 @@ internal fun applyIncoming(
             val upto = confirmed.getOrPut(m.convId) {
                 runCatching { ackedUpTo(m.convId) }.getOrDefault(0UL)
             }
-            if (m.convSeq <= upto && outgoingStatus[key] != OutgoingStatus.Delivered) {
+            if (!isGroup(m.convId) && m.convSeq <= upto && outgoingStatus[key] != OutgoingStatus.Delivered) {
                 outgoingStatus[key] = OutgoingStatus.Delivered
             }
             val seen = viewed.getOrPut(m.convId) {
                 runCatching { readUpTo(m.convId) }.getOrDefault(0UL)
             }
-            if (m.convSeq <= seen) outgoingStatus[key] = OutgoingStatus.Read
+            if (m.convSeq <= seen || groupFullySeen(m.convId, m.convSeq)) {
+                outgoingStatus[key] = OutgoingStatus.Read
+            }
         }
     }
 }

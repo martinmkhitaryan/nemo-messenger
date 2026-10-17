@@ -1576,9 +1576,10 @@ protocol_ack    inside the encrypted channel, recipient -> sender
 
 user_receipt    the `read` message, inside the encrypted channel, recipient -> sender
                  means: I viewed it (chat open, message on screen). Sent only
-                 when the chat is viewed, never from background fetch. 1:1 chats
-                 only for now; group read receipts are future work. Never
-                 visible to the server. Per-device setting, on by default;
+                 when the chat is viewed, never from background fetch. 1:1 is
+                 one watermark. A group sends the same mark inside MLS, one
+                 per member, and the sender shows who has viewed each message.
+                 Never visible to the server. Per-device setting, on by default;
                  turning it off hides sending and display both ways.
 ```
 

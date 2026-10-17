@@ -37,20 +37,18 @@ reference deploy:
 - Groups: New group -> copy invite -> Join group with `nemo-j:` request
   -> admit.
 - Message replies and reactions.
-- Group message seen logic is not implemented.
 
 ## Not manually tested
 
 Implemented, covered by automated tests where noted in `testing.md`:
-group messaging and group seen ticks, 1:1 voice calls (no live-audio
-check passed), High/Maximum cover traffic and Tor, server federation.
-Group read receipts are future work: seen logic is not implemented
-for groups.
+group messaging, group seen (one check, two when everyone has viewed, Seen by in the menu), 1:1 voice calls
+(no live-audio check passed), High/Maximum cover traffic and Tor,
+server federation.
 
 ## Left to test (required before 1.0.0)
 
-- Groups: group seen ticks once seen logic is implemented
-  (`testing.md` freeze checklist).
+- Groups: one check on an outgoing message until every other member has
+  viewed it, then two. Tap your message, then Seen by, for the names.
 - 1:1 live call: audible speech with real mic (not silence frames),
   ringing/reject/cancel, mic permission, via coturn on desktop two-pane
   (headphones on one side), emulator, and physical device.

@@ -8,6 +8,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.5.0] - 2026-10-17
+
+### Added
+
+- Group read receipts: each member sends an encrypted `read { upto }`
+  watermark inside MLS while the group chat is open and read receipts are
+  on. An outgoing group message shows one check until every other current
+  member has viewed it, then two. Tap the message and choose Seen by for
+  the names.
+
+### Fixed
+
+- A group's own already-merged Commit echo (a past MLS epoch) no longer
+  stalls the mailbox, so later rows, including group read marks, are applied.
+
 ## [0.4.7] - 2026-10-12
 
 ### Security

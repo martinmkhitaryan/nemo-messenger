@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -201,6 +202,7 @@ internal fun FluidMessageMenuContent(
     onCopy: () -> Unit,
     onSave: () -> Unit,
     onDelete: () -> Unit,
+    onSeenBy: (() -> Unit)? = null,
 ) {
     val mineEmojis = pills.filter { it.mine }.map { it.emoji }.toSet()
     Column(
@@ -263,6 +265,14 @@ internal fun FluidMessageMenuContent(
                             onReply()
                         },
                     )
+                    val seen = onSeenBy
+                    if (seen != null) {
+                        add(
+                            MenuAction("Seen by", { Icon(Icons.Filled.Visibility, null) }) {
+                                seen()
+                            },
+                        )
+                    }
                     if (canCopy) {
                         add(
                             MenuAction("Copy", { Icon(Icons.Filled.ContentCopy, null) }) {

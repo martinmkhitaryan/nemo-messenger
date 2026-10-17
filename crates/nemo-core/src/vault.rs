@@ -326,14 +326,16 @@ impl Vault {
 
     /// Decrypted display rows + per-conversation seq counters + per-conversation
     /// read-receipt high-water marks (`protocol_ack` uptos) + human-read marks
-    /// (`read` uptos). Keys 3 and 4 are optional: vaults written before them
-    /// load with empty marks, and old readers ignore unknown keys.
+    /// (`read` uptos) + per-member group read marks. Keys 3, 4, and 5 are
+    /// optional: vaults written before them load with empty marks, and old
+    /// readers ignore unknown keys. Key 5 is `[group_id, viewer_id, upto]`.
     pub fn save_inbox(
         &self,
         rows: &[InboxRow],
         next_seq: &HashMap<String, u64>,
         acked: &HashMap<String, u64>,
         read: &HashMap<String, u64>,
+        group_read: &HashMap<String, HashMap<String, u64>>,
     ) -> Result<()> {
         let mut encoded_rows = Vec::with_capacity(rows.len());
         for row in rows {
@@ -366,6 +368,21 @@ impl Vault {
                 Value::Uint(read[&k]),
             ]));
         }
+        let mut group_reads = Vec::new();
+        let mut gkeys: Vec<_> = group_read.keys().cloned().collect();
+        gkeys.sort();
+        for g in gkeys {
+            let marks = &group_read[&g];
+            let mut vkeys: Vec<_> = marks.keys().cloned().collect();
+            vkeys.sort();
+            for v in vkeys {
+                group_reads.push(Value::Array(vec![
+                    Value::Text(g.clone()),
+                    Value::Text(v.clone()),
+                    Value::Uint(marks[&v]),
+                ]));
+            }
+        }
         self.put(
             INBOX_KEY,
             &cbor::encode(&Value::Map(vec![
@@ -374,6 +391,7 @@ impl Vault {
                 (2, Value::Array(seqs)),
                 (3, Value::Array(acks)),
                 (4, Value::Array(reads)),
+                (5, Value::Array(group_reads)),
             ])),
         )
     }
@@ -385,9 +403,16 @@ impl Vault {
         HashMap<String, u64>,
         HashMap<String, u64>,
         HashMap<String, u64>,
+        HashMap<String, HashMap<String, u64>>,
     )> {
         let Some(bytes) = self.get_opt(INBOX_KEY)? else {
-            return Ok((Vec::new(), HashMap::new(), HashMap::new(), HashMap::new()));
+            return Ok((
+                Vec::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+            ));
         };
         let Value::Map(m) = cbor::decode(&bytes).map_err(|_| CoreError::VaultCorrupt)? else {
             return Err(CoreError::VaultCorrupt);
@@ -451,7 +476,26 @@ impl Vault {
                 read.insert(k, seq);
             }
         }
-        Ok((rows, next_seq, acked, read))
+        let mut group_read: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        if let Some(v) = cbor::map_get_opt(&m, 5) {
+            for item in cbor::expect_array(v).map_err(|_| CoreError::VaultCorrupt)? {
+                let Value::Array(row) = item else {
+                    return Err(CoreError::VaultCorrupt);
+                };
+                if row.len() != 3 {
+                    return Err(CoreError::VaultCorrupt);
+                }
+                let g = cbor::expect_text(&row[0])
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned();
+                let viewer = cbor::expect_text(&row[1])
+                    .map_err(|_| CoreError::VaultCorrupt)?
+                    .to_owned();
+                let seq = cbor::expect_uint(&row[2]).map_err(|_| CoreError::VaultCorrupt)?;
+                group_read.entry(g).or_default().insert(viewer, seq);
+            }
+        }
+        Ok((rows, next_seq, acked, read, group_read))
     }
 
     pub fn save_pending(

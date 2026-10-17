@@ -35,7 +35,7 @@ No UUID. `conv_seq` is local to the pair or group as the clients agree (start at
 | `reaction` | 5 `target` (`conv_seq`), 6 `emoji` (tstr, max 32) | |
 | `delete` | 5 `target` | Delete-for-everyone **request**; cooperating clients hide; not enforcement |
 | `protocol_ack` | 5 `upto` (`conv_seq`) | Batch allowed |
-| `read` | 5 `upto` (`conv_seq`) | Human-viewed; sent only when the chat is viewed; 1:1 only |
+| `read` | 5 `upto` (`conv_seq`) | Human-viewed watermark. Sent only when the chat is on screen. 1:1: one peer. Groups: one MLS application message per member, no bubble; each member keeps the others' watermarks |
 | `capability` | 5 `contact_capability` (bstr 32) | Recipient's new write token for this conversation |
 | `binding_gossip` | 5 `identity_id`, 6 `seq`, 7 `server_id` | Gossip home-server binding |
 | `disappear` | 5 `seconds` (uint) or 0 = off | Per-conversation setting; last one wins; show in UI |
@@ -47,6 +47,8 @@ No UUID. `conv_seq` is local to the pair or group as the clients agree (start at
 | `call_reject` / `call_cancel` / `call_end` | 5 `call_id` | |
 
 Unknown `msg_type`: ignore, do not disconnect the session.
+
+`read` does not advance `conv_seq` and is not shown as a message. In a group the watermark is the sender's identity inside MLS. A client shows, on its own messages, which current other members have `upto` at or above that message. The full-emphasis tick means every other current member has. Members who turn receipts off never send a mark. A receipt is not a confidentiality guarantee and is never visible to a server.
 
 `call_id` is random per call, not a server id. ICE: relay candidates only; MUST NOT include host or srflx ([ADR-0024](../decisions/0024-voice-call-architecture.md)).
 

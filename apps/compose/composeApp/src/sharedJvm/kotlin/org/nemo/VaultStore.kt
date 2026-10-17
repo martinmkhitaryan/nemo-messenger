@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import uniffi.nemo.DisplayRow
+import uniffi.nemo.GroupView
 import uniffi.nemo.NemoClient
 import java.io.File
 import java.util.IdentityHashMap
@@ -318,13 +319,15 @@ internal fun BindVaultStore(
     outgoingStatus: MutableMap<String, OutgoingStatus>,
     selectedId: String?,
     readReceiptsEnabled: Boolean,
+    groupViews: MutableMap<String, GroupView>,
 ) {
-    LaunchedEffect(store, atHome) {
+    LaunchedEffect(store, atHome, readReceiptsEnabled) {
         val s = store ?: return@LaunchedEffect
         if (!atHome) return@LaunchedEffect
         s.start()
         // Seed from the store snapshot, then heal from anything the background
         // persisted while we were away. Deltas stream below via freshRows.
+        syncGroupViews(s.client, groupViews, readReceiptsEnabled)
         applyIncoming(
             messages,
             s.messagesFlow.value,
@@ -332,6 +335,10 @@ internal fun BindVaultStore(
             outgoingStatus,
             ackedUpTo = { id -> runCatching { s.client.tryAckedUpto(id) }.getOrNull() ?: 0UL },
             readUpTo = readUpToOf(s, readReceiptsEnabled),
+            groupFullySeen = { id, seq ->
+                readReceiptsEnabled && groupViewFullyRead(groupViews[id], seq)
+            },
+            isGroup = { id -> groupViews.containsKey(id) || groups.containsKey(id) },
         )
         contacts.clear()
         contacts.putAll(s.contactsFlow.value)
@@ -343,10 +350,11 @@ internal fun BindVaultStore(
         }
     }
 
-    LaunchedEffect(store, atHome) {
+    LaunchedEffect(store, atHome, readReceiptsEnabled) {
         val s = store ?: return@LaunchedEffect
         if (!atHome) return@LaunchedEffect
         s.freshRows.collect { rows ->
+            syncGroupViews(s.client, groupViews, readReceiptsEnabled)
             applyIncoming(
                 messages,
                 rows,
@@ -354,6 +362,10 @@ internal fun BindVaultStore(
                 outgoingStatus,
                 ackedUpTo = { id -> runCatching { s.client.tryAckedUpto(id) }.getOrNull() ?: 0UL },
                 readUpTo = readUpToOf(s, readReceiptsEnabled),
+                groupFullySeen = { id, seq ->
+                    readReceiptsEnabled && groupViewFullyRead(groupViews[id], seq)
+                },
+                isGroup = { id -> groupViews.containsKey(id) || groups.containsKey(id) },
             )
         }
     }

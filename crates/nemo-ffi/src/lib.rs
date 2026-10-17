@@ -76,6 +76,23 @@ pub struct GroupRow {
     pub member_count: u64,
 }
 
+/// One other member's viewed watermark. `name` is the local nickname, or empty.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct GroupViewer {
+    pub identity_id: String,
+    pub name: String,
+    pub upto: u64,
+}
+
+/// Who has viewed a group, excluding this installation.
+/// `others` counts the other current members. A message is seen by everyone
+/// when each of them has `upto` at or above that message's `conv_seq`.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct GroupView {
+    pub others: u64,
+    pub viewers: Vec<GroupViewer>,
+}
+
 /// Local nickname for a 1:1 contact. No keys.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct ContactRow {
@@ -134,8 +151,11 @@ struct Inner {
     /// `protocol_ack` (clamped to what exists locally). Powers ✓✓.
     acked: HashMap<String, u64>,
     /// Per-conversation human-read high-water mark from inbound `read`
-    /// (clamped like `acked`). Powers the full-emphasis ✓✓. 1:1 only.
+    /// (clamped like `acked`). Powers the full-emphasis ✓✓ in 1:1.
     read: HashMap<String, u64>,
+    /// Group human-read marks: group id → viewer identity id → `upto`.
+    /// Each member sends one `read` inside MLS. Not a bubble.
+    group_read: HashMap<String, HashMap<String, u64>>,
     groups: Vec<LiveGroup>,
     pending: HashMap<[u8; KEY_LEN], PendingEntry>,
     minted: HashMap<[u8; KEY_LEN], GroupInvite>,
@@ -582,6 +602,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
                 &inner.next_seq,
                 &inner.acked,
                 &inner.read,
+                &inner.group_read,
             )?;
             let pending: Vec<_> = inner
                 .pending
@@ -608,6 +629,7 @@ fn persist(inner: &Inner) -> Result<(), FfiError> {
                 &inner.next_seq,
                 &inner.acked,
                 &inner.read,
+                &inner.group_read,
             )?;
         }
         None => return Err(FfiError::Core("busy".into())),
@@ -694,6 +716,7 @@ fn empty_inner(
         next_seq: HashMap::new(),
         acked: HashMap::new(),
         read: HashMap::new(),
+        group_read: HashMap::new(),
         groups: Vec::new(),
         pending: HashMap::new(),
         minted: HashMap::new(),
@@ -795,6 +818,8 @@ fn apply_group_mailbox_row(
     next_seq: &mut HashMap<String, u64>,
     nicknames: &HashMap<String, String>,
     disappear: &mut HashMap<String, u64>,
+    group_read: &mut HashMap<String, HashMap<String, u64>>,
+    self_id: &str,
     new_rows: &mut Vec<DisplayRow>,
     row: &nemo_core::MailboxRow,
 ) -> MlsRowFate {
@@ -853,12 +878,18 @@ fn apply_group_mailbox_row(
             }
         }
         let mut retry = false;
+        let msg_epoch = Group::handshake_message_epoch(&row.inner).ok();
         for g in groups.iter_mut() {
             match g
                 .mls
                 .apply_handshake_from_mailbox(session.install.mls_provider(), &row.inner)
             {
                 Ok(_) => return MlsRowFate::Done,
+                // An own Commit is merged before the host echo comes back.
+                // That echo is a past epoch and will never apply; retrying it
+                // blocks every later mailbox row, including group read marks.
+                Err(CoreError::MlsWrongEpoch)
+                    if msg_epoch.is_some_and(|ep| ep < g.mls.epoch()) => {}
                 Err(e) if e.mls_retryable() => retry = true,
                 Err(_) => {}
             }
@@ -1024,6 +1055,26 @@ fn apply_group_mailbox_row(
                     0,
                     false,
                 ));
+            }
+            Ok(AppMessage {
+                body: AppBody::Read { upto },
+                ..
+            }) => {
+                // Per-member watermark. No bubble, and conv_seq stays put:
+                // a read is not a message. Own echoes are ignored.
+                if sender_hex != self_id {
+                    let conv = ids::to_hex(&host.group_id);
+                    let known = *next_seq.get(&conv).unwrap_or(&0);
+                    let mark = upto.min(known);
+                    if mark > 0 {
+                        group_read
+                            .entry(conv)
+                            .or_default()
+                            .entry(sender_hex)
+                            .and_modify(|u| *u = (*u).max(mark))
+                            .or_insert(mark);
+                    }
+                }
             }
             Ok(AppMessage {
                 header,
@@ -1388,13 +1439,16 @@ impl NemoClient {
                 }
             }
         }
-        if let Ok((rows, seqs, acked, read)) = inner.vault.as_ref().unwrap().load_inbox() {
+        if let Ok((rows, seqs, acked, read, group_read)) =
+            inner.vault.as_ref().unwrap().load_inbox()
+        {
             inner.inbox = rows.into_iter().map(from_inbox_row).collect();
             // Migrate legacy soft-delete tombstones to hard-delete.
             drop_legacy_tombstones(&mut inner.inbox);
             inner.next_seq = seqs;
             inner.acked = acked;
             inner.read = read;
+            inner.group_read = group_read;
         }
         let invites = inner
             .vault
@@ -1683,6 +1737,7 @@ impl NemoClient {
                 next_seq,
                 acked,
                 read,
+                group_read,
                 nicknames,
                 disappear,
                 pending_invites,
@@ -1700,6 +1755,7 @@ impl NemoClient {
                 Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
                 None => return Err(FfiError::Core("busy".into())),
             };
+            let self_hex = ids::to_hex(&session.identity_id());
             let last_acked = session.cursor;
             let _ = block_on(session.pump_cover());
             let rows = block_on(session.fetch_mailbox())?;
@@ -1733,6 +1789,8 @@ impl NemoClient {
                         next_seq,
                         nicknames,
                         disappear,
+                        group_read,
+                        &self_hex,
                         &mut new_rows,
                         row,
                     ) {
@@ -1983,8 +2041,8 @@ impl NemoClient {
                                 ..
                             }) => {
                                 // Human-read receipt: peer viewed everything up
-                                // to `upto`. Same clamp as protocol_ack. 1:1
-                                // only; group receipts are not implemented.
+                                // to `upto`. Same clamp as protocol_ack.
+                                // Group reads arrive on the MLS path above.
                                 let peer_hex = ids::to_hex(&peer);
                                 let known = *next_seq.get(&peer_hex).unwrap_or(&0);
                                 let mark = upto.min(known);
@@ -3168,8 +3226,9 @@ impl NemoClient {
         Ok(inner.acked.get(&conv_id).copied())
     }
 
-    /// Highest `conv_seq` the peer confirmed *viewing* in this conversation
-    /// (inbound `read`), or 0 if none. Full-emphasis ✓✓. 1:1 only.
+    /// Highest `conv_seq` the peer confirmed *viewing* in this 1:1
+    /// conversation (inbound `read`), or 0 if none. Full-emphasis ✓✓.
+    /// Groups use [`NemoClient::group_view`] instead.
     pub fn read_upto(&self, conv_id: String) -> Result<u64, FfiError> {
         let inner = self.inner.lock().map_err(|_| lock_err())?;
         Ok(inner.read.get(&conv_id).copied().unwrap_or(0))
@@ -3183,24 +3242,68 @@ impl NemoClient {
         Ok(inner.read.get(&conv_id).copied())
     }
 
-    /// Tell the peer we viewed everything up to `upto` in a 1:1
-    /// conversation. The shell calls this (gated by the read-receipts
-    /// setting) when the chat is open and messages are visible — never from
-    /// background fetch. 1:1 only; groups have no read receipts yet.
+    /// Other members' viewed watermarks for a group. Excludes this
+    /// installation and anyone who has left.
+    pub fn group_view(&self, group_id_hex: String) -> Result<GroupView, FfiError> {
+        let inner = self.inner.lock().map_err(|_| lock_err())?;
+        group_view_of(&inner, &group_id_hex)
+    }
+
+    /// Tell the peer we viewed everything up to `upto`. The shell calls this
+    /// (gated by the read-receipts setting) when the chat is open and
+    /// messages are visible — never from background fetch. 1:1 goes to that
+    /// peer; a group sends one MLS `read` to the other members. A group with
+    /// no messages yet is a no-op.
     pub fn mark_read(&self, conv_id: String, upto: u64) -> Result<(), FfiError> {
         let mut inner = self.inner.lock().map_err(|_| lock_err())?;
         let peer = parse_identity_id(&conv_id)?;
         let now = now_unix();
+        let is_group = inner.groups.iter().any(|g| g.host.group_id == peer);
+        if is_group {
+            let known = inner.next_seq.get(&conv_id).copied().unwrap_or(0);
+            let upto = upto.min(known);
+            if upto == 0 {
+                return Ok(());
+            }
+            {
+                let Inner { state, groups, .. } = &mut *inner;
+                let session = match state {
+                    Some(ClientState::Registered(session)) => session,
+                    Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
+                    None => return Err(FfiError::Core("busy".into())),
+                };
+                let g = find_group_mut(groups, &conv_id)?;
+                if g.mls.member_count() <= 1 {
+                    return Ok(());
+                }
+                refresh_group_members(session, &g.mls)?;
+                flush_mls_update(session, g)?;
+                let ptext = encode(&AppMessage {
+                    header: AppHeader {
+                        conv_seq: 0,
+                        sent_at: now,
+                        reply_to: None,
+                    },
+                    body: AppBody::Read { upto },
+                })?;
+                let body = g.mls.encrypt(session.install.mls_provider(), &ptext)?;
+                block_on(session.group_append(
+                    g.host.group_id,
+                    &g.host.cred,
+                    MessageType::MlsApp,
+                    body,
+                ))?;
+            }
+            persist(&inner)?;
+            return Ok(());
+        }
         {
-            let Inner { state, groups, .. } = &mut *inner;
+            let Inner { state, .. } = &mut *inner;
             let session = match state {
                 Some(ClientState::Registered(session)) => session,
                 Some(ClientState::Local(_)) => return Err(CoreError::NotRegistered.into()),
                 None => return Err(FfiError::Core("busy".into())),
             };
-            if groups.iter().any(|g| g.host.group_id == peer) {
-                return Err(FfiError::Core("groups have no read receipts".into()));
-            }
             let (dest_hpke, cap) = match session.contacts.get(&peer) {
                 Some(c) if !c.revoked => (c.dest_hpke, c.delivery_capability),
                 Some(_) => return Err(CoreError::Revoked.into()),
@@ -3225,6 +3328,44 @@ impl NemoClient {
         }
         Ok(())
     }
+}
+
+fn group_view_of(inner: &Inner, group_id_hex: &str) -> Result<GroupView, FfiError> {
+    let gid = parse_identity_id(group_id_hex)?;
+    let g = inner
+        .groups
+        .iter()
+        .find(|g| g.host.group_id == gid)
+        .ok_or_else(|| FfiError::Core("unknown group".into()))?;
+    let self_id = ids::to_hex(&inner.install()?.identity_id());
+    let members: Vec<String> = g
+        .mls
+        .member_identity_ids()
+        .into_iter()
+        .map(|id| ids::to_hex(&id))
+        .filter(|id| id != &self_id)
+        .collect();
+    let mut viewers = Vec::new();
+    if let Some(marks) = inner.group_read.get(group_id_hex) {
+        for id in &members {
+            let Some(upto) = marks.get(id).copied() else {
+                continue;
+            };
+            if upto == 0 {
+                continue;
+            }
+            viewers.push(GroupViewer {
+                identity_id: id.clone(),
+                name: inner.nicknames.get(id).cloned().unwrap_or_default(),
+                upto,
+            });
+        }
+    }
+    viewers.sort_by(|a, b| a.identity_id.cmp(&b.identity_id));
+    Ok(GroupView {
+        others: members.len() as u64,
+        viewers,
+    })
 }
 
 fn push_text(
@@ -4686,7 +4827,7 @@ mod tests {
     #[test]
     fn read_receipts_require_explicit_mark_read() {
         // Delivery (protocol_ack) is automatic on fetch; human-read (read)
-        // only advances via mark_read. Unknown conversations and groups fail.
+        // only advances via mark_read. Unknown conversations fail.
         let base = serve_home();
         let alice_dir = temp_dir("nemo-ffi-read-a");
         let bob_dir = temp_dir("nemo-ffi-read-b");
@@ -4722,15 +4863,119 @@ mod tests {
         assert_eq!(alice2.read_upto(bob_id.clone()).unwrap(), sent.conv_seq);
         assert_eq!(alice2.acked_upto(bob_id).unwrap(), sent.conv_seq);
 
-        // Unknown conversation and groups are rejected.
+        // Unknown conversation is rejected. A group with nothing viewed yet
+        // is a no-op, not an error.
         assert!(alice2.mark_read("ab".repeat(32), 1).is_err());
         let gid = alice2.create_group("g".into()).unwrap();
-        assert!(alice2.mark_read(gid, 1).is_err());
+        assert!(alice2.mark_read(gid, 1).is_ok());
         assert_eq!(alice2.read_upto("ab".repeat(32)).unwrap(), 0);
         drop(alice2);
         drop(bob);
         let _ = fs::remove_dir_all(&alice_dir);
         let _ = fs::remove_dir_all(&bob_dir);
+    }
+
+    #[test]
+    fn group_read_records_who_viewed() {
+        let base = serve_home();
+        let alice_dir = temp_dir("nemo-ffi-gr-a");
+        let bob_dir = temp_dir("nemo-ffi-gr-b");
+        let carol_dir = temp_dir("nemo-ffi-gr-c");
+        let alice = client_at(&alice_dir);
+        let bob = client_at(&bob_dir);
+        let carol = client_at(&carol_dir);
+        alice.register(base.clone()).unwrap();
+        bob.register(base.clone()).unwrap();
+        carol.register(base).unwrap();
+        let bob_id = bob.identity_id_hex().unwrap();
+        let carol_id = carol.identity_id_hex().unwrap();
+
+        let gid = alice.create_group("crew".into()).unwrap();
+        let bob_join = bob
+            .accept_group_invite(alice.mint_group_invite(gid.clone()).unwrap())
+            .unwrap();
+        alice.admit_join(bob_join).unwrap();
+        bob.fetch_now().unwrap();
+        let carol_join = carol
+            .accept_group_invite(alice.mint_group_invite(gid.clone()).unwrap())
+            .unwrap();
+        alice.admit_join(carol_join).unwrap();
+        carol.fetch_now().unwrap();
+        bob.fetch_now().unwrap();
+
+        let first = alice.send_group_text(gid.clone(), "one".into()).unwrap();
+        assert!(bob.fetch_now().unwrap().iter().any(|r| r.text == "one"));
+        assert!(carol.fetch_now().unwrap().iter().any(|r| r.text == "one"));
+
+        // Bob opens the chat. Carol has the message but has not viewed it.
+        bob.mark_read(gid.clone(), first.conv_seq).unwrap();
+        let bob_rows = alice.fetch_now().unwrap();
+        assert!(
+            bob_rows.iter().all(|r| r.kind != "read" && r.text != "one"),
+            "a group read is a watermark, not a bubble"
+        );
+        let partial = alice.group_view(gid.clone()).unwrap();
+        assert_eq!(partial.others, 2);
+        assert_eq!(partial.viewers.len(), 1);
+        assert_eq!(partial.viewers[0].identity_id, bob_id);
+        assert_eq!(partial.viewers[0].upto, first.conv_seq);
+
+        carol.mark_read(gid.clone(), first.conv_seq).unwrap();
+        alice.fetch_now().unwrap();
+        let both = alice.group_view(gid.clone()).unwrap();
+        assert_eq!(both.viewers.len(), 2);
+        assert!(both.viewers.iter().any(|v| v.identity_id == bob_id && v.upto == first.conv_seq));
+        assert!(both
+            .viewers
+            .iter()
+            .any(|v| v.identity_id == carol_id && v.upto == first.conv_seq));
+
+        // A later message stays unseen by Carol until she views it.
+        let second = alice.send_group_text(gid.clone(), "two".into()).unwrap();
+        bob.fetch_now().unwrap();
+        carol.fetch_now().unwrap();
+        bob.mark_read(gid.clone(), second.conv_seq).unwrap();
+        alice.fetch_now().unwrap();
+        let later = alice.group_view(gid.clone()).unwrap();
+        let bob_upto = later
+            .viewers
+            .iter()
+            .find(|v| v.identity_id == bob_id)
+            .unwrap()
+            .upto;
+        let carol_upto = later
+            .viewers
+            .iter()
+            .find(|v| v.identity_id == carol_id)
+            .unwrap()
+            .upto;
+        assert_eq!(bob_upto, second.conv_seq);
+        assert_eq!(carol_upto, first.conv_seq);
+
+        drop(alice);
+        let alice2 = NemoClient::open_at(
+            alice_dir.to_string_lossy().into_owned(),
+            "correct horse".into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let kept = alice2.group_view(gid).unwrap();
+        assert_eq!(kept.viewers.len(), 2);
+        assert_eq!(
+            kept.viewers
+                .iter()
+                .find(|v| v.identity_id == carol_id)
+                .unwrap()
+                .upto,
+            first.conv_seq
+        );
+
+        drop(alice2);
+        drop(bob);
+        drop(carol);
+        let _ = fs::remove_dir_all(&alice_dir);
+        let _ = fs::remove_dir_all(&bob_dir);
+        let _ = fs::remove_dir_all(&carol_dir);
     }
 
     #[test]

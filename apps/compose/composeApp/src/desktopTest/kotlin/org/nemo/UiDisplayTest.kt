@@ -204,6 +204,18 @@ class UiDisplayTest {
     }
 
     @Test
+    fun groupFullTickNeedsEveryOtherMember() {
+        val alice = SeenMark("aa".repeat(32), "Alice", 2UL)
+        val bob = SeenMark("bb".repeat(32), "", 1UL)
+        val contacts = mapOf("bb".repeat(32) to "Bob")
+        assertEquals(listOf("Alice", "Bob"), seenNames(listOf(bob, alice), 1UL, contacts))
+        assertEquals(listOf("Alice"), seenNames(listOf(bob, alice), 2UL, contacts))
+        assertEquals(false, groupFullyRead(listOf(2UL), 2UL, others = 2))
+        assertEquals(true, groupFullyRead(listOf(2UL, 2UL), 2UL, others = 2))
+        assertEquals(false, groupFullyRead(emptyList(), 1UL, others = 0))
+    }
+
+    @Test
     fun bigEmojiNeedsShortEmojiOnlyText() {
         assertTrue(isBigEmojiMessage(row(text = "😂")))
         assertTrue(isBigEmojiMessage(row(text = "👍🏽")))
