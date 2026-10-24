@@ -34,6 +34,16 @@ class NotifyDiffTest {
     }
 
     @Test
+    fun notifyTitleUsesRosterWithoutFallingThroughEmptyNicknames() {
+        val id = "ab".repeat(32)
+        assertEquals("Ada", conversationNotifyTitle(mapOf(id to "Ada"), emptyMap(), id))
+        assertEquals("", conversationNotifyTitle(mapOf(id to ""), emptyMap(), id))
+        assertEquals("Group", conversationNotifyTitle(emptyMap(), mapOf(id to ""), id))
+        assertEquals("Crew", conversationNotifyTitle(mapOf(id to "Ada"), mapOf(id to "Crew"), id))
+        assertEquals(shortId(id), conversationNotifyTitle(emptyMap(), emptyMap(), id))
+    }
+
+    @Test
     fun systemRowsAdvanceSeenButStaySilent() {
         val rows = listOf(
             row(convSeq = 2UL, kind = "reaction"),

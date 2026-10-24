@@ -8,6 +8,15 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.5.1] - 2026-10-24
+
+### Fixed
+
+- Opening a chat on Android while the home server is unreachable no longer
+  freezes the app. Clearing that chat's notification reads the in-memory
+  roster instead of taking the engine lock, which a background fetch holds
+  for the whole connection attempt.
+
 ## [0.5.0] - 2026-10-17
 
 ### Added

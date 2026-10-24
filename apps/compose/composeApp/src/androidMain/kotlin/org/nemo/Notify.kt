@@ -116,10 +116,9 @@ internal fun notifyMessagesState(ctx: Context, store: NemoVaultStore, messages: 
 private fun postPending(ctx: Context, store: NemoVaultStore, pending: List<PendingNotify>) {
     val visible = store.visibleChatId.value
     val foreground = store.appForeground.value
-    val titles = conversationTitles(store.client)
     for (item in pending) {
         if (!shouldNotifyRow(item.convId, item.kind, visible, foreground)) continue
-        notifyMessage(ctx, titles[item.convId] ?: shortId(item.convId), item.kind)
+        notifyMessage(ctx, notifyTitle(store, item.convId), item.kind)
     }
 }
 
@@ -161,16 +160,16 @@ private fun notifyMessage(ctx: Context, title: String, kind: String) {
  */
 internal fun messageNotifyId(title: String): Int = title.hashCode()
 
-internal fun messageNotifyId(store: NemoVaultStore, convId: String): Int {
-    val titles = conversationTitles(store.client)
-    return messageNotifyId(titles[convId] ?: shortId(convId))
-}
+internal fun messageNotifyId(store: NemoVaultStore, convId: String): Int =
+    messageNotifyId(notifyTitle(store, convId))
 
 /**
  * UI-side tray clear: the user opened this chat, so its alert must not
  * linger (and must not silence the next message via repost dedup).
- * Same per-conversation row id as posting; failures are swallowed — a
- * stale tray row is cosmetic, never fatal.
+ * Same per-conversation row id as posting. Reads only the store snapshot —
+ * never the engine lock — because this runs on the UI thread while a
+ * background fetch may be stuck on an unreachable home. Failures are
+ * swallowed; a stale tray row is cosmetic, never fatal.
  */
 internal actual fun dismissTrayForChat(store: NemoVaultStore, convId: String) {
     val ctx = appContext ?: return
@@ -178,6 +177,10 @@ internal actual fun dismissTrayForChat(store: NemoVaultStore, convId: String) {
         NotificationManagerCompat.from(ctx).cancel(messageNotifyId(store, convId))
     }
 }
+
+/** In-memory roster only. See [conversationNotifyTitle]. */
+private fun notifyTitle(store: NemoVaultStore, convId: String): String =
+    conversationNotifyTitle(store.contactsFlow.value, store.groupsFlow.value, convId)
 
 internal fun ensureChannels(ctx: Context) {
     val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

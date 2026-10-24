@@ -8,6 +8,26 @@ internal const val UNREAD_SEEN_FILE = "unread_seen"
 /** An incoming row worth interrupting the user for (content never included). */
 internal data class PendingNotify(val convId: String, val kind: String)
 
+/**
+ * Tray title for [convId]. Poster and dismiss must hash the same string, and
+ * both must read the in-memory roster — never `listContacts` / `listGroups`.
+ * Those take the engine lock, which fetch and read-marks hold across home
+ * I/O. Calling them on the UI thread while the server is unreachable blocks
+ * chat open until Android kills the process.
+ *
+ * A group name wins when both maps contain the id. A stored empty contact
+ * nickname is kept (it is a real entry). Missing ids fall back to [shortId].
+ */
+internal fun conversationNotifyTitle(
+    contacts: Map<String, String>,
+    groups: Map<String, String>,
+    convId: String,
+): String {
+    groups[convId]?.let { return it.ifBlank { "Group" } }
+    contacts[convId]?.let { return it }
+    return shortId(convId)
+}
+
 /** Kinds worth a sound/vibration. Everything else merges silently. */
 internal fun notifiable(kind: String): Boolean = when (kind) {
     "",
