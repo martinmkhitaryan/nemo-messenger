@@ -160,8 +160,7 @@ private fun notifyMessage(ctx: Context, title: String, kind: String) {
  */
 internal fun messageNotifyId(title: String): Int = title.hashCode()
 
-internal fun messageNotifyId(store: NemoVaultStore, convId: String): Int =
-    messageNotifyId(notifyTitle(store, convId))
+internal fun messageNotifyId(store: NemoVaultStore, convId: String): Int = messageNotifyId(notifyTitle(store, convId))
 
 /**
  * UI-side tray clear: the user opened this chat, so its alert must not

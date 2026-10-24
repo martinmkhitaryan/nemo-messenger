@@ -18,11 +18,7 @@ internal data class PendingNotify(val convId: String, val kind: String)
  * A group name wins when both maps contain the id. A stored empty contact
  * nickname is kept (it is a real entry). Missing ids fall back to [shortId].
  */
-internal fun conversationNotifyTitle(
-    contacts: Map<String, String>,
-    groups: Map<String, String>,
-    convId: String,
-): String {
+internal fun conversationNotifyTitle(contacts: Map<String, String>, groups: Map<String, String>, convId: String): String {
     groups[convId]?.let { return it.ifBlank { "Group" } }
     contacts[convId]?.let { return it }
     return shortId(convId)
