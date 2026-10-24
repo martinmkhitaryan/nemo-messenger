@@ -6,7 +6,11 @@ all-features = false
 [advisories]
 unmaintained = "workspace"
 yanked = "deny"
-ignore = []
+ignore = [
+    # OpenMLS pulls elliptic-curve 0.13, which requires crypto-bigint 0.5.
+    # RUSTSEC-2026-0387 is fixed only in 0.7.6, and no 0.5 patch exists.
+    { id = "RUSTSEC-2026-0387", reason = "elliptic-curve 0.13 cannot take crypto-bigint 0.7" },
+]
 
 [licenses]
 allow = [

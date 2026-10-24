@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > All code in this project was written by AI, using
 > Fable 5.1, Sol 5.6, Muse Spark 1.3, Grok 4.6 / 4.7 and Composer 2.5.
 
+## [0.5.2] - 2026-10-24
+
+### Security
+
+- `webpki-roots` and `webpki-root-certs` 1.0.11, `rustls-webpki` 0.103.16,
+  `ctutils` 0.4.5, and `tokio` 1.54.1, so the current RustSec advisories
+  no longer fail the dependency check.
+- `crypto-bigint` 0.5.5 stays. OpenMLS's `elliptic-curve` 0.13 cannot take
+  0.7, and that is the only release that fixes RUSTSEC-2026-0387. The
+  advisory is ignored until that stack can move.
+
 ## [0.5.1] - 2026-10-24
 
 ### Fixed
